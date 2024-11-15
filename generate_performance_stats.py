@@ -2,7 +2,7 @@
 Generate performance statistics for a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.10.10
+Script version: 2024.11.15
 """
 import argparse
 import glob
@@ -172,8 +172,9 @@ if __name__ == '__main__':
 
     for year in years:
         
-        front_files_obj = fm.DataFileLoader(args['fronts_netcdf_indir'], years=year, data_type='fronts', file_format='netcdf', domains=domain)
-        front_files_obj.add_file_list(args['satellite_netcdf_indir'], data_type='satellite')
+        front_files_obj = fm.DataFileLoader(args['fronts_netcdf_indir'], years=year, data_type='fronts', file_format='netcdf', domains=['full',])
+        if model_uses_satellite:
+            front_files_obj.add_file_list(args['satellite_netcdf_indir'], data_type='satellite')
         front_files = front_files_obj.files[0]
 
         for month in months:
@@ -228,7 +229,8 @@ if __name__ == '__main__':
             bool_tp_fp_dss = dict({front: None for front in front_types})
             probs_dss = dict({front: tf.convert_to_tensor(probs_ds[front].values) for front in front_types})
 
-            performance_ds = xr.Dataset(coords={'time': time_array, 'longitude': lons, 'latitude': lats, 'boundary': boundaries, 'threshold': thresholds})
+            spatial_ds = xr.Dataset(coords={'time': time_array, 'longitude': lons, 'latitude': lats, 'boundary': boundaries, 'threshold': thresholds})
+            temporal_ds = xr.Dataset(coords={'time': time_array, 'boundary': boundaries, 'threshold': thresholds})
 
             for front_no, front_type in enumerate(front_types):
                 fronts_ds_month = data_utils.reformat_fronts(fronts_ds.sel(time='%d-%02d' % (year, month)), front_types)
@@ -269,13 +271,14 @@ if __name__ == '__main__':
                         tp_array_temporal[front_no, :, boundary, i] = tf.reduce_sum(tp, axis=(1, 2))
                         fp_array_temporal[front_no, :, boundary, i] = tf.reduce_sum(fp, axis=(1, 2))
 
-                performance_ds["tp_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), tp_array_spatial[front_no])
-                performance_ds["fp_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), fp_array_spatial[front_no])
-                performance_ds["tn_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), tn_array_spatial[front_no])
-                performance_ds["fn_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), fn_array_spatial[front_no])
-                performance_ds["tp_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), tp_array_temporal[front_no])
-                performance_ds["fp_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), fp_array_temporal[front_no])
-                performance_ds["tn_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), tn_array_temporal[front_no])
-                performance_ds["fn_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), fn_array_temporal[front_no])
+                spatial_ds["tp_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), tp_array_spatial[front_no])
+                spatial_ds["fp_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), fp_array_spatial[front_no])
+                spatial_ds["tn_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), tn_array_spatial[front_no])
+                spatial_ds["fn_spatial_%s" % front_type] = (('latitude', 'longitude', 'boundary', 'threshold'), fn_array_spatial[front_no])
+                temporal_ds["tp_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), tp_array_temporal[front_no])
+                temporal_ds["fp_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), fp_array_temporal[front_no])
+                temporal_ds["tn_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), tn_array_temporal[front_no])
+                temporal_ds["fn_temporal_%s" % front_type] = (('time', 'boundary', 'threshold'), fn_array_temporal[front_no])
 
-            performance_ds.to_netcdf(path=stats_dataset_path, mode='w', engine='netcdf4')
+            spatial_ds.to_netcdf(path=stats_dataset_path.replace('.nc', '_spatial.nc'), mode='w', engine='netcdf4')
+            temporal_ds.to_netcdf(path=stats_dataset_path.replace('.nc', '_temporal.nc'), mode='w', engine='netcdf4')

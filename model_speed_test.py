@@ -2,7 +2,7 @@
 Script for testing model prediction speed.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.10.10
+Script version: 2024.11.15
 """
 import argparse
 import file_manager as fm
@@ -19,21 +19,21 @@ if __name__ == '__main__':
     parser.add_argument('--gpu_device', type=int, nargs='+', help='GPU device numbers.')
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth for GPUs')
     args = vars(parser.parse_args())
-
-    gpus = tf.config.list_physical_devices(device_type='GPU')  # Find available GPUs
-    if len(gpus) > 0:
-
-        print("Number of GPUs available: %d" % len(gpus))
-
-        # Only make the selected GPU(s) visible to TensorFlow
-        if args['gpu_device'] is not None:
+    
+    if args['gpu_device'] is not None:
+        gpus = tf.config.list_physical_devices(device_type='GPU')  # Find available GPUs
+        
+        if len(gpus) > 0:
+            print("Number of GPUs available: %d" % len(gpus))
+        
+            # Only make the selected GPU(s) visible to TensorFlow
             tf.config.set_visible_devices(devices=[gpus[gpu] for gpu in args['gpu_device']], device_type='GPU')
             gpus = tf.config.get_visible_devices(device_type='GPU')  # List of selected GPUs
             print("Using %d GPU(s):" % len(gpus), gpus)
-
-        # Allow for memory growth on the GPU. This will only use the GPU memory that is required rather than allocating all the GPU's memory.
-        if args['memory_growth']:
-            tf.config.experimental.set_memory_growth(device=[gpu for gpu in gpus][0], enable=True)
+    
+            # Allow for memory growth on the GPU. This will only use the GPU memory that is required rather than allocating all the GPU's memory.
+            if args['memory_growth']:
+                tf.config.experimental.set_memory_growth(device=[gpu for gpu in gpus][0], enable=True)
 
     else:
         print('WARNING: No GPUs found, all computations will be performed on CPUs.')

@@ -2,7 +2,7 @@
 Convert netCDF files containing variable, satellite, and frontal boundary data into tensorflow datasets for model training.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.31
+Script version: 2024.11.15
 """
 import argparse
 import itertools
@@ -10,6 +10,7 @@ import numpy as np
 import os
 import pandas as pd
 import pickle
+import scipy
 import tensorflow as tf
 import file_manager as fm
 from utils import data_utils, misc
@@ -21,7 +22,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--variables_netcdf_indir', type=str, required=True,
         help="Input directory for the netCDF files containing variable data.")
-    parser.add_argument('--fronts_netcdf_indir', type=str, required=True,
+    parser.add_argument('--fronts_netcdf_indir', type=str, required=False,
         help="Input directory for the netCDF files containing frontal boundary data.")
     parser.add_argument('--satellite_netcdf_indir', type=str, required=False,
         help="Input directory for the netCDF files containing GOES satellite data.")
@@ -30,7 +31,7 @@ if __name__ == '__main__':
     parser.add_argument('--year_and_month', type=int, nargs=2, required=True,
         help="Year and month for the netcdf data to be converted to tensorflow datasets.")
     parser.add_argument('--data_source', type=str, default='era5', help="Data source or model containing the variable data.")
-    parser.add_argument('--front_types', type=str, nargs='+', required=True,
+    parser.add_argument('--front_types', type=str, nargs='+',
         help="Code(s) for the front types that will be generated in the tensorflow datasets. Refer to documentation in 'utils.data_utils.reformat_fronts' "
              "for more information on these codes.")
     parser.add_argument('--variables', type=str, nargs='+', required=True, help='Variables to select')
@@ -130,7 +131,7 @@ if __name__ == '__main__':
             for key in sorted(dataset_props.keys()):
                 f.write(f"{key}: {dataset_props[key]}\n")
             f.write(f"\n\n\nFile generated at {datetime.utcnow()} UTC\n")
-            f.write(f"convert_netcdf_to_tf.py script version: 2024.8.31")
+            f.write(f"convert_netcdf_to_tf.py script version: 2024.11.15")
 
     else:
 
@@ -151,9 +152,8 @@ if __name__ == '__main__':
     tf.random.set_seed(args["seed"])
     np.random.seed(args["seed"])
     
-    file_obj = fm.DataFileLoader(args['variables_netcdf_indir'], 'era5', 'netcdf', years=year, months=month, domains='full')
-    file_obj.add_file_list(args['fronts_netcdf_indir'], 'fronts')
-    
+    file_obj = fm.DataFileLoader(args['variables_netcdf_indir'], 'era5', 'netcdf', years=year, months=month, domains='global')
+    file_obj.add_file_list(args['fronts_netcdf_indir'], 'fronts', ignore_domain=True)
     ### add satellite data files ###
     if load_satellite:
         file_obj.add_file_list(args['satellite_netcdf_indir'], 'MERGIR')
@@ -183,8 +183,7 @@ if __name__ == '__main__':
                 if load_satellite:
                     satellite_netcdf_files.pop(index_to_pop)
     
-    synoptic_only = True if args['domain'] not in ['conus', 'hrrr'] else False
-    if synoptic_only:
+    if args['domain'] not in ['conus', 'hrrr']:
         synoptic_ind = [variables_netcdf_files.index(file) for file in variables_netcdf_files if any(['%02d_' % hr in file for hr in [0, 6, 12, 18]])]
         variables_netcdf_files = list([variables_netcdf_files[i] for i in synoptic_ind])
         fronts_netcdf_files = list([fronts_netcdf_files[i] for i in synoptic_ind])
@@ -199,7 +198,12 @@ if __name__ == '__main__':
         else:
             variables_netcdf_files, fronts_netcdf_files = zip(*zipped_list)
 
-    if args["domain"] in ["conus", "full"]:
+    extent_crosses_meridian = False
+    if args['override_extent'] is not None:
+        if args['override_extent'][1] > 360:
+            extent_crosses_meridian = True
+    
+    if args["domain"] in ["conus", "full", "MERGIR"]:
         if args['override_extent'] is None:
             sel_kwargs = {'longitude': slice(data_utils.DOMAIN_EXTENTS[args['domain']][0], data_utils.DOMAIN_EXTENTS[args['domain']][1]),
                           'latitude': slice(data_utils.DOMAIN_EXTENTS[args['domain']][3], data_utils.DOMAIN_EXTENTS[args['domain']][2])}
@@ -253,16 +257,50 @@ if __name__ == '__main__':
             print("%d-%02d Dataset progress (kept/discarded):  (%d/%d timesteps, %d/%d images)" % (year, month, timesteps_kept, timesteps_discarded, images_kept, images_discarded), end='\r')
 
         if all_fronts_in_timestep or keep_timestep:
+            
+            ### open variables dataset ###
+            if extent_crosses_meridian:
+                sel_kwargs_1 = {'longitude': slice(args['override_extent'][0], 360),
+                                'latitude': slice(args['override_extent'][3], args['override_extent'][2])}
+                sel_kwargs_2 = {'longitude': slice(0, args['override_extent'][1] - 360),
+                                'latitude': slice(args['override_extent'][3], args['override_extent'][2])}
+                
+                variables_dataset_1 = xr.open_dataset(variables_netcdf_files[timestep_no], engine='netcdf4')[data_vars].sel(pressure_level=args['pressure_levels'], **sel_kwargs_1).isel(**isel_kwargs).transpose('time', *transpose_dims, 'pressure_level').astype('float16')
+                variables_dataset_2 = xr.open_dataset(variables_netcdf_files[timestep_no], engine='netcdf4')[data_vars].sel(pressure_level=args['pressure_levels'], **sel_kwargs_2).isel(**isel_kwargs).transpose('time', *transpose_dims, 'pressure_level').astype('float16')
+                variables_dataset = xr.merge([variables_dataset_1, variables_dataset_2])
 
-            ### Open variables dataset ###
-            variables_dataset = xr.open_dataset(variables_netcdf_files[timestep_no], engine='netcdf4')[data_vars].sel(pressure_level=args['pressure_levels'], **sel_kwargs).isel(**isel_kwargs).transpose('time', *transpose_dims, 'pressure_level').astype('float16')
+            else:
+                variables_dataset = xr.open_dataset(variables_netcdf_files[timestep_no], engine='netcdf4')[data_vars].sel(pressure_level=args['pressure_levels'], **sel_kwargs).isel(**isel_kwargs).transpose('time', *transpose_dims, 'pressure_level').astype('float16')
+            
             variables_dataset = variables_dataset.isel(time=0).transpose(*transpose_dims, 'pressure_level').astype('float16')
             
             ### open satellite data ###
             if load_satellite:
-                satellite_dataset = xr.open_dataset(satellite_netcdf_files[timestep_no], engine='netcdf4')
+                satellite_dataset = xr.open_dataset(satellite_netcdf_files[timestep_no], engine='netcdf4').rename({'lon': 'longitude',
+                                                                                                                         'lat': 'latitude'})
+                # pull original lat/lon coordinates from MERGIR dataset
+                satellite_lons = satellite_dataset['longitude'].values
+                satellite_lats = satellite_dataset['latitude'].values
+                satellite_lons = np.where(satellite_lons < 0, satellite_lons + 360, satellite_lons)
+                
+                # reformat coordinates and slice domain
+                satellite_dataset = satellite_dataset.assign_coords(longitude=satellite_lons)
+                satellite_dataset = satellite_dataset.reindex(longitude=sorted(satellite_lons), latitude=satellite_lats[::-1])
                 satellite_dataset = satellite_dataset.sel(**sel_kwargs).isel(time=0, **isel_kwargs).transpose(*transpose_dims)
             
+                # regrid the satellite data
+                Tb = satellite_dataset['Tb'].values
+                new_satellite_lons = satellite_dataset['longitude'].values
+                new_satellite_lats = satellite_dataset['latitude'].values
+                variable_lons = variables_dataset['longitude'].values
+                variable_lats = variables_dataset['latitude'].values
+                new_lons, new_lats = np.meshgrid(variable_lons, variable_lats)
+                
+                # regrid and normalize the satellite data
+                Tb = scipy.interpolate.RegularGridInterpolator((new_satellite_lons, new_satellite_lats), Tb, method='nearest', bounds_error=False)((new_lons, new_lats)).transpose()[..., np.newaxis]
+                Tb = (Tb - 197) / (329 - 197)  # min max normalization
+                Tb = np.nan_to_num(Tb)
+
             ### Reformat the fronts from the previous timestep ###
             if args['add_previous_fronts'] is not None:
                 previous_front_dataset = xr.open_dataset(previous_fronts_netcdf_files[timestep_no], engine='netcdf4').sel(**sel_kwargs).isel(**isel_kwargs).astype('float16')
@@ -279,12 +317,14 @@ if __name__ == '__main__':
                 for front_type_no, previous_front_type in enumerate(args['add_previous_fronts']):
                     previous_fronts[..., 0] = np.where(previous_front_dataset['identifier'].values == front_type_no + 1, 1, 0)  # Place previous front labels at the surface level
                     variables_dataset[previous_front_type] = ((*transpose_dims, 'pressure_level'), previous_fronts)  # Add previous fronts to the predictor dataset
-
+            
+            ### create a list of starting indices along the longitude dimension ###
             if args['images'][0] > 1 and domain_size[0] > args['image_size'][0] + args['images'][0]:
                 start_indices_lon = np.linspace(0, domain_size[0] - args['image_size'][0], args['images'][0]).astype(int)
             else:
                 start_indices_lon = np.zeros((args['images'][0], ), dtype=int)
-
+            
+            ### create a list of starting indices along the latitude dimension ###
             if args['images'][1] > 1 and domain_size[1] > args['image_size'][1] + args['images'][1]:
                 start_indices_lat = np.linspace(0, domain_size[1] - args['image_size'][1], args['images'][1]).astype(int)
             else:
@@ -294,7 +334,7 @@ if __name__ == '__main__':
 
             if args['shuffle_images']:
                 np.random.shuffle(image_order)
-
+            
             images_to_keep = np.random.random(size=len(image_order)) <= args["image_fraction"]
             
             for i, image_start_indices in enumerate(image_order):
@@ -323,12 +363,13 @@ if __name__ == '__main__':
                 flip_lon = np.random.random() <= args['flip_chance_lon']
                 flip_lat = np.random.random() <= args['flip_chance_lat']
 
-                ### before flipping images, we will apply the necessary changes to the wind components to account for reflections ###
+                # before flipping images, we will apply the necessary changes to the wind components to account for reflections
                 if flip_lon and "u" in args["variables"]:
                     new_variables_dataset["u"] = -new_variables_dataset["u"]  # need to reverse u-wind component if flipping the longitude axis
                 if flip_lat and "v" in args["variables"]:
                     new_variables_dataset["v"] = -new_variables_dataset["v"]  # need to reverse v-wind component if flipping the latitude axis
-
+                
+                # normalize variables and convert dataset to a tensor
                 new_variables_dataset = data_utils.normalize_variables(new_variables_dataset).to_array().transpose(*transpose_dims, 'pressure_level', 'variable')
                 input_tensor = tf.convert_to_tensor(new_variables_dataset[start_index_lon:end_index_lon, start_index_lat:end_index_lat, :, :], dtype=tf.float16)
                 
@@ -336,25 +377,25 @@ if __name__ == '__main__':
                 
                 ### rotate input variables image ###
                 if flip_lon:
-                    input_tensor = tf.reverse(input_tensor, axis=[0])  # Reverse values along the longitude dimension
+                    input_tensor = tf.reverse(input_tensor, axis=[0])  # reverse values along the longitude dimension
                 if flip_lat:
-                    input_tensor = tf.reverse(input_tensor, axis=[1])  # Reverse values along the latitude dimension
-
+                    input_tensor = tf.reverse(input_tensor, axis=[1])  # reverse values along the latitude dimension
+                
+                ### add salt and pepper noise to images ###
                 if args['noise_fraction'] > 0:
-                    ### Add salt and pepper noise to images ###
                     input_tensor = tf.where(random_values < args['noise_fraction'] / 2, 0.0, input_tensor)  # add 0s to image
                     input_tensor = tf.where(random_values > 1.0 - (args['noise_fraction'] / 2), 1.0, input_tensor)  # add 1s to image
                 
+                ### combine pressure level and variables dimensions, making the images 2D (excluding the final dimension) ###
                 if args['num_dims'][0] == 2:
-                    ### Combine pressure level and variables dimensions, making the images 2D (excluding the final dimension) ###
                     input_tensor_shape_3d = input_tensor.shape
                     input_tensor = tf.reshape(input_tensor, [input_tensor_shape_3d[0], input_tensor_shape_3d[1], input_tensor_shape_3d[2] * input_tensor_shape_3d[3]])
 
                 ### process satellite image ###
                 if load_satellite:
-                    new_satellite_dataset = satellite_dataset.copy()  # copy satellite dataset to isolate it in memory
-                    new_satellite_dataset = data_utils.normalize_satellite(new_satellite_dataset).to_array().transpose(*transpose_dims, 'variable')
-                    satellite_tensor = tf.convert_to_tensor(new_satellite_dataset[start_index_lon:end_index_lon, start_index_lat:end_index_lat], dtype=tf.float16)
+                    
+                    # convert satellite dataset to a tensor
+                    satellite_tensor = tf.convert_to_tensor(Tb[start_index_lon:end_index_lon, start_index_lat:end_index_lat], dtype=tf.float16)
                     
                     ### rotate satellite image ###
                     if flip_lon:
@@ -362,16 +403,18 @@ if __name__ == '__main__':
                     if flip_lat:
                         satellite_tensor = tf.reverse(satellite_tensor, axis=[1])  # Reverse values along the latitude dimension
                     
+                    ### add salt and pepper noise to the satellite image ###
                     if args['noise_fraction'] > 0:
                         satellite_tensor = tf.where(random_values < args['noise_fraction'] / 2, 0.0, satellite_tensor)  # add 0s to image
                         satellite_tensor = tf.where(random_values > 1.0 - (args['noise_fraction'] / 2), 1.0, satellite_tensor)  # add 1s to image
                     
+                    ### if using 3D inputs, turn the satellite dataset into a 3D image ###
                     if args['num_dims'][0] == 3:
                         satellite_tensor = tf.expand_dims(satellite_tensor, axis=2)  # create a vertical dimension
-                        satellite_tensor = tf.tile(satellite_tensor, (1, 1, len(args['pressure_levels']), 1))
+                        satellite_tensor = tf.tile(satellite_tensor, (1, 1, len(args['pressure_levels']), 1))  # duplicate image on every pressure level
                     
-                    input_tensor = tf.concat([input_tensor, satellite_tensor], axis=-1)
-                    
+                    input_tensor = tf.concat([input_tensor, satellite_tensor], axis=-1)  # concatenate variables and satellite data
+                
                 ### add input images to tensorflow dataset ###
                 input_tensor_for_timestep = tf.data.Dataset.from_tensors(input_tensor)
                 if 'input_tensors_for_month' not in locals():
@@ -381,24 +424,25 @@ if __name__ == '__main__':
 
                 front_tensor = tf.convert_to_tensor(front_image, dtype=tf.int32)
                 
+                ### rotate the fronts/labels ###
                 if flip_lon:
-                    front_tensor = tf.reverse(front_tensor, axis=[0])  # Reverse values along the longitude dimension
+                    front_tensor = tf.reverse(front_tensor, axis=[0])  # reverse values along the longitude dimension
                 if flip_lat:
-                    front_tensor = tf.reverse(front_tensor, axis=[1])  # Reverse values along the latitude dimension
+                    front_tensor = tf.reverse(front_tensor, axis=[1])  # reverse values along the latitude dimension
 
+                ### if using 3D inputs, turn the fronts dataset into a 3D image ###
                 if args['num_dims'][1] == 3:
-                    # Make the front object images 3D, with the size of the 3rd dimension equal to the number of pressure levels
                     front_tensor = tf.tile(front_tensor, (1, 1, len(args['pressure_levels'])))
                 else:
                     front_tensor = front_tensor[:, :, 0]
 
                 front_tensor = tf.cast(tf.one_hot(front_tensor, num_front_types), tf.float16)  # One-hot encode the labels
-                front_tensor_for_timestep = tf.data.Dataset.from_tensors(front_tensor)
+                front_tensor_for_timestep = tf.data.Dataset.from_tensors(front_tensor)  # convert fronts into a tensorflow dataset
                 if 'front_tensors_for_month' not in locals():
                     front_tensors_for_month = front_tensor_for_timestep
                 else:
                     front_tensors_for_month = front_tensors_for_month.concatenate(front_tensor_for_timestep)
-
+                
             timesteps_kept += 1
         else:
             timesteps_discarded += 1

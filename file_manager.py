@@ -2,7 +2,7 @@
 Functions in this code manage data files and models.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.10.11
+Script version: 2024.11.15
 """
 
 import argparse
@@ -274,14 +274,23 @@ class DataFileLoader:
             self.files.extend(glob(glob_str))
         self.files = [sorted(self.files)]
         
-    def add_file_list(self, file_dir, data_type):
+    def add_file_list(self, file_dir, data_type, ignore_domain=False):
         """
         Add another file list.
+        
+        ignore_domain: bool
+            Do not consider the domain when matching files (i.e. match files regardless of domain). Only use this when
+                trying to pair front files with ERA5 or some other netcdf files, otherwise you may run into bugs.
         """
         num_lists = len(self.files)  # the current number of file lists
         
         if data_type == 'fronts' and self._file_format != 'tensorflow':
             data_type = 'FrontObjects'
+            new_domains = ['full', ]
+        else:
+            new_domains = ['global', ]
+            if ignore_domain:
+                raise ValueError("Cannot ignore domain unless data_type is 'fronts'")
         
         if self._file_format in ['grib', 'netcdf']:
             glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_{domain}{self._file_extension}'
@@ -289,7 +298,7 @@ class DataFileLoader:
                          for mo in self._months
                          for dy in self._days
                          for hr in self._hours
-                         for domain in self._domains]
+                         for domain in new_domains]
         else:  # tensorflow
             glob_strs = [f'{file_dir}/{data_type}_{yr}{mo}{self._file_extension}'
                          for yr in self._years
@@ -317,6 +326,11 @@ class DataFileLoader:
         if len(current_basename_info[0]) == 2:
             [file_info.insert(1, 'f000') for file_info in current_basename_info]
         
+        # remove the domain from the information arrays (if requested)
+        if ignore_domain:
+            control_basename_info = [file_info[:-1] for file_info in control_basename_info]
+            current_basename_info = [file_info[:-1] for file_info in current_basename_info]
+
         # find indices where all file details match
         index_pairs = np.array([[data_idx, current_basename_info.index(file_info)] for data_idx, file_info in enumerate(control_basename_info) if file_info in current_basename_info])
         

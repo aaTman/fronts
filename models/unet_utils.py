@@ -8,14 +8,14 @@ Functions for building components of U-Net models:
     - Attention U-Net
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.10.11
+Script version: 2024.11.15
 """
 
 import numpy as np
 from tensorflow.keras.layers import Activation, Conv2D, Conv3D, BatchNormalization, MaxPooling2D, MaxPooling3D, UpSampling2D, UpSampling3D
 from tensorflow.keras import layers
 import tensorflow as tf
-import custom_activations
+from . import custom_activations
 
 
 def attention_gate(
