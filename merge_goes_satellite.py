@@ -2,7 +2,7 @@
 Script that processes raw GOES data into smaller netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.25
+Script version: 2024.12.20
 """
 import argparse
 import datetime as dt
@@ -17,7 +17,7 @@ import xarray as xr
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--satellite_indir', type=str, required=True, help='Parent input directory for the raw satellite data.')
-    parser.add_argument('--init_time', type=str, required=True, help='Initialization time of the model. Format: YYYY-MM-DDTHH.')
+    parser.add_argument('--init_time', type=str, required=True, help='Initialization time of the model. Format: YYYY-MM-DD-HH.')
     parser.add_argument('--netcdf_outdir', type=str, required=True, help='Output directory for the processed satellite netCDF files.')
     parser.add_argument('--band_nums', type=int, nargs='+',
         help='Band numbers to include in the final datasets. If this argument is not passed, all band numbers (1-16) will be included.')

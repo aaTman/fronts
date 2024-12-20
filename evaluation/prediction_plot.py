@@ -2,9 +2,7 @@
 Plot model predictions.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.3
-
-TODO: Fix colorbar position issues
+Script version: 2024.12.20
 """
 import itertools
 import argparse
@@ -26,7 +24,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--init_time', type=int, nargs=4, help='Date and time of the data. Pass 4 ints in the following order: year, month, day, hour')
     parser.add_argument('--domain', type=str, required=True, help='Domain of the data.')
-    parser.add_argument('--domain_images', type=int, nargs=2, default=[1, 1], help='Number of images for each dimension the final stitched map for predictions: lon, lat')
     parser.add_argument('--forecast_hour', type=int, help='Forecast hour for the GDAS data')
     parser.add_argument('--model_dir', type=str, required=True, help='Directory for the models.')
     parser.add_argument('--model_number', type=int, required=True, help='Model number.')
@@ -46,7 +43,7 @@ if __name__ == '__main__':
     if args['deterministic'] and args['targets']:
         raise TypeError("Cannot plot deterministic splines and ground truth targets at the same time. Only one of --deterministic, --targets may be passed")
 
-    DEFAULT_COLORBAR_POSITION = {'conus': 0.75, 'full': 0.85, 'global': 0.74}
+    DEFAULT_COLORBAR_POSITION = {'conus': 0.75, 'full': 0.85, 'MERGIR': 0.9, 'global': 0.74}
     cbar_position = DEFAULT_COLORBAR_POSITION[args['domain']]
 
     model_properties = pd.read_pickle(f"{args['model_dir']}/model_{args['model_number']}/model_{args['model_number']}_properties.pkl")
@@ -69,23 +66,22 @@ if __name__ == '__main__':
         plot_filename = '%s/model_%d/maps/model_%d_%d%02d%02d%02d_%s.png' % (args['model_dir'], args['model_number'], args['model_number'], year, month, day, hour, args['domain'])
         probs_ds = xr.open_mfdataset(probs_file).sel(time=['%d-%02d-%02dT%02d' % (year, month, day, hour), ])
     except OSError:
-        subdir_base = '%s_%dx%d' % (args['domain'], args['domain_images'][0], args['domain_images'][1])
-        probs_dir = f"{args['model_dir']}/model_{args['model_number']}/probabilities/{subdir_base}"
+        probs_dir = f"{args['model_dir']}/model_{args['model_number']}/predictions"
 
         if args['forecast_hour'] is not None:
             timestep = np.datetime64('%d-%02d-%02dT%02d' % (year, month, day, hour)).astype(object)
             forecast_timestep = timestep if args['forecast_hour'] == 0 else timestep + np.timedelta64(args['forecast_hour'], 'h').astype(object)
             new_year, new_month, new_day, new_hour = forecast_timestep.year, forecast_timestep.month, forecast_timestep.day, forecast_timestep.hour - (forecast_timestep.hour % 3)
             fronts_file = '%s/%s%s/FrontObjects_%s%s%s%02d_full.nc' % (args['fronts_netcdf_indir'], new_year, new_month, new_year, new_month, new_day, new_hour)
-            filename_base = f'model_%d_{year}%02d%02d%02d_%s_%s_f%03d_%dx%d' % (args['model_number'], month, day, hour, args['domain'], args['data_source'], args['forecast_hour'], args['domain_images'][0], args['domain_images'][1])
+            filename_base = f'model_%d_{year}%02d%02d%02d_%s_%s_f%03d' % (args['model_number'], month, day, hour, args['domain'], args['data_source'], args['forecast_hour'])
         else:
             fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_full.nc' % (args['fronts_netcdf_indir'], year, month, year, month, day, hour)
-            filename_base = f'model_%d_{year}%02d%02d%02d_%s_%dx%d' % (args['model_number'], month, day, hour, args['domain'], args['domain_images'][0], args['domain_images'][1])
+            filename_base = f'model_%d_{year}%02d%02d%02d_%s' % (args['model_number'], month, day, hour, args['domain'])
             args['data_source'] = 'era5'
-
-        plot_filename = '%s/model_%d/maps/%s/%s-same.png' % (args['model_dir'], args['model_number'], subdir_base, filename_base)
+        
+        plot_filename = '%s/model_%d/maps/%s-same.png' % (args['model_dir'], args['model_number'], filename_base)
         probs_file = f'{probs_dir}/{filename_base}_probabilities.nc'
-        probs_ds = xr.open_mfdataset(probs_file)
+        probs_ds = xr.open_dataset(probs_file)
 
     try:
         front_types = model_properties['dataset_properties']['front_types']
@@ -205,6 +201,6 @@ if __name__ == '__main__':
 
     ax.set_title('')
     ax.set_title(data_title, loc='left')
-    ax.set_title("Five-class Model Predictions", loc='right')
-    plt.savefig(plot_filename, bbox_inches='tight', dpi=300)
+    ax.set_title("model number: %d" % args['model_number'], loc='right')
+    plt.savefig(plot_filename, bbox_inches='tight', dpi=500)
     plt.close()

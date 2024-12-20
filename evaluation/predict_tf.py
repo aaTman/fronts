@@ -4,7 +4,7 @@
 Generate predictions using a model with tensorflow datasets.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.21
+Script version: 2024.12.20
 """
 import argparse
 import sys
@@ -110,13 +110,6 @@ if __name__ == '__main__':
             missing_fronts = "%d-%02d" % (year, month) in missing_fronts_ind
             if missing_fronts:
                 missing_indices = np.append(missing_indices, missing_fronts_ind["%d-%02d" % (year, month)])
-
-            model_uses_satellite = any(['band_' in var for var in model_properties['dataset_properties']['variables']])
-            if model_uses_satellite and "%d-%02d" % (year, month) in missing_satellite_ind:
-                missing_indices = np.append(missing_indices, missing_satellite_ind["%d-%02d" % (year, month)])
-                missing_indices = np.unique(missing_indices.flatten())
-
-            if missing_fronts or model_uses_satellite:
                 if hour_interval == 6:
                     missing_indices = np.array([int(ind / 2) for ind in missing_indices if ind % 2 == 0])
                 time_array = np.delete(time_array, missing_indices.astype('int32'))

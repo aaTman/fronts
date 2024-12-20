@@ -2,7 +2,7 @@
 Function that trains a new U-Net model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.25
+Script version: 2024.12.20
 """
 import argparse
 import pandas as pd
@@ -396,11 +396,10 @@ if __name__ == "__main__":
     train_files_obj.add_file_list(args['tf_indirs'][0], data_type='fronts')
     training_inputs, training_labels = train_files_obj.files
     
-    # Shuffle monthly data lazily
-    if args['shuffle'] == 'lazy':
-        training_files = list(zip(training_inputs, training_labels))
-        np.random.shuffle(training_files)
-        training_inputs, training_labels = zip(*training_files)
+    ### shuffle the months ###
+    training_files = list(zip(training_inputs, training_labels))
+    np.random.shuffle(training_files)
+    training_inputs, training_labels = zip(*training_files)
 
     training_dataset = data_utils.combine_datasets(training_inputs, training_labels)
     images_in_training_dataset = len(training_dataset)

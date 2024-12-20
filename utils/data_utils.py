@@ -6,7 +6,9 @@ References
 * Snyder 1987: https://doi.org/10.3133/pp1395
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.11.15
+Script version: 2024.12.20
+
+TODO: Finish adding masks for xarray datasets
 """
 
 import pandas as pd
@@ -14,6 +16,7 @@ from shapely.geometry import LineString
 import numpy as np
 import xarray as xr
 import tensorflow as tf
+import regionmask
 
 
 # Each variable has parameters in the format of [max, min]
@@ -34,8 +37,8 @@ normalization_parameters = {
     'u_surface': [36., -35.], 'u_1013': [36., -35.], 'u_1000': [38., -35.], 'u_950': [48., -55.], 'u_900': [59., -58.], 'u_850': [59., -58.],
     'v_surface': [30., -35.], 'v_1013': [30., -35.], 'v_1000': [35., -38.], 'v_950': [55., -56.], 'v_900': [58., -59.], 'v_850': [58., -59.],
     'z_1013': [40., -82.], 'z_1000': [48., -69.], 'z_950': [86., -27.], 'z_900': [127., 17.], 'z_850': [174., 63.],
-    'band_1': [0., 1.], 'band_2': [0., 1.], 'band_7': [200., 350.], 'band_8': [200., 300.], 'band_9': [200., 300.], 'band_10': [200., 325.],
-    'band_13': [200., 330.], 'band_16': [200., 300.]}
+    'CMI_C01': [0., 1.], 'CMI_C02': [0., 1.], 'CMI_C07': [200., 350.], 'CMI_C08': [200., 300.], 'CMI_C09': [200., 300.], 'CMI_C10': [200., 325.],
+    'CMI_C13': [200., 330.], 'CMI_C16': [200., 300.]}
 
 # default values for extents of domains [start lon, end lon, start lat, end lat]
 DOMAIN_EXTENTS = {'atlantic': [290, 349.75, 16, 55.75],
@@ -743,3 +746,53 @@ def lambert_conformal_to_cartesian(
     y = rho0 - rho * np.cos(n * (lon - lon_ref))
 
     return x, y
+
+
+def mask_xarray_dataset(ds, mask, lon='longitude', lat='latitude'):
+    """
+    Apply a geospatial mask from the regionmask package to an Xarray dataset.
+
+    Parameters
+    ----------
+    ds: xarray Dataset
+        Xarray dataset that must have longitude and latitude dimensions.
+    mask: str
+        Geospatial mask to apply to the dataset.
+    lon: str
+        Longitude dimension key in the xarray dataset.
+    lat: str
+        Latitude dimension key in the xarray dataset.
+
+    Returns
+    -------
+    masked_ds: xarray Dataset
+        Masked xarray dataset.
+    """
+    # {region_key: region_index}
+    regions_crossing_prime_meridian = ["north_atlantic_ocean"]
+    ocean_basins = {"arctic_ocean": [0, 13, 31, 32, 40, 47, 56, 57],
+                    "north_atlantic_ocean": [2, 37, 60, 83, 88, 99, 100],
+                    "south_atlantic_ocean": [6, ],
+                    "indian_ocean": [5, 10, 12, 36, 43, 44, 50, 52, 61, 90, 105],
+                    "north_pacific_ocean": [3, 8, 20, 59],
+                    "south_pacific_ocean": [4, 9, 27, 74, 80, 85, 86],
+                    "southern_ocean": [1, 23, 26, 38, 53, 54, 58]}
+    
+    region_is_ocean_basin = mask in ocean_basins
+    region_crosses_prime_meridian = mask in regions_crossing_prime_meridian
+
+    if region_is_ocean_basin:
+        regions = regionmask.defined_regions.natural_earth_v5_1_2.ocean_basins_50
+        indices = ocean_basins[mask]
+    
+    region_mask = xr.merge([(regions.mask(ds[lon], ds[lat]) == i).expand_dims({"index": np.atleast_1d(i)}) for i in indices]).max('index')['mask']
+    masked_ds = ds.where(region_mask, 1, 0)
+
+    if region_crosses_prime_meridian:
+        lons = masked_ds[lon]
+        lon_east_hemi, lon_west_hemi = lons[lons <= 180], lons[lons > 180]
+        masked_ds = masked_ds.reindex({lon: np.concatenate([lon_west_hemi, lon_east_hemi])})
+        new_lons = np.concatenate([lon_west_hemi, lon_east_hemi + 360])
+        masked_ds[lon] = new_lons
+
+    return masked_ds

@@ -2,7 +2,9 @@
 Convert netCDF files containing variable, satellite, and frontal boundary data into tensorflow datasets for model training.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.11.15
+Script version: 2024.12.20
+
+TODO: Finish GOES implementation
 """
 import argparse
 import itertools
@@ -20,20 +22,17 @@ import xarray as xr
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--variables_netcdf_indir', type=str, required=True,
-        help="Input directory for the netCDF files containing variable data.")
-    parser.add_argument('--fronts_netcdf_indir', type=str, required=False,
-        help="Input directory for the netCDF files containing frontal boundary data.")
-    parser.add_argument('--satellite_netcdf_indir', type=str, required=False,
-        help="Input directory for the netCDF files containing GOES satellite data.")
-    parser.add_argument('--tf_outdir', type=str, required=True,
-        help="Output directory for the generated tensorflow datasets.")
+    parser.add_argument('--variables_indir', type=str, required=True, help="Input directory for the netCDF files containing variable data.")
+    parser.add_argument('--fronts_indir', type=str, help="Input directory for the netCDF files containing frontal boundary data.")
+    parser.add_argument('--mergir_indir', type=str, help="Input directory for the netCDF files containing MERGIR data.")
+    parser.add_argument('--goes_indir', type=str, help="Input directory for the netCDF files containing GOES satellite data.")
+    parser.add_argument('--tf_outdir', type=str, required=True, help="Output directory for the generated tensorflow datasets.")
     parser.add_argument('--year_and_month', type=int, nargs=2, required=True,
         help="Year and month for the netcdf data to be converted to tensorflow datasets.")
     parser.add_argument('--data_source', type=str, default='era5', help="Data source or model containing the variable data.")
     parser.add_argument('--front_types', type=str, nargs='+',
-        help="Code(s) for the front types that will be generated in the tensorflow datasets. Refer to documentation in 'utils.data_utils.reformat_fronts' "
-             "for more information on these codes.")
+        help="Code(s) for the front types that will be generated in the tensorflow datasets. Refer to documentation in "
+             "'utils.data_utils.reformat_fronts' for more information on these codes.")
     parser.add_argument('--variables', type=str, nargs='+', required=True, help='Variables to select')
     parser.add_argument('--pressure_levels', type=str, nargs='+', help='Variables pressure levels to select')
     parser.add_argument('--num_dims', type=int, nargs=2, default=[3, 3], help='Number of dimensions in the variables and front object images, repsectively.')
@@ -88,18 +87,18 @@ if __name__ == '__main__':
     all_sat_vars: Satellite variables
     """
     all_data_vars = ['T', 'Td', 'sp_z', 'u', 'v', 'theta_w', 'r', 'RH', 'Tv', 'Tw', 'theta_e', 'q', 'theta', 'theta_v']
-    all_sat_vars = ['Tb',]
-    
+    all_goes_vars = ['CMI_C01', 'CMI_C02', 'CMI_C07', 'CMI_C08', 'CMI_C09', 'CMI_C10', 'CMI_C13', 'CMI_C16']
     all_pressure_levels = ['surface', '1000', '950', '900', '850'] if args['data_source'] == 'era5' else ['surface', '1013', '1000', '950', '900', '850', '700', '500']
     
     # check for invalid variables
-    invalid_vars = [var for var in args['variables'] if var not in all_data_vars and var not in all_sat_vars]
+    invalid_vars = [var for var in args['variables'] if var not in all_data_vars and var not in all_goes_vars and var == 'Tb']
     assert len(invalid_vars) == 0, 'Invalid variables (%d): %s' % (len(invalid_vars), ', '.join(invalid_vars))
     
-    data_vars = [var for var in args['variables'] if var in all_data_vars]
-    sat_vars = [var for var in args['variables'] if var in all_sat_vars]
+    data_vars = [var for var in args['variables'] if var in all_data_vars]  # ERA5 or model variables
+    goes_vars = [var for var in args['variables'] if var in all_goes_vars]  # GOES satellite variables
     
-    load_satellite = args['satellite_netcdf_indir'] is not None and len(sat_vars) > 0  # boolean flag that says if satellite data will be loaded
+    load_mergir = 'Tb' in args['variables']  # load MERGIR data if brightness temperature (Tb) is requested
+    load_goes = args['goes_indir'] is not None and len(goes_vars) > 0  # load GOES data if any satellite bands are requested
 
     os.makedirs(args['tf_outdir'], exist_ok=True)  # ensure that a folder exists for the dataset
     
@@ -152,12 +151,20 @@ if __name__ == '__main__':
     tf.random.set_seed(args["seed"])
     np.random.seed(args["seed"])
     
-    file_obj = fm.DataFileLoader(args['variables_netcdf_indir'], 'era5', 'netcdf', years=year, months=month, domains='global')
-    file_obj.add_file_list(args['fronts_netcdf_indir'], 'fronts', ignore_domain=True)
-    ### add satellite data files ###
-    if load_satellite:
-        file_obj.add_file_list(args['satellite_netcdf_indir'], 'MERGIR')
-        variables_netcdf_files, fronts_netcdf_files, satellite_netcdf_files = file_obj.files
+    file_obj = fm.DataFileLoader(args['variables_indir'], args['data_source'], 'netcdf', years=year, months=month, domains='global')
+    file_obj.add_file_list(args['fronts_indir'], 'fronts', ignore_domain=True)
+    
+    ### add MERGIR/GOES data files ###
+    if load_mergir and load_goes:
+        file_obj.add_file_list(args['mergir_indir'], 'MERGIR')
+        file_obj.add_file_list(args['goes_indir'], 'goes')
+        variables_netcdf_files, fronts_netcdf_files, mergir_netcdf_files, goes_netcdf_files = file_obj.files
+    elif load_mergir:
+        file_obj.add_file_list(args['mergir_indir'], 'MERGIR')
+        variables_netcdf_files, fronts_netcdf_files, mergir_netcdf_files = file_obj.files
+    elif load_goes:
+        file_obj.add_file_list(args['goes_indir'], 'goes')
+        variables_netcdf_files, fronts_netcdf_files, goes_netcdf_files = file_obj.files
     else:
         variables_netcdf_files, fronts_netcdf_files = file_obj.files
     
@@ -169,7 +176,7 @@ if __name__ == '__main__':
             current_timestep = np.datetime64(f'{file[-18:-14]}-{file[-14:-12]}-{file[-12:-10]}T{file[-10:-8]}')
             previous_timestep = (current_timestep - np.timedelta64(3, "h")).astype(object)
             prev_year, prev_month, prev_day, prev_hour = previous_timestep.year, previous_timestep.month, previous_timestep.day, previous_timestep.hour
-            previous_fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_full.nc' % (args['fronts_netcdf_indir'], prev_year, prev_month, prev_year, prev_month, prev_day, prev_hour)
+            previous_fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_full.nc' % (args['fronts_indir'], prev_year, prev_month, prev_year, prev_month, prev_day, prev_hour)
             if os.path.isfile(previous_fronts_file):
                 previous_fronts_netcdf_files.append(previous_fronts_file)  # Add the previous fronts to the dataset
             else:
@@ -180,22 +187,37 @@ if __name__ == '__main__':
             for file in files_to_remove:
                 index_to_pop = fronts_netcdf_files.index(file)
                 variables_netcdf_files.pop(index_to_pop), fronts_netcdf_files.pop(index_to_pop)
-                if load_satellite:
-                    satellite_netcdf_files.pop(index_to_pop)
+                if load_mergir:
+                    mergir_netcdf_files.pop(index_to_pop)
+                if load_goes:
+                    goes_netcdf_files.pop(index_to_pop)
     
+    # if not looking over CONUS or the HRRR domain, remove non-synoptic hours (3, 9, 15, 21z)
     if args['domain'] not in ['conus', 'hrrr']:
         synoptic_ind = [variables_netcdf_files.index(file) for file in variables_netcdf_files if any(['%02d_' % hr in file for hr in [0, 6, 12, 18]])]
         variables_netcdf_files = list([variables_netcdf_files[i] for i in synoptic_ind])
         fronts_netcdf_files = list([fronts_netcdf_files[i] for i in synoptic_ind])
-        if load_satellite:
-            satellite_netcdf_files = list([satellite_netcdf_files[i] for i in synoptic_ind])
+        if load_mergir:
+            mergir_netcdf_files = list([mergir_netcdf_files[i] for i in synoptic_ind])
+        if load_goes:
+            goes_netcdf_files = list([goes_netcdf_files[i] for i in synoptic_ind])
         
     if args['shuffle_timesteps']:
-        zipped_list = list(zip(variables_netcdf_files, fronts_netcdf_files)) if not load_satellite else list(zip(variables_netcdf_files, fronts_netcdf_files, satellite_netcdf_files))
-        np.random.shuffle(zipped_list)
-        if load_satellite:
-            variables_netcdf_files, fronts_netcdf_files, satellite_netcdf_files = zip(*zipped_list)
+        if load_mergir and load_goes:
+            zipped_list = list(zip(variables_netcdf_files, fronts_netcdf_files, mergir_netcdf_files, goes_netcdf_files))
+            np.random.shuffle(zipped_list)
+            variables_netcdf_files, fronts_netcdf_files, mergir_netcdf_files, goes_netcdf_files = zip(*zipped_list)
+        elif load_mergir:
+            zipped_list = list(zip(variables_netcdf_files, fronts_netcdf_files, mergir_netcdf_files))
+            np.random.shuffle(zipped_list)
+            variables_netcdf_files, fronts_netcdf_files, mergir_netcdf_files = zip(*zipped_list)
+        elif load_goes:
+            zipped_list = list(zip(variables_netcdf_files, fronts_netcdf_files, goes_netcdf_files))
+            np.random.shuffle(zipped_list)
+            variables_netcdf_files, fronts_netcdf_files, goes_netcdf_files = zip(*zipped_list)
         else:
+            zipped_list = list(zip(variables_netcdf_files, fronts_netcdf_files))
+            np.random.shuffle(zipped_list)
             variables_netcdf_files, fronts_netcdf_files = zip(*zipped_list)
 
     extent_crosses_meridian = False
@@ -274,30 +296,30 @@ if __name__ == '__main__':
             
             variables_dataset = variables_dataset.isel(time=0).transpose(*transpose_dims, 'pressure_level').astype('float16')
             
-            ### open satellite data ###
-            if load_satellite:
-                satellite_dataset = xr.open_dataset(satellite_netcdf_files[timestep_no], engine='netcdf4').rename({'lon': 'longitude',
-                                                                                                                         'lat': 'latitude'})
+            ### open MERGIR data ###
+            if load_mergir:
+                mergir_dataset = xr.open_dataset(mergir_netcdf_files[timestep_no], engine='netcdf4').rename({'lon': 'longitude',
+                                                                                                             'lat': 'latitude'})
                 # pull original lat/lon coordinates from MERGIR dataset
-                satellite_lons = satellite_dataset['longitude'].values
-                satellite_lats = satellite_dataset['latitude'].values
-                satellite_lons = np.where(satellite_lons < 0, satellite_lons + 360, satellite_lons)
+                mergir_lons = mergir_dataset['longitude'].values
+                mergir_lats = mergir_dataset['latitude'].values
+                mergir_lons = np.where(mergir_lons < 0, mergir_lons + 360, mergir_lons)
                 
                 # reformat coordinates and slice domain
-                satellite_dataset = satellite_dataset.assign_coords(longitude=satellite_lons)
-                satellite_dataset = satellite_dataset.reindex(longitude=sorted(satellite_lons), latitude=satellite_lats[::-1])
-                satellite_dataset = satellite_dataset.sel(**sel_kwargs).isel(time=0, **isel_kwargs).transpose(*transpose_dims)
+                mergir_dataset = mergir_dataset.assign_coords(longitude=mergir_lons)
+                mergir_dataset = mergir_dataset.reindex(longitude=sorted(mergir_lons), latitude=mergir_lats[::-1])
+                mergir_dataset = mergir_dataset.sel(**sel_kwargs).isel(time=0, **isel_kwargs).transpose(*transpose_dims)
             
-                # regrid the satellite data
-                Tb = satellite_dataset['Tb'].values
-                new_satellite_lons = satellite_dataset['longitude'].values
-                new_satellite_lats = satellite_dataset['latitude'].values
+                # regrid the MERGIR data
+                Tb = mergir_dataset['Tb'].values
+                new_mergir_lons = mergir_dataset['longitude'].values
+                new_mergir_lats = mergir_dataset['latitude'].values
                 variable_lons = variables_dataset['longitude'].values
                 variable_lats = variables_dataset['latitude'].values
                 new_lons, new_lats = np.meshgrid(variable_lons, variable_lats)
                 
-                # regrid and normalize the satellite data
-                Tb = scipy.interpolate.RegularGridInterpolator((new_satellite_lons, new_satellite_lats), Tb, method='nearest', bounds_error=False)((new_lons, new_lats)).transpose()[..., np.newaxis]
+                # regrid and normalize the mergir data
+                Tb = scipy.interpolate.RegularGridInterpolator((new_mergir_lons, new_mergir_lats), Tb, method='nearest', bounds_error=False)((new_lons, new_lats)).transpose()[..., np.newaxis]
                 Tb = (Tb - 197) / (329 - 197)  # min max normalization
                 Tb = np.nan_to_num(Tb)
 
@@ -391,29 +413,29 @@ if __name__ == '__main__':
                     input_tensor_shape_3d = input_tensor.shape
                     input_tensor = tf.reshape(input_tensor, [input_tensor_shape_3d[0], input_tensor_shape_3d[1], input_tensor_shape_3d[2] * input_tensor_shape_3d[3]])
 
-                ### process satellite image ###
-                if load_satellite:
+                ### process MERGIR image ###
+                if load_mergir:
                     
-                    # convert satellite dataset to a tensor
-                    satellite_tensor = tf.convert_to_tensor(Tb[start_index_lon:end_index_lon, start_index_lat:end_index_lat], dtype=tf.float16)
+                    # convert MERGIR dataset to a tensor
+                    mergir_tensor = tf.convert_to_tensor(Tb[start_index_lon:end_index_lon, start_index_lat:end_index_lat], dtype=tf.float16)
                     
-                    ### rotate satellite image ###
+                    ### rotate MERGIR image ###
                     if flip_lon:
-                        satellite_tensor = tf.reverse(satellite_tensor, axis=[0])  # Reverse values along the longitude dimension
+                        mergir_tensor = tf.reverse(mergir_tensor, axis=[0])  # Reverse values along the longitude dimension
                     if flip_lat:
-                        satellite_tensor = tf.reverse(satellite_tensor, axis=[1])  # Reverse values along the latitude dimension
+                        mergir_tensor = tf.reverse(mergir_tensor, axis=[1])  # Reverse values along the latitude dimension
                     
-                    ### add salt and pepper noise to the satellite image ###
+                    ### add salt and pepper noise to the MERGIR image ###
                     if args['noise_fraction'] > 0:
-                        satellite_tensor = tf.where(random_values < args['noise_fraction'] / 2, 0.0, satellite_tensor)  # add 0s to image
-                        satellite_tensor = tf.where(random_values > 1.0 - (args['noise_fraction'] / 2), 1.0, satellite_tensor)  # add 1s to image
+                        mergir_tensor = tf.where(random_values < args['noise_fraction'] / 2, 0.0, mergir_tensor)  # add 0s to image
+                        mergir_tensor = tf.where(random_values > 1.0 - (args['noise_fraction'] / 2), 1.0, mergir_tensor)  # add 1s to image
                     
-                    ### if using 3D inputs, turn the satellite dataset into a 3D image ###
+                    ### if using 3D inputs, turn the MERGIR dataset into a 3D image ###
                     if args['num_dims'][0] == 3:
-                        satellite_tensor = tf.expand_dims(satellite_tensor, axis=2)  # create a vertical dimension
-                        satellite_tensor = tf.tile(satellite_tensor, (1, 1, len(args['pressure_levels']), 1))  # duplicate image on every pressure level
+                        mergir_tensor = tf.expand_dims(mergir_tensor, axis=2)  # create a vertical dimension
+                        mergir_tensor = tf.tile(mergir_tensor, (1, 1, len(args['pressure_levels']), 1))  # duplicate image on every pressure level
                     
-                    input_tensor = tf.concat([input_tensor, satellite_tensor], axis=-1)  # concatenate variables and satellite data
+                    input_tensor = tf.concat([input_tensor, mergir_tensor], axis=-1)  # concatenate variables and MERGIR data
                 
                 ### add input images to tensorflow dataset ###
                 input_tensor_for_timestep = tf.data.Dataset.from_tensors(input_tensor)

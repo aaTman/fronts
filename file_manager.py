@@ -2,7 +2,7 @@
 Functions in this code manage data files and models.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.11.15
+Script version: 2024.12.19
 """
 
 import argparse
@@ -289,8 +289,6 @@ class DataFileLoader:
             new_domains = ['full', ]
         else:
             new_domains = ['global', ]
-            if ignore_domain:
-                raise ValueError("Cannot ignore domain unless data_type is 'fronts'")
         
         if self._file_format in ['grib', 'netcdf']:
             glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_{domain}{self._file_extension}'
@@ -341,7 +339,7 @@ class DataFileLoader:
         
     def _format_args(self):
         
-        if isinstance(self._years, int):
+        if isinstance(self._years, (int, np.int64)):
             self._years = [f'{self._years:04d}', ]
         elif self._years is not None:
             self._years = ['%04d' % yr for yr in self._years]

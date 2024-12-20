@@ -2,7 +2,7 @@
 Plot performance diagrams for a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.10.10
+Script version: 2024.12.20
 """
 import argparse
 import cartopy.crs as ccrs
@@ -14,7 +14,9 @@ import numpy as np
 import pandas as pd
 import pickle
 import xarray as xr
+import random
 from utils import data_utils, plotting
+from glob import glob
 
 
 if __name__ == '__main__':
@@ -22,16 +24,15 @@ if __name__ == '__main__':
     All arguments listed in the examples are listed via argparse in alphabetical order below this comment block.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('--confidence_level', type=int, default=95, help="Confidence interval. Options are: 90, 95, 99.")
     parser.add_argument('--dataset', type=str, help="'training', 'validation', or 'test'")
     parser.add_argument('--data_source', type=str, default='era5', help="Source of the variable data (ERA5, GDAS, etc.)")
-    parser.add_argument('--domain_images', type=int, nargs=2, help='Number of images for each dimension the final stitched map for predictions: lon, lat')
     parser.add_argument('--domain', type=str, required=True, help='Domain of the data.')
-    parser.add_argument('--forecast_hour', type=int, help='Forecast hour for the GDAS or GFS data.')
     parser.add_argument('--map_neighborhood', type=int, default=250,
         help="Neighborhood for the CSI map in kilometers. Options are: 50, 100, 150, 200, 250")
     parser.add_argument('--model_dir', type=str, required=True, help='Directory for the models.')
     parser.add_argument('--model_number', type=int, required=True, help='Model number.')
+    parser.add_argument('--confidence_level', type=float, default=95, help='Confidence level expressed as a percentage.')
+    parser.add_argument('--num_iterations', type=int, default=10000, help='Number of iterations to perform when bootstrapping the statistics.')
     parser.add_argument('--output_type', type=str, default='png', help="Output type for the image file.")
 
     args = vars(parser.parse_args())
@@ -44,40 +45,85 @@ if __name__ == '__main__':
         front_types = model_properties['dataset_properties']['front_types']
     except KeyError:
         front_types = model_properties['front_types']
-
-    stats_ds = xr.open_dataset('%s/model_%d/statistics/model_%d_statistics_%s_%s.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain'], args['dataset']))
-
+    
+    spatial_files = list(sorted(glob('%s/model_%d/statistics/model_%d_statistics_%s_*_spatial.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain']))))
+    temporal_files = list(sorted(glob('%s/model_%d/statistics/model_%d_statistics_%s_2019*_temporal.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain']))))
+    
+    spatial_ds = xr.open_mfdataset(spatial_files, combine='nested', concat_dim='time')
+    temporal_ds = xr.open_mfdataset(temporal_files, combine='nested', concat_dim='time')
+    
+    thresholds = temporal_ds['threshold'].values
+    time_array = temporal_ds['time'].values
+    
     if type(front_types) == str:
         front_types = [front_types, ]
+    num_front_types = len(front_types)
 
-    # Probability threshold where CSI is maximized for each front type and domain
-    max_csi_thresholds = dict()
+    for front_type in front_types:
+        
+        tp_array = np.zeros([args['num_iterations'], 5, 100])
+        fp_array = np.zeros([args['num_iterations'], 5, 100])
+        tn_array = np.zeros([args['num_iterations'], 5, 100])
+        fn_array = np.zeros([args['num_iterations'], 5, 100])
+        # POD_array = np.zeros([args['num_iterations'], 5, 100])  # probability of detection = TP / (TP + FN)
+        # SR_array = np.zeros([args['num_iterations'], 5, 100])  # success ratio = 1 - False Alarm Ratio = TP / (TP + FP)
+    
+        CI_lower_tp = np.zeros([5, 100])
+        CI_lower_fp = np.zeros([5, 100])
+        CI_lower_tn = np.zeros([5, 100])
+        CI_lower_fn = np.zeros([5, 100])
+        CI_upper_tp = np.zeros([5, 100])
+        CI_upper_fp = np.zeros([5, 100])
+        CI_upper_tn = np.zeros([5, 100])
+        CI_upper_fn = np.zeros([5, 100])
 
-    if args['domain'] not in list(max_csi_thresholds.keys()):
-        max_csi_thresholds[args['domain']] = dict()
+        num_timesteps = len(time_array)
+        selectable_indices = range(num_timesteps)
+        
+        true_positives_temporal = temporal_ds['tp_temporal_%s' % front_type].values
+        false_positives_temporal = temporal_ds['fp_temporal_%s' % front_type].values
+        true_negatives_temporal = temporal_ds['tn_temporal_%s' % front_type].values
+        false_negatives_temporal = temporal_ds['fn_temporal_%s' % front_type].values
 
-    for front_no, front_label in enumerate(front_types):
+        for iteration in range(args['num_iterations']):
+            print(f"Iteration {iteration}/{args['num_iterations']}", end='\r')
+            indices = random.choices(selectable_indices, k=num_timesteps)  # Select a sample equal to the total number of timesteps
+            tp_array[iteration, :, :] = np.sum(true_positives_temporal[indices, :, :], axis=0)
+            fp_array[iteration, :, :] = np.sum(false_positives_temporal[indices, :, :], axis=0)
+            tn_array[iteration, :, :] = np.sum(true_negatives_temporal[indices, :, :], axis=0)
+            fn_array[iteration, :, :] = np.sum(false_negatives_temporal[indices, :, :], axis=0)
 
-        if front_label not in list(max_csi_thresholds[args['domain']].keys()):
-            max_csi_thresholds[args['domain']][front_label] = dict()
+        print(f"Iteration {args['num_iterations']}/{args['num_iterations']}")
+        
+        lower_bound = (100 - args['confidence_level']) / 2
+        upper_bound = 100 - lower_bound
 
-        ################################ CSI and reliability diagrams (panels a and b) #################################
-        true_positives_temporal = stats_ds[f'tp_temporal_{front_label}'].values
-        false_positives_temporal = stats_ds[f'fp_temporal_{front_label}'].values
-        false_negatives_temporal = stats_ds[f'fn_temporal_{front_label}'].values
-        spatial_csi_ds = (stats_ds[f'tp_spatial_{front_label}'] / (stats_ds[f'tp_spatial_{front_label}'] + stats_ds[f'fp_spatial_{front_label}'] + stats_ds[f'fn_spatial_{front_label}'])).max('threshold')
-        thresholds = stats_ds['threshold'].values
+        # Calculate confidence intervals at each probability bin
+        for percent in np.arange(0, 100):
+            # lower bounds for confidence intervals
+            CI_lower_tp[:, percent] = np.percentile(tp_array[:, :, percent], q=lower_bound, axis=0)
+            CI_lower_fp[:, percent] = np.percentile(fp_array[:, :, percent], q=lower_bound, axis=0)
+            CI_lower_tn[:, percent] = np.percentile(tn_array[:, :, percent], q=lower_bound, axis=0)
+            CI_lower_fn[:, percent] = np.percentile(fn_array[:, :, percent], q=lower_bound, axis=0)
 
-        if args['confidence_level'] != 90:
-            CI_low, CI_high = (100 - args['confidence_level']) / 2, 50 + (args['confidence_level'] / 2)
-            CI_low, CI_high = '%.1f' % CI_low, '%.1f' % CI_high
-        else:
-            CI_low, CI_high = 5, 95
+            # lower bound for confidence intervals
+            CI_upper_tp[:, percent] = np.percentile(tp_array[:, :, percent], q=upper_bound, axis=0)
+            CI_upper_fp[:, percent] = np.percentile(fp_array[:, :, percent], q=upper_bound, axis=0)
+            CI_upper_tn[:, percent] = np.percentile(tn_array[:, :, percent], q=upper_bound, axis=0)
+            CI_upper_fn[:, percent] = np.percentile(fn_array[:, :, percent], q=upper_bound, axis=0)
+        
+        CI_lower_POD = CI_lower_tp / (CI_lower_tp + CI_upper_fn)
+        CI_upper_POD = CI_upper_tp / (CI_upper_tp + CI_lower_fn)
+        CI_lower_SR = CI_lower_tp / (CI_lower_tp + CI_upper_fp)
+        CI_upper_SR = CI_upper_tp / (CI_upper_tp + CI_lower_fp)
+        
+        CI_lower_HSS = 2 * ((CI_lower_tp * CI_lower_tn) - (CI_upper_fp * CI_upper_fn)) / (((CI_lower_tp + CI_upper_fn) * (CI_upper_fn + CI_lower_tn)) + ((CI_lower_tp + CI_upper_fp) * (CI_upper_fp + CI_lower_tn)))
+        CI_upper_HSS = 2 * ((CI_upper_tp * CI_upper_tn) - (CI_lower_fp * CI_lower_fn)) / (((CI_upper_tp + CI_lower_fn) * (CI_lower_fn + CI_upper_tn)) + ((CI_upper_tp + CI_lower_fp) * (CI_lower_fp + CI_upper_tn)))
 
-        # Confidence intervals for POD and SR
-        CI_POD = np.stack((stats_ds[f"POD_{CI_low}_{front_label}"].values, stats_ds[f"POD_{CI_high}_{front_label}"].values), axis=0)
-        CI_SR = np.stack((stats_ds[f"SR_{CI_low}_{front_label}"].values, stats_ds[f"SR_{CI_high}_{front_label}"].values), axis=0)
+        CI_POD = np.stack((CI_lower_POD, CI_upper_POD), axis=0)
+        CI_SR = np.stack((CI_lower_SR, CI_upper_SR), axis=0)
         CI_CSI = np.stack((CI_SR ** -1 + CI_POD ** -1 - 1.) ** -1, axis=0)
+        CI_HSS = np.stack((CI_lower_HSS, CI_upper_HSS), axis=0)
         CI_FB = np.stack(CI_POD * (CI_SR ** -1), axis=0)
 
         # Remove the zeros
@@ -89,7 +135,18 @@ if __name__ == '__main__':
         ### Statistics with shape (boundary, threshold) after taking the sum along the time axis (axis=0) ###
         true_positives_temporal_sum = np.sum(true_positives_temporal, axis=0)
         false_positives_temporal_sum = np.sum(false_positives_temporal, axis=0)
+        true_negatives_temporal_sum = np.sum(true_negatives_temporal, axis=0)
         false_negatives_temporal_sum = np.sum(false_negatives_temporal, axis=0)
+        
+        a = true_positives_temporal_sum
+        b = false_positives_temporal_sum
+        c = false_negatives_temporal_sum
+        d = true_negatives_temporal_sum
+        
+        spatial_csi_ds = (spatial_ds[f'tp_spatial_{front_type}'].sum('time') /
+                          (spatial_ds[f'tp_spatial_{front_type}'].sum('time') +
+                           spatial_ds[f'fp_spatial_{front_type}'].sum('time') +
+                           spatial_ds[f'fn_spatial_{front_type}'].sum('time'))).max('threshold')
 
         num_forecasts = true_positives_temporal_sum + false_positives_temporal_sum
         num_forecasts = num_forecasts[0, :]
@@ -100,7 +157,7 @@ if __name__ == '__main__':
         true_positives_diff = np.abs(np.diff(true_positives_temporal_sum))
         false_positives_diff = np.abs(np.diff(false_positives_temporal_sum))
         observed_relative_frequency = np.divide(true_positives_diff, true_positives_diff + false_positives_diff)
-
+        
         pod = np.divide(true_positives_temporal_sum, true_positives_temporal_sum + false_negatives_temporal_sum)  # Probability of detection
         sr = np.divide(true_positives_temporal_sum, true_positives_temporal_sum + false_positives_temporal_sum)  # Success ratio
 
@@ -134,17 +191,19 @@ if __name__ == '__main__':
         ### CSI and reliability lines for each boundary ###
         boundary_colors = ['red', 'purple', 'brown', 'darkorange', 'darkgreen']
         max_CSI_scores_by_boundary = np.zeros(shape=(5,))
+        max_HSS_scores_by_boundary = np.zeros(shape=(5,))
         for boundary, color in enumerate(boundary_colors):
             csi = np.power((1/sr[boundary]) + (1/pod[boundary]) - 1, -1)
             max_CSI_scores_by_boundary[boundary] = np.nanmax(csi)
             max_CSI_index = np.where(csi == max_CSI_scores_by_boundary[boundary])[0]
             max_CSI_threshold = thresholds[max_CSI_index][0]  # Probability threshold where CSI is maximized
-            max_csi_thresholds[args['domain']][front_label]['%s' % int((boundary + 1) * 50)] = np.round(max_CSI_threshold, 2)
+            max_HSS_scores_by_boundary = 2 * ((a * d) - (b * c)) / (((a + c) * (c + d)) + ((a + b) * (b + d)))
             max_CSI_pod = pod[boundary][max_CSI_index][0]  # POD where CSI is maximized
             max_CSI_sr = sr[boundary][max_CSI_index][0]  # SR where CSI is maximized
             max_CSI_fb = max_CSI_pod / max_CSI_sr  # Frequency bias
 
             cell_text.append([r'$\bf{%.3f}$' % max_CSI_scores_by_boundary[boundary] + r'$^{%.3f}_{%.3f}$' % (CI_CSI[1, boundary, max_CSI_index][0], CI_CSI[0, boundary, max_CSI_index][0]),
+                              r'$\bf{%.3f}$' % max_HSS_scores_by_boundary[boundary, max_CSI_index] + r'$^{%.3f}_{%.3f}$' % (CI_HSS[1, boundary, max_CSI_index][0], CI_HSS[0, boundary, max_CSI_index][0]),
                               r'$\bf{%.1f}$' % (max_CSI_pod * 100) + r'$^{%.1f}_{%.1f}$' % (CI_POD[1, boundary, max_CSI_index][0] * 100, CI_POD[0, boundary, max_CSI_index][0] * 100),
                               r'$\bf{%.1f}$' % ((1 - max_CSI_sr) * 100) + r'$^{%.1f}_{%.1f}$' % ((1 - CI_SR[1, boundary, max_CSI_index][0]) * 100, (1 - CI_SR[0, boundary, max_CSI_index][0]) * 100),
                               r'$\bf{%.3f}$' % max_CSI_fb + r'$^{%.3f}_{%.3f}$' % (CI_FB[1, boundary, max_CSI_index][0], CI_FB[0, boundary, max_CSI_index][0])])
@@ -203,7 +262,7 @@ if __name__ == '__main__':
             raise ValueError("%s domain is currently not supported for performance diagrams." % args["domain"])
 
         ############################################# Data table (panel c) #############################################
-        columns = ['CSI', 'POD %', 'FAR %', 'FB']  # Column names
+        columns = ['CSI', 'HSS', 'POD %', 'FAR %', 'FB']  # Column names
         rows = ['50 km', '100 km', '150 km', '200 km', '250 km']  # Row names
 
         table_axis = plt.axes(table_axis_extent)
@@ -232,7 +291,7 @@ if __name__ == '__main__':
         plotting.plot_background(extent=extent, ax=spatial_axis)
         norm_probs = colors.Normalize(vmin=0.1, vmax=1)
         spatial_csi_ds = xr.where(spatial_csi_ds >= 0.1, spatial_csi_ds, float("NaN"))
-        spatial_csi_ds.sel(boundary=args['map_neighborhood']).plot(ax=spatial_axis, x='longitude', y='latitude', norm=norm_probs,
+        spatial_csi_ds.sel(neighborhood=args['map_neighborhood']).plot(ax=spatial_axis, x='longitude', y='latitude', norm=norm_probs,
             cmap=csi_cmap, transform=ccrs.PlateCarree(), alpha=0.6, cbar_kwargs=cbar_kwargs)
         spatial_axis.set_title(spatial_axis_title_text)
         gl = spatial_axis.gridlines(draw_labels=True, zorder=0, dms=True, x_inline=False, y_inline=False)
@@ -251,18 +310,15 @@ if __name__ == '__main__':
         else:
             domain_text = args['domain']
 
-        plt.suptitle(f'Five-class model: %ss over %s domain' % (data_utils.FRONT_NAMES[front_label], domain_text), fontsize=20)  # Create and plot the main title
+        plt.suptitle(f'Five-class model: %ss over %s domain' % (data_utils.FRONT_NAMES[front_type], domain_text), fontsize=20)  # Create and plot the main title
 
-        filename = f"%s/model_%d/performance_%s_%s_%s_{args['data_source']}.{args['output_type']}" % (args['model_dir'], args['model_number'], front_label, args['dataset'], args['domain'])
+        filename = f"%s/model_%d/performance_%s_%s_%s_{args['data_source']}.{args['output_type']}" % (args['model_dir'], args['model_number'], front_type, args['dataset'], args['domain'])
         if args['data_source'] != 'era5':
             filename = filename.replace(f'.{args["output_type"]}', f'_f%03d.{args["output_type"]}' % args['forecast_hour'])  # Add forecast hour to the end of the filename
 
         plt.tight_layout()
         plt.savefig(filename, bbox_inches='tight', dpi=500)
         plt.close()
-
-    # Thresholds for creating deterministic splines with different front types and neighborhoods
-    model_properties['front_obj_thresholds'] = max_csi_thresholds
 
     with open(model_properties_filepath, 'wb') as f:
         pickle.dump(model_properties, f)

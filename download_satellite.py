@@ -2,7 +2,7 @@
 Download netCDF files containing GOES satellite data.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.29
+Script version: 2024.12.20
 """
 
 import argparse
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--netcdf_outdir', type=str, required=True, help="Output directory for the satellite netCDF files.")
     parser.add_argument('--satellite', type=str, default='goes16', help="Satellite source. Options are 'goes16', 'goes17', 'goes18', 'MERGIR'.")
-    parser.add_argument('--domain', type=str, default='full-disk', help="Domain of the satellite data. Options are 'full_disk', 'conus', 'meso'.")
+    parser.add_argument('--domain', type=str, default='full-disk', help="Domain of the satellite data. Options are 'full-disk', 'conus', 'meso'.")
     parser.add_argument('--product', type=str, default='ABI-L2-MCMIP', help="Satellite product to download.")
     parser.add_argument('--init_time', type=str, help="Initialization time for which to search for satellite data. Format: YYYY-MM-DD-HH.")
     parser.add_argument('--range', type=str, nargs=3,
