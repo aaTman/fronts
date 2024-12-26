@@ -2,7 +2,7 @@
 Script that processes raw GOES data into smaller netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.20
+Script version: 2024.12.26
 """
 import argparse
 import datetime as dt
@@ -97,7 +97,7 @@ if __name__ == '__main__':
         ds_merged['band_%d' % band_num] = (('longitude', 'latitude'), merged_data.astype(np.float32))
         ds_merged['band_%d' % band_num].attrs = ds_sat1[band_str].attrs
     
-    converted_ds_filepath = '%s/%d%02d/satellite_%d%02d%02d%02d_full.nc' % (args['netcdf_outdir'], year, month, year, month, day, hour)
+    converted_ds_filepath = '%s/%d%02d/goes-merged_%d%02d%02d%02d_full.nc' % (args['netcdf_outdir'], year, month, year, month, day, hour)
     converted_ds_exists = os.path.isfile(converted_ds_filepath)
     
     os.makedirs('%s/%d%02d' % (args['netcdf_outdir'], year, month), exist_ok=True)  # directory check

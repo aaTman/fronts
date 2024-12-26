@@ -2,7 +2,7 @@
 Generate predictions with a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.13
+Script version: 2024.12.26
 """
 import argparse
 import pandas as pd
@@ -14,6 +14,7 @@ import tensorflow as tf
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))  # this line allows us to import scripts outside the current directory
 from utils import data_utils
 import file_manager as fm
+import scipy
 
 
 def _add_image_to_map(stitched_map_probs: np.array,
@@ -387,6 +388,8 @@ if __name__ == '__main__':
     All arguments listed in the examples are listed via argparse in alphabetical order below this comment block.
     """
     parser = argparse.ArgumentParser()
+    parser.add_argument('--netcdf_indir', type=str, help='Main directory for the netcdf files containing variable data.')
+    parser.add_argument('--mergir_indir', type=str, help="Input directory for the netCDF files containing MERGIR data.")
     parser.add_argument('--init_time', type=int, nargs=4, help='Date and time of the data. Pass 4 ints in the following order: year, month, day, hour')
     parser.add_argument('--domain', type=str, help='Domain of the data.')
     parser.add_argument('--num_images', type=int, nargs=2, default=[1, 1], help='Number of images for each dimension the final stitched map for predictions: lon, lat')
@@ -396,7 +399,6 @@ if __name__ == '__main__':
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
     parser.add_argument('--model_dir', type=str, help='Directory for the models.')
     parser.add_argument('--model_number', type=int, help='Model number.')
-    parser.add_argument('--netcdf_indir', type=str, help='Main directory for the netcdf files containing variable data.')
     parser.add_argument('--data_source', type=str, default='era5', help='Data source for variables')
 
     args = vars(parser.parse_args())
@@ -426,6 +428,9 @@ if __name__ == '__main__':
         front_types = model_properties['front_types']
         variables = model_properties['variables']
         pressure_levels = model_properties['pressure_levels']
+    
+    load_mergir = 'Tb' in variables  # load MERGIR data if brightness temperature (Tb) is requested
+    variables = [var for var in variables if var != 'Tb']
 
     normalization_parameters = model_properties['normalization_parameters']
 
@@ -462,7 +467,12 @@ if __name__ == '__main__':
     ############################################### Load variable files ################################################
     variable_files_obj = fm.DataFileLoader(args['netcdf_indir'], data_type=args['data_source'], file_format='netcdf',
         years=int(args['init_time'][0]), months=int(args['init_time'][1]), days=int(args['init_time'][2]), hours=int(args['init_time'][3]))
-    variable_files = variable_files_obj.files[0]
+    
+    if load_mergir:
+        variable_files_obj.add_file_list(args['mergir_indir'], 'MERGIR', ignore_domain=True)
+        variable_files, mergir_files = variable_files_obj.files
+    else:
+        variable_files = variable_files_obj.files[0]
     
     dataset_kwargs = {'engine': 'netcdf4'}  # Keyword arguments for loading variable files with xarray
 
@@ -490,7 +500,32 @@ if __name__ == '__main__':
     subdir_base = '%s_%dx%d' % (args['domain'], args['num_images'][0], args['num_images'][1])
 
     variable_ds = xr.open_mfdataset(variable_files, **dataset_kwargs).sel(**coords_sel_kwargs)[variables]
+    if load_mergir:
+        mergir_ds = xr.open_mfdataset(mergir_files, **dataset_kwargs).rename({'lon': 'longitude', 'lat': 'latitude'})
 
+        # pull original lat/lon coordinates from MERGIR dataset
+        mergir_lons = mergir_ds['longitude'].values
+        mergir_lats = mergir_ds['latitude'].values
+        mergir_lons = np.where(mergir_lons < 0, mergir_lons + 360, mergir_lons)
+        
+        # reformat coordinates and slice domain
+        mergir_dataset = mergir_ds.assign_coords(longitude=mergir_lons)
+        mergir_dataset = mergir_dataset.reindex(longitude=sorted(mergir_lons), latitude=mergir_lats[::-1])
+        mergir_dataset = mergir_dataset.isel(time=0).transpose("longitude", "latitude").sel(**coords_sel_kwargs)
+
+        # regrid the MERGIR data
+        Tb = mergir_dataset['Tb'].values
+        new_mergir_lons = mergir_dataset['longitude'].values
+        new_mergir_lats = mergir_dataset['latitude'].values
+        variable_lons = variable_ds['longitude'].values
+        variable_lats = variable_ds['latitude'].values
+        new_lons, new_lats = np.meshgrid(variable_lons, variable_lats)
+        
+        # regrid and normalize the mergir data
+        Tb = scipy.interpolate.RegularGridInterpolator((new_mergir_lons, new_mergir_lats), Tb, method='nearest', bounds_error=False)((new_lons, new_lats)).transpose()[..., np.newaxis]
+        Tb = (Tb - 197) / (329 - 197)  # min max normalization
+        Tb = np.nan_to_num(Tb).transpose()
+    
     if args['data_source'] == 'era5':
         variable_ds = variable_ds.sel(pressure_level=pressure_levels).transpose(*transpose_dims)
         image_lats = variable_ds.latitude.values[:domain_size_lat]
@@ -527,6 +562,18 @@ if __name__ == '__main__':
             variable_batch_ds_new = variable_batch_ds[variables].isel({'%s' % spatial_dims[0]: slice(lon_index, lon_index + args['image_size'][0]),
                                                                        '%s' % spatial_dims[1]: slice(lat_index, lat_index + args['image_size'][1])}).to_array().values
             
+            if load_mergir:
+                
+                assert args['num_images'] == [1, 1], "Can only use MERGIR data if making a prediction using one image only."
+                
+                Tb = Tb[np.newaxis, ...]  # add 'variable' dimension so it can be concatenated
+                if args['data_source'] != 'era5':
+                    Tb = Tb[:, np.newaxis, ...]  # add forecast hour dimension
+                if num_dimensions == 3:
+                    Tb = Tb[..., np.newaxis, :, :]  # add vertical dimension
+                    Tb = np.tile(Tb, [*[1 for dim in range(len(Tb.shape)-3)], len(pressure_levels), 1, 1])
+                variable_batch_ds_new = np.concatenate([variable_batch_ds_new, Tb], axis=0)
+
             if args['data_source'] == 'era5':
                 variable_batch_ds_new = variable_batch_ds_new.transpose([1, 2, 4, 3, 0])  # (time, longitude, latitude, pressure level, variable)
             else:
@@ -593,6 +640,8 @@ if __name__ == '__main__':
                         probs_ds = create_model_prediction_dataset(stitched_map_probs[timestep_no][fcst_hr_index], image_lats, image_lons, front_types)
                         probs_ds = probs_ds.expand_dims({'time': np.atleast_1d(timestep), 'forecast_hour': np.atleast_1d(forecast_hours[fcst_hr_index])})
                         filename_base = 'model_%d_%s_%s_%s_f%03d' % (args['model_number'], time, args['domain'], args['data_source'], forecast_hours[fcst_hr_index])
-
-                        outfile = '%s/model_%d/predictions/%s_probabilities.nc' % (args['model_dir'], args['model_number'], filename_base)
+                        
+                        pred_folder = '%s/model_%d/predictions' % (args['model_dir'], args['model_number'])
+                        os.makedirs(pred_folder, exist_ok=True)
+                        outfile = '%s/%s_probabilities.nc' % (pred_folder, filename_base)
                         probs_ds.to_netcdf(path=outfile, engine='netcdf4', mode='w')
