@@ -6,7 +6,7 @@ References
 * Snyder 1987: https://doi.org/10.3133/pp1395
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.26
+Script version: 2024.12.27
 
 TODO
     * Finish adding masks for xarray datasets
@@ -48,6 +48,11 @@ NORMALIZATION_PARAMS['RH_1000'] = [0.0, 1.0, 0.6845, 0.2341, 0.7152, 0.1968]
 NORMALIZATION_PARAMS['RH_950'] = [0.0, 1.0, 0.7254, 0.2546, 0.7661, 0.2241]
 NORMALIZATION_PARAMS['RH_900'] = [0.0, 1.0, 0.6906, 0.2544, 0.7231, 0.2344]
 NORMALIZATION_PARAMS['RH_850'] = [0.0, 1.0, 0.6300, 0.2587, 0.6470, 0.2537]
+NORMALIZATION_PARAMS['r_surface'] = [0.0, 25.3750, 6.9281, 5.4531, 9.1304, 5.2461]
+NORMALIZATION_PARAMS['r_1000'] = [0.0, 25.0, 6.5472, 5.1682, 8.6093, 4.9994]
+NORMALIZATION_PARAMS['r_950'] = [0.0, 21.6250, 6.1540, 4.8663, 8.0858, 4.7294]
+NORMALIZATION_PARAMS['r_900'] = [0.0, 20.3750, 5.3323, 4.2284, 6.9627, 4.1496]
+NORMALIZATION_PARAMS['r_850'] = [0.0, 19.3750, 4.5023, 3.7559, 5.8485, 3.7996]
 
 # Each variable has parameters in the format of [max, min]
 normalization_parameters = {

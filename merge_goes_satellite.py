@@ -2,10 +2,11 @@
 Script that processes raw GOES data into smaller netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.26
+Script version: 2024.12.27
 """
 import argparse
 import datetime as dt
+import sys
 import numpy as np
 import os
 import pandas as pd
@@ -38,9 +39,12 @@ if __name__ == '__main__':
         sat1, sat2 = 'goes16', 'goes17'
     
     print(f"[{dt.datetime.utcnow()}]", "Opening datasets")
-    ds_sat1 = xr.open_dataset('%s/%d%02d/%s_%d%02d%02d%02d_full-disk.nc' % (args['satellite_indir'], year, month, sat1, year, month, day, hour), engine='netcdf4')
-    ds_sat2 = xr.open_dataset('%s/%d%02d/%s_%d%02d%02d%02d_full-disk.nc' % (args['satellite_indir'], year, month, sat2, year, month, day, hour), engine='netcdf4')
-    
+    try:
+        ds_sat1 = xr.open_dataset('%s/%d%02d/%s_%d%02d%02d%02d_full-disk.nc' % (args['satellite_indir'], year, month, sat1, year, month, day, hour), engine='netcdf4')
+        ds_sat2 = xr.open_dataset('%s/%d%02d/%s_%d%02d%02d%02d_full-disk.nc' % (args['satellite_indir'], year, month, sat2, year, month, day, hour), engine='netcdf4')
+    except:
+        sys.exit(0)
+        
     if sat1 == 'goes16':
         
         print(f"[{dt.datetime.utcnow()}]", f"Converting {sat1} coordinates")
