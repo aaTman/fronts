@@ -7,7 +7,7 @@ The following guide will detail the steps toward successfully train a UNET-style
 1. Gathering Data
 2. TensorFlow dataset
 3. Model training
-4. Evaluation (not written)
+4. Evaluation
 5. XAI* (not written)
 6. Appendix
 
@@ -25,7 +25,7 @@ from The Weather Company (TWC) in the form of GML files.
 
 * **NOAA XML file-naming format:** *pres_pmsl_YYYYMMDDHHf000.xml*
     * Ex: *pres_pmsl_2016062115f000.xml* [15z June 21, 2016 front analysis]
-* **IBM GML file-naming formats and directory structures:**
+* **TWC GML file-naming formats and directory structures:**
     * Current analysis: */YYYYMMDD/HH/rec.sfcanalysis.YYYYMMDDTHH0000Z.NIL.P0D.WORLD@10km.FRONTS.SFC.gml*
         * Ex:
           */20230827/00/rec.sfcanalysis.20230827T090000Z.NIL.P0D.WORLD@10km.FRONTS.SFC.gml* [9z August 27, 2023 analysis]
@@ -53,13 +53,13 @@ files will be created for 03z 2019-05-20 and 06z 2019-05-20 if the provided date
 
     python convert_front_xml_to_netcdf.py --xml_indir {} --netcdf_outdir {} --date {}
 
-| Argument        | Type         | Default | Description                                                                                       |
-|-----------------|--------------|---------|---------------------------------------------------------------------------------------------------|
-| *xml_indir*     | str          | (none)  | Input directory for the XML files.                                                                |
-| *netcdf_outdir* | str          | (none)  | Output parent directory for the netCDF files.                                                     |
-| *date*          | str          | (none)  | String formatted as YYYY-MM-DD                                                                    |
-| *distance*      | int or float | 1       | Interpolation distance for the fronts in kilometers.                                              |
-| *domain*        | str          | "full"  | Domain for which to interpolate fronts over. To process IBM fronts, this must be set to 'global'. |
+| Argument        | Type         | Default | Description                                                                                                                                                                                                   |
+|-----------------|--------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| *xml_indir*     | str          | (none)  | Input directory for the XML files.                                                                                                                                                                            |
+| *netcdf_outdir* | str          | (none)  | Output parent directory for the netCDF files.                                                                                                                                                                 |
+| *date*          | str          | (none)  | String formatted as YYYY-MM-DD                                                                                                                                                                                |
+| *distance*      | int or float | 1       | Interpolation distance for the fronts in kilometers.                                                                                                                                                          |
+| *domain*        | str          | "full"  | Domain for which to interpolate fronts over. To process TWC fronts, this must be set to 'global'. To transform fronts onto the grid of a model (e.g., HRRR), type the model string in lowercase (e.g. 'hrrr') |
 
 * The resulting netCDF files will be placed in subdirectories sorted by month (e.g. */netcdf/201304* contains all netCDF files for April 2013).
 
@@ -91,11 +91,10 @@ Predictor variables can be obtained from multiple sources, however the main sour
 | *netcdf_outdir*     | str     | (none)  | Output directory for the sliced ERA5 netCDF files with additional variables. |
 | *date*              | int (3) | (none)  | Year, month, and day.                                                        |
 
-* ###### All netCDF files will be stored in subdirectories sorted by month (e.g.
-  */netcdf/201304* only contains data with initialization times in April 2013).
+* ###### All netCDF files will be stored in subdirectories sorted by month (e.g. */netcdf/201304* only contains data with initialization times in April 2013).
 
 * Predictor variables can also be sourced from multiple NWP models using the *download_nwp.py* script. Supported
-  models include GFS, HRRR, NAM 12km, and the individual NAM nests.
+  models include ECMWF, GFS, HRRR, NAM 12km, and the individual NAM nests.
     * Similar to sliced ERA5 netCDF files, downloaded GRIB files will be sorted into monthly directories.
 
       python download_nwp.py --grib_outdir {} --model {} --init_time {}
@@ -113,22 +112,20 @@ Predictor variables can be obtained from multiple sources, however the main sour
 
 * After downloading the GRIB files, they must be converted to netCDF format with the *convert_grib_to_netcdf.py*. All
   forecast hours for a given initialization time are processed at once. The resulting netCDF files are sorted into
-  monthly directories in the same manner as ERA5 files. For GFS and GDAS data, the base filename format is
+  monthly directories in the same manner as ERA5 files. For ECMWF, GFS, and GDAS data, the base filename format is
   *model_YYYYMMDDHH_fFFF_global.nc* (FFF = forecast_hour). The *_global* string in the base filename is removed for all
   other models since they have their own specified domains.
 
       python convert_grib_to_netcdf.py --grib_indir {} --model {} --netcdf_outdir {} --init_time {} {} {} {}
 
-| Argument               | Type       | Default | Description                                                 |
-|------------------------|------------|---------|-------------------------------------------------------------|
-| *grib_indir*           | str        | (none)  | Input directory for the GRIB files.                         |
-| *model*                | str        | (none)  | NWP model from which the GRIB files originated.             |
-| *netcdf_outdir*        | str        | (none)  | Output directory for the netCDF files.                      |
-| *init_time*            | int (4)    | (none)  | Year, month, day, hour.                                     |
-| *overwrite_grib*       | store_true | N/A     | Overwrite split GRIB files if they already exist.           |
-| *delete_original_grib* | store_true | N/A     | Delete the downloaded GRIB files after they are split.      |
-| *delete_split_grib*    | store_true | N/A     | Delete split GRIB files after they are converted to netCDF. |
-| *gpu*                  | store_true | N/A     | Force additional variables to be calculated on a GPU.       |
+| Argument          | Type       | Default | Description                                           |
+|-------------------|------------|---------|-------------------------------------------------------|
+| *grib_indir*      | str        | (none)  | Input directory for the GRIB files.                   |
+| *model*           | str        | (none)  | NWP model from which the GRIB files originated.       |
+| *netcdf_outdir*   | str        | (none)  | Output directory for the netCDF files.                |
+| *init_time*       | int (4)    | (none)  | Year, month, day, hour.                               |
+| *gpu*             | store_true | N/A     | Force additional variables to be calculated on a GPU. |
+| *ignore_warnings* | store_true | N/A     | Disable runtime warnings in variable calculations.    |
 
 # 2. TensorFlow datasets
 
@@ -138,78 +135,80 @@ section 1.
 #### 2a. Overview
 
 Three datasets will need to be generated: a training dataset, validation dataset, and a testing dataset. The **training
-dataset**
-is used to **train the model**, the **validation dataset** is used to **tune the model's hyperparameters**, and the *
-*testing dataset**
-is used to **evaluate the model** with data that the model has never seen. The three datasets are split up by years. For
-example,
-the training dataset may cover years 2008-2017, while the validation and test datasets cover 2018-2019 and 2020,
-respectively. In this example,
-2020 data will not be used to train the model. The inputs to the models are the selected predictor variables, while the
-model outputs are
-probabilities of each of the target front types.
+dataset** is used to **train the model**, the **validation dataset** is used to **tune the model's hyperparameters**, and 
+the **testing dataset** is used to **evaluate the model** with data that the model has never seen. The three datasets are split up by years. For
+example, the training dataset may cover years 2008-2017, while the validation and test datasets cover 2018-2019 and 2020,
+respectively. In this example, 2020 data will not be used to train the model. The inputs to the models are the selected predictor variables, while the
+model outputs are probabilities of each of the target front types.
 
 #### 2b. Designing the datasets
 
 There are several steps in the process of building TensorFlow datasets.
 
-1. Choose the years for the dataset. Currently, only years 2008-2020 are supported (will be changed **very soon** to
-   include 2021-2023). The same year cannot be used in multiple datasets (e.g. if 2016 data is used in the training
-   dataset, in cannot be used in validation nor testing sets).
+1. Choose the years for the dataset. Currently, only years 2008-2023 are supported. The same year cannot be used in multiple 
+   datasets (e.g. if 2016 data is used in the training dataset, in cannot be used in validation nor testing sets).
 2. Determine the predictor variables (inputs) and front types (targets/labels) that will make up the dataset. Complete
    lists of variables and front types can be found in appendices 6b and 6c of this guide.
 3. Choose what vertical levels to include in the inputs. The list of acceptable vertical levels can be found in appendix
    6d.
 4. Determine the shape (number of dimensions) of the inputs and targets. (e.g. do you want a model that takes 3D inputs
    and tries to predict 2D targets?)
-5. Choose the domains of the datasets. All available domains can be found in appendix 6a.
-6. Select the size of the images for the training/validation datasets and the number of images to extract from each
+5. Choose the normalization method. Normalizing the variables allows the model to be more stable during the training process.
+   Available normalization methods can be found in appendix 6g.
+6. Choose the domains of the datasets. All available domains can be found in appendix 6a.
+7. Select the size of the images for the training/validation datasets and the number of images to extract from each
    timestep. **Note that by default a timestep will only be used in the final dataset if all requested front types are
    present in that timestep over the provided domain.**
     1. Determine whether or not you would like to retain timesteps that do not contain all requested front types. For
        example, if you build a dataset with cold and warm fronts, timesteps with cold fronts that do not also have warm
        fronts will not be included in the final dataset by default. You can, however, retain a fraction (or even all) of
        the images that do not have all requested front types.
-7. Explore data augmentation and front expansion
+8. Explore data augmentation and front expansion
     1. Data augmentation is the process of modifying the inputs to the model. Images can be modifying by adding noise
        and rotating or reflecting the images.
     2. "Front expansion" refers to the process of expanding the labels identifying the presence of front boundaries at
        each grid point. Expanding the labels in the training and validation datasets trains the model to output larger
        frontal regions.
-8. Finally, run the convert_netcdf_to_tf.py script to build the dataset.
+9. Finally, run the convert_netcdf_to_tf.py script to build the dataset.
 
         python convert_netcdf_to_tf.py --variables_netcdf_indir {} --fronts_netcdf_indir {} --tf_outdir {} --year_and_month {} --front_types {}
 
-| Argument                 | Type       | Default | Description                                                                                   |
-|--------------------------|------------|---------|-----------------------------------------------------------------------------------------------|
-| *variables_netcdf_indir* | str        | (none)  | Input directory for the netCDF files containing variable data.                                |
-| *fronts_netcdf_indir*    | str        | (none)  | Input directory for the netCDF files containing front labels.                                 |
-| *tf_outdir*              | str        | (none)  | Output directory for the tensorflow datasets.                                                 |
-| *year_and_month*         | int (2)    | (none)  | Year and month for which to generate tensorflow datasets.                                     |
-| *front_types*            | str (N)    | (none)  | Front types to use as targets (Appendix 6c for options).                                      |
-| *variables*              | str (N)    | (none)  | Variables to include in the inputs (Appendix 6b for options).                                 |
-| *pressure_levels*        | str (N)    | (none)  | Pressure levels to include in the inputs (Appendix 6d for options).                           |
-| *evaluation_dataset*     | store_true | N/A     | Set up the dataset so it can be used for evaluation. See the notes below this table for info. |
-| *num_dims*               | int (2)    | 3 3     | Number of dimensions in the input data and front labels, respectively.                        |
-| *domain*                 | str        | "conus" | Domain that the dataset will cover (Appendix 6a for options).                                 |
-| *images*                 | int (2)    | 9 1     | Number of images to extract from the timestep along the longitude and latitude dimensions.    |
-| *image_size*             | int (2)    | 128 128 | Size of the longitude and latitude dimensions of the images (# pixels).                       |
-| *front_dilation*         | int        | 0       | Number of pixels to expand the front labels by in all directions.                             |
-| *keep_fraction*          | float      | 0.0     | Fraction of timesteps not containing all front types to keep in the dataset. (0 <= x <= 1)    |
-| *noise_fraction*         | float      | 0.0     | Fraction of pixels in each image that will contain salt and pepper noise. (0 <= x <= 1)       |
-| *rotate_chance*          | float      | 0.0     | Chance that an image will be randomly rotated in 90° intervals. (0 <= x <= 1)                 |
-| *flip_chance_lon*        | float      | 0.0     | Chance that an image will have its longitude dimension reversed. (0 <= x <= 1)                |
-| *flip_chance_lat*        | float      | 0.0     | Chance that an image will have its latitude dimension reversed. (0 <= x <= 1)                 |
-| *overwrite*              | store_true | N/A     | Overwrite the contents of any existing variables and fronts data.                             |
-| *verbose*                | store_true | N/A     | Print out the progress of the dataset generation.                                             |
-| *gpu_device*             | int (N)    | (none)  | GPU device numbers.                                                                           |
-| *memory_growth*          | store_true | N/A     | Use memory growth on the GPU(s).                                                              |
+| Argument               | Type       | Default    | Description                                                                                                              |
+|------------------------|------------|------------|--------------------------------------------------------------------------------------------------------------------------|
+| *variable_indir*       | str        | (none)     | Input directory for the netCDF files containing variable data.                                                           |
+| *fronts_indir*         | str        | (none)     | Input directory for the netCDF files containing front labels.                                                            |
+| *tf_outdir*            | str        | (none)     | Output directory for the tensorflow datasets.                                                                            |
+| *year_and_month*       | int (2)    | (none)     | Year and month for which to generate tensorflow datasets.                                                                |
+| *data_source*          | str        | "era5"     | Source of the input variables.                                                                                           |
+| *front_types*          | str (N)    | (none)     | Front types to use as targets (Appendix 6c for options).                                                                 |
+| *variables*            | str (N)    | (none)     | Variables to include in the inputs (Appendix 6b for options).                                                            |
+| *pressure_levels*      | str (N)    | (none)     | Pressure levels to include in the inputs (Appendix 6d for options).                                                      |
+| *num_dims*             | int (2)    | 2 2        | Number of dimensions in the input data and front labels, respectively.                                                   |
+| *domain*               | str        | "conus"    | Domain that the dataset will cover (Appendix 6a for options).                                                            |
+| *override_extent*      | int (4)    | (none)     | Override the default domain extent by selecting a custom extent. [min lon, max lon, min lat, max lat]                    |
+| *images*               | int (2)    | 1 1        | Number of images to extract from the timestep along the longitude and latitude dimensions.                               |
+| *image_size*           | int (2)    | 128 128    | Size of the latitude and longitude dimensions of the images (# pixels).                                                  |
+| *normalization_method* | str        | "standard" | Method for normalizing the input variables (Appendix 6g for options).                                                    |
+| *shuffle_timesteps*    | store_true | N/A        | Shuffle the order of the timesteps when generating the dataset.                                                          |
+| *shuffle_images*       | store_true | N/A        | Shuffle the order of the images in each timestep.                                                                        |
+| *front_dilation*       | int        | 0          | Number of pixels to expand the front labels by in all directions.                                                        |
+| *timestep_fraction*    | float      | 1.0        | Fraction of timesteps WITHOUT all necessary front types that will be retained in the dataset. (0 <= x <= 1)              |
+| *image_fraction*       | float      | 1.0        | Fraction of images WITHOUT all necessary front types in the selected that will be retained in the dataset. (0 <= x <= 1) |
+| *noise_fraction*       | float      | 0.0        | Fraction of pixels in each image that will contain salt and pepper noise. (0 <= x <= 1)                                  |
+| *flip_chance_lon*      | float      | 0.0        | Chance that an image will have its longitude dimension reversed. (0 <= x <= 1)                                           |
+| *flip_chance_lat*      | float      | 0.0        | Chance that an image will have its latitude dimension reversed. (0 <= x <= 1)                                            |
+| *overwrite*            | store_true | N/A        | Overwrite the contents of any existing variables and fronts data.                                                        |
+| *verbose*              | store_true | N/A        | Print out the progress of the dataset generation.                                                                        |
+| *gpu_device*           | int (N)    | (none)     | GPU device numbers.                                                                                                      |
+| *memory_growth*        | store_true | N/A        | Use memory growth on the GPU(s).                                                                                         |
+| *seed*                 | int        | (none)     | Seed for the random number generators.                                                                                   ||
 
 ###### NOTES:
-
-* "evaluation_dataset" will override several of the table's arguments. See *convert_netcdf_to_tf.py* for more
-  information. The testing dataset **must** have this flag attached in the command line in order to generate a proper
-  testing set, and the testing set must be saved into its own directory (e.g. */my_tf_test_ds*).
+* If you are generating a dataset for evaluation purposes (e.g., calculating model performance):
+  * Make sure that 'timestep_fraction', 'image_fraction', 'noise_fraction', 'flip_chance_lat', 'flip_chance_lon', and 'images' are all set to their default values.
+  * Do NOT shuffle the timesteps or images.
+  * Make sure 'image_size' covers the entire domain of interest (e.g., in the case of CONUS, this would --image_size 128 288).
+  * Assure that the variables, pressure levels, and front types used in the evaluation dataset are identical to the training/validation datasets. If they are different, the code will not work.
 * Once the command is executed, a .pkl file and .txt file will be saved to *tf_outdir*. The .pkl file will contain
   properties of the dataset (values of the table's arguments), and the .txt file is a readable version of the .pkl file.
 * After the .pkl file is created, the arguments in the .pkl file will be referenced in the future in order to create
@@ -250,14 +249,15 @@ testing dataset. NetCDF files containing model predictions will be saved and sor
 
 | Argument         | Type       | Default | Description                                                                                        |
 |------------------|------------|---------|----------------------------------------------------------------------------------------------------|
-| *model_number*   | int        | (none)  | Number assigned to the model during training.                                                      |
-| *model_dir*      | str        | (none)  | Parent directory for all models. (e.g. */models*)                                                  |
-| *tf_indir*       | str        | (none)  | Input directory for the tensorflow dataset for which predictions will be generated.                |
 | *dataset*        | str        | (none)  | Dataset for which the predictions will be generated. Options are "training", "validation", "test". |
 | *year_and_month* | int (2)    | (none)  | Year and month for which the predictions will be generated.                                        |
+| *model_dir*      | str        | (none)  | Parent directory for all models. (e.g. */models*)                                                  |
+| *model_number*   | int        | (none)  | Number assigned to the model during training.                                                      |
+| *tf_indir*       | str        | (none)  | Input directory for the tensorflow dataset for which predictions will be generated.                |
 | *data_source*    | str        | "era5"  | Source of the input variables in the datasets.                                                     |
-| *gpu_device*     | int (N)    | (none)  | GPU device numbers.                                                                                |
-| *memory_growth*  | store_true | N/A     | Use memory growth on the GPU(s).                                                                   |
+| *gpu_device*     | int (N)    | (none)  | GPU device number.                                                                                 |
+| *batch_size*     | int        | 8       | Batch size for the model predictions.                                                              |
+| *memory_growth*  | store_true | N/A     | Use memory growth on the GPU.                                                                      |
 | *overwrite*      | store_true | N/A     | Overwrite any existing prediction netCDF files.                                                    |
 
 #### 4b. Calculating general performance statistics
@@ -270,60 +270,46 @@ dataset. If using 0.25° data (resolution of ERA5 data), performance statistics 
 calculated: 0.5° (~50 km), 1° (~100 km), 1.5° (~150 km), 2° (~200 km), 2.5° (~250 km). *Statistics for higher resolution
 data are currently not supported.*
 
-    python ./evaluation/generate_performance_stats.py --model_number {} --model_dir {} --fronts_netcdf_indir {} --domain {} --dataset {}
-    python ./evaluation/generate_performance_stats.py --model_number {} --model_dir {} --fronts_netcdf_indir {} --domain {} --year_and_month {} {} 
+    python generate_performance_stats.py --model_number {} --model_dir {} --fronts_netcdf_indir {} --domain {} --dataset {}
+    python generate_performance_stats.py --model_number {} --model_dir {} --fronts_netcdf_indir {} --domain {} --year_and_month {} {} 
 
-| Argument              | Type       | Default | Description                                                                                        |
-|-----------------------|------------|---------|----------------------------------------------------------------------------------------------------|
-| *model_number*        | int        | (none)  | Number assigned to the model during training.                                                      |
-| *model_dir*           | str        | (none)  | Parent directory for all models. (e.g. */models*)                                                  |
-| *fronts_netcdf_indir* | str        | (none)  | Input directory for the netCDF files containing front labels.                                      |
-| *domain*              | str        | (none)  | Domain of the predictions from which statistics are being calculated.                              |
-| *dataset*             | str        | (none)  | Dataset for which the predictions will be generated. Options are "training", "validation", "test". |
-| *year_and_month*      | int (2)    | (none)  | Year and month for which the predictions will be generated.                                        |
-| *data_source*         | str        | "era5"  | Source of the input variables in the datasets.                                                     |
-| *gpu_device*          | int (N)    | (none)  | GPU device numbers.                                                                                |
-| *memory_growth*       | store_true | N/A     | Use memory growth on the GPU(s).                                                                   |
-| *overwrite*           | store_true | N/A     | Overwrite any existing netCDF files containing performance statistics.                             |
+| Argument         | Type       | Default | Description                                                                                        |
+|------------------|------------|---------|----------------------------------------------------------------------------------------------------|
+| *dataset*        | str        | (none)  | Dataset for which the predictions will be generated. Options are "training", "validation", "test". |
+| *year_and_month* | int (2)    | (none)  | Year and month for which the predictions will be generated.                                        |
+| *domain*         | str        | (none)  | Domain of the predictions from which statistics are being calculated.                              |
+| *model_number*   | int        | (none)  | Number assigned to the model during training.                                                      |
+| *model_dir*      | str        | (none)  | Parent directory for all models. (e.g. */models*)                                                  |
+| *fronts_indir*   | str        | (none)  | Input directory for the netCDF files containing front labels.                                      |
+| *data_source*    | str        | "era5"  | Source of the input variables in the datasets.                                                     |
+| *gpu_device*     | int        | (none)  | GPU device number.                                                                                 |
+| *memory_growth*  | store_true | N/A     | Use memory growth on the GPU(s).                                                                   |
+| *overwrite*      | store_true | N/A     | Overwrite any existing netCDF files containing performance statistics.                             |
 
-#### 4c. Combining performance statistics
-
-From the generated performance statistics (sorted into monthly files) confidence intervals over the temporal data will
-be calculated using a bootstrapping technique. Spatial statistics will also be generated and can be used to show spatial
-performance in terms of CSI. The resulting statistics for the entire dataset will be combined into one netCDF file.
-
-    python ./evaluation/generate_performance_stats.py --model_number {} --model_dir {} --domain {} --combine --dataset {}
-
-| Argument         | Type | Default | Description                                                                                        |
-|------------------|------|---------|----------------------------------------------------------------------------------------------------|
-| *model_number*   | int  | (none)  | Number assigned to the model during training.                                                      |
-| *model_dir*      | str  | (none)  | Parent directory for all models. (e.g. */models*)                                                  |
-| *domain*         | str  | (none)  | Domain of the predictions from which statistics are being calculated.                              |
-| *dataset*        | str  | (none)  | Dataset for which the predictions will be generated. Options are "training", "validation", "test". |
-| *data_source*    | str  | "era5"  | Source of the input variables in the datasets.                                                     |
-| *num_iterations* | int  | 10000   | Number of iterations to perform in the bootstrapping (i.e. how many times data will be resampled). |
-
-#### 4d. Performance diagrams
+#### 4c. Performance diagrams
 
 At long last, we can now generate large diagrams for each front type to highlight model performance. Each diagram
 contains four subplots. The first subplot within the diagram will be a CSI diagram, highlighting the probability of
 detection (POD) and false alarm ratio (FAR) for the five neighborhoods described in section 4b. The second subplot will
 be reliability diagram, which shows how the model's output probabilities align with the true probabilities of the front
 types being present within the distances of the neighborhoods. The third subplot will be a data table that highlights
-the CSI, POD, FAR, and frequency bias (FB) at the probability threshold where CSI is maximized. The final subplot will
-be a spatial CSI diagram that shows the model's performance over the provided domain with a specified neighborhood (
+the CSI, HSS (Heidke Skill Score), POD, FAR, and frequency bias (FB) at the probability threshold where CSI is maximized. 
+The final subplot will be a spatial CSI diagram that shows the model's performance over the provided domain with a specified neighborhood (
 default is 250 km).
 
-    python ./evaluation/performance_diagrams.py --model_number {} --model_dir {} --domain {} --combine --dataset {}
+    python plot_performance_diagrams.py --model_number {} --model_dir {} --domain {} --dataset {}
 
 | Argument           | Type | Default | Description                                                                                        |
 |--------------------|------|---------|----------------------------------------------------------------------------------------------------|
-| *model_number*     | int  | (none)  | Number assigned to the model during training.                                                      |
-| *model_dir*        | str  | (none)  | Parent directory for all models.                                                                   |
-| *domain*           | str  | (none)  | Domain of the predictions from which statistics are being calculated.                              |
 | *dataset*          | str  | (none)  | Dataset for which the predictions will be generated. Options are "training", "validation", "test". |
 | *data_source*      | str  | "era5"  | Source of the input variables in the datasets.                                                     |
-| *confidence_level* | int  | 95      | Confidence level expressed as a percentage. Options are: 90, 95, 99                                |
+| *domain*           | str  | (none)  | Domain of the predictions from which statistics are being calculated.                              |
+| *map_neighborhood* | int  | 250     | Neighborhood for the CSI map in kilometers. Options are: 50, 100, 150, 200, 250                    |
+| *model_dir*        | str  | (none)  | Parent directory for all models.                                                                   |
+| *model_number*     | int  | (none)  | Number assigned to the model during training.                                                      |
+| *confidence_level* | int  | 95      | Confidence level expressed as a percentage.                                                        |
+| *num_iterations*   | int  | 10000   | Number of iterations to perform when bootstrapping the statistics.                                 |
+| *output_type*      | str  | "png"   | Output type for the image file.                                                                    |
 
 # 5. XAI (coming soon)
 
@@ -398,7 +384,7 @@ default is 250 km).
 |------------------|----------------|----------------------------------------------------|
 | *attention_unet* | Attention UNET | https://arxiv.org/pdf/1804.03999                   |
 | *unet*           | UNET           | https://arxiv.org/pdf/1505.04597                   |
-| *unet_ensemble*  | UNet ensemble  | https://arxiv.org/pdf/1912.05074                   |
+| *unet_ensemble*  | UNET ensemble  | https://arxiv.org/pdf/1912.05074                   |
 | *unet_plus*      | UNET+          | https://arxiv.org/pdf/1912.05074                   |
 | *unet_2plus*     | UNET++         | https://arxiv.org/pdf/1912.05074                   |
 | *unet_3plus*     | UNET3+         | https://arxiv.org/ftp/arxiv/papers/2004/2004.08790 |
@@ -439,3 +425,11 @@ Currently there are <b>30</b> supported activation functions.
 | *stanh*            | Scaled hyperbolic tangent (STanh)                 | https://arxiv.org/abs/2003.00547                                           |
 | *tanh*             | Hyperbolic tangent                                | https://mathworld.wolfram.com/HyperbolicTangent.html                       |
 | *thresholded_relu* | Thresholded rectified linear unit                 | https://www.tensorflow.org/api_docs/python/tf/keras/layers/ThresholdedReLU |
+
+### 6g. Normalization methods
+
+| Argument string   | Normalization method                        |
+|-------------------|---------------------------------------------|
+| standard          | Standardization (z-score)                   |
+| standard_weighted | Latitude-weighted standardization (z-score) |
+| min-max           | Min-max scaling                             |

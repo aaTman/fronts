@@ -4,7 +4,7 @@
 Generate predictions using a model with tensorflow datasets.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.20
+Script version: 2025.2.1
 """
 import argparse
 import sys
@@ -25,7 +25,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_number', type=int, help='Model number.')
     parser.add_argument('--tf_indir', type=str, help='Directory for the tensorflow dataset that will be used when generating predictions.')
     parser.add_argument('--data_source', type=str, default='era5', help='Data source for variables')
-    parser.add_argument('--gpu_device', type=int, nargs='+', help='GPU device numbers.')
+    parser.add_argument('--gpu_device', type=int, nargs='+', help='GPU device number.')
     parser.add_argument('--batch_size', type=int, default=8, help="Batch size for the model predictions.")
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
     parser.add_argument('--overwrite', action='store_true', help="Overwrite any existing prediction files.")
@@ -55,9 +55,9 @@ if __name__ == '__main__':
         years, months = [args['year_and_month'][0]], [args['year_and_month'][1]]
     else:
         years, months = model_properties['%s_years' % args['dataset']], range(1, 13)
-
+    
     ### Make sure that the dataset has the same attributes as the model ###
-    if model_properties['normalization_parameters'] != dataset_properties['normalization_parameters']:
+    if model_properties['dataset_properties']['normalization_parameters'] != dataset_properties['normalization_parameters']:
         raise ValueError("Cannot evaluate model with the selected dataset. Reason: normalization parameters do not match")
     if model_properties['dataset_properties']['front_types'] != dataset_properties['front_types']:
         raise ValueError("Cannot evaluate model with the selected dataset. Reason: front types do not match "
@@ -98,25 +98,11 @@ if __name__ == '__main__':
             if os.path.isfile(prediction_dataset_path) and not args['overwrite']:
                 print("WARNING: %s exists, pass the --overwrite argument to overwrite existing data." % prediction_dataset_path)
                 continue
-
+            
+            time_array = pd.read_pickle('%s/timesteps_%d%02d.pkl' % (args['tf_indir'], year, month))
+            
             input_file = [file for file in files_for_year if '_%d%02d' % (year, month) in file][0]
             tf_ds = tf.data.Dataset.load(input_file)
-            time_array = np.arange(np.datetime64(f"{input_file[-9:-5]}-{input_file[-5:-3]}"),
-                                   np.datetime64(f"{input_file[-9:-5]}-{input_file[-5:-3]}") + np.timedelta64(1, "M"),
-                                   np.timedelta64(hour_interval, "h"))
-
-            ### remove timesteps that do not have data ###
-            missing_indices = np.array([])
-            missing_fronts = "%d-%02d" % (year, month) in missing_fronts_ind
-            if missing_fronts:
-                missing_indices = np.append(missing_indices, missing_fronts_ind["%d-%02d" % (year, month)])
-                if hour_interval == 6:
-                    missing_indices = np.array([int(ind / 2) for ind in missing_indices if ind % 2 == 0])
-                time_array = np.delete(time_array, missing_indices.astype('int32'))
-            ##############################################
-
-            assert len(tf_ds) == len(time_array)  # make sure tensorflow dataset has all timesteps
-
             tf_ds = tf_ds.batch(args['batch_size'])
             prediction = np.array(model.predict(tf_ds)).astype(np.float16)
 
@@ -125,10 +111,9 @@ if __name__ == '__main__':
 
             if num_dims[1] == 3:
                 # Take the maxmimum probability for each front type over the vertical dimension (pressure levels)
-                prediction = np.amax(prediction, axis=3)  # shape: (time, longitude, latitude, front type)
+                prediction = np.amax(prediction, axis=3)  # shape: (time, latitude, longitude, front type)
 
             prediction = prediction[..., 1:]  # remove the 'no front' type from the array
-            prediction = np.transpose(prediction, (0, 2, 1, 3))  # shape: (time, latitude, longitude, front type)
 
             xr.Dataset(data_vars={front_type: (('time', 'latitude', 'longitude'), prediction[:, :, :, front_type_no])
                                   for front_type_no, front_type in enumerate(front_types)},

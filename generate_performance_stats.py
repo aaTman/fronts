@@ -2,7 +2,7 @@
 Generate performance statistics for a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.19
+Script version: 2025.2.1
 """
 import argparse
 import numpy as np
@@ -24,9 +24,9 @@ if __name__ == '__main__':
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
     parser.add_argument('--model_dir', type=str, required=True, help='Directory for the models.')
     parser.add_argument('--model_number', type=int, required=True, help='Model number.')
-    parser.add_argument('--satellite_netcdf_indir', type=str, help='Main directory for the netcdf files containing satellite data.')
-    parser.add_argument('--fronts_netcdf_indir', type=str, help='Main directory for the netcdf files containing frontal objects.')
+    parser.add_argument('--fronts_indir', type=str, help='Main directory for the netcdf files containing frontal objects.')
     parser.add_argument('--data_source', type=str, default='era5', help='Data source for variables')
+    parser.add_argument('--satellite_indir', type=str, help='Main directory for the netcdf files containing satellite data.')
     parser.add_argument('--overwrite', action='store_true', help="Overwrite any existing statistics files.")
     args = vars(parser.parse_args())
 
@@ -34,10 +34,9 @@ if __name__ == '__main__':
     domain = args['domain']
     
     variables = model_properties['dataset_properties']['variables']
-    all_goes_vars = ['CMI_C01', 'CMI_C02', 'CMI_C07', 'CMI_C08', 'CMI_C09', 'CMI_C10', 'CMI_C13', 'CMI_C16']
+    all_goes_vars = ['band_%d' for band in range(1, 17)]
     goes_vars = [var for var in variables if var in all_goes_vars]  # GOES satellite variables
     
-    model_uses_mergir = 'Tb' in variables
     model_uses_goes = args['goes_indir'] is not None and len(goes_vars) > 0  # load GOES data if any satellite bands are requested
 
     # Some older models do not have the 'dataset_properties' dictionary
@@ -70,17 +69,10 @@ if __name__ == '__main__':
 
     for year in years:
         
-        front_files_obj = fm.DataFileLoader(args['fronts_netcdf_indir'], years=year, data_type='fronts', file_format='netcdf', domains=['full',])
+        front_files_obj = fm.DataFileLoader(args['fronts_indir'], years=year, data_type='fronts', file_format='netcdf', domains=['full',])
 
-        ### add MERGIR/GOES data files ###
-        if model_uses_mergir and variables:
-            front_files_obj.add_file_list(args['mergir_indir'], 'MERGIR')
-            front_files_obj.add_file_list(args['goes_indir'], 'goes')
-            _, front_files, _, _ = front_files_obj.files
-        elif model_uses_mergir:
-            front_files_obj.add_file_list(args['mergir_indir'], 'MERGIR')
-            _, front_files, _ = front_files_obj.files
-        elif model_uses_goes:
+        ### add GOES data files ###
+        if model_uses_goes:
             front_files_obj.add_file_list(args['goes_indir'], 'goes')
             _, front_files, _ = front_files_obj.files
         else:

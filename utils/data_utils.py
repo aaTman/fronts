@@ -6,11 +6,10 @@ References
 * Snyder 1987: https://doi.org/10.3133/pp1395
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.27
+Script version: 2025.2.1
 
 TODO
     * Finish adding masks for xarray datasets
-    * Finish updating normalization parameters
 """
 
 import pandas as pd
@@ -22,7 +21,6 @@ import regionmask
 
 # [min, max, mean, std, mean (lat weighted), std (lat weighted)]
 NORMALIZATION_PARAMS = dict()
-NORMALIZATION_PARAMS['Tb'] = [174.0, 331.0, 278.6852, 18.8858]
 NORMALIZATION_PARAMS['T_surface'] = [194.0, 325.0, 278.8511, 21.1652, 287.7177, 15.3072]
 NORMALIZATION_PARAMS['T_1000'] = [204.0, 325.0, 280.6331, 17.7977, 287.5828, 15.2803]
 NORMALIZATION_PARAMS['T_950'] = [204.0, 322.0, 278.3984, 16.5755, 285.1174, 13.7075]
@@ -43,6 +41,26 @@ NORMALIZATION_PARAMS['Tw_1000'] = [219.0, 308.0, 278.5950, 15.2651, 285.1871, 12
 NORMALIZATION_PARAMS['Tw_950'] = [220.0, 303.0, 276.6420, 14.7729, 282.9826, 11.7804]
 NORMALIZATION_PARAMS['Tw_900'] = [224.0, 301.0, 274.4526, 14.0842, 280.4333, 11.2899]
 NORMALIZATION_PARAMS['Tw_850'] = [224.0, 299.0, 272.2181, 13.6107, 277.9495, 10.9174]
+NORMALIZATION_PARAMS['theta_surface'] = [212.0, 349.0, 281.7530, 17.5238, 289.0517, 13.9311]
+NORMALIZATION_PARAMS['theta_1000'] = [204.0, 325.0, 280.6331, 17.7977, 287.5828, 15.2803]
+NORMALIZATION_PARAMS['theta_950'] = [207.0, 326.0, 282.5041, 16.8199, 289.3222, 13.9095]
+NORMALIZATION_PARAMS['theta_900'] = [211.0, 328.0, 285.0651, 16.3165, 291.8460, 13.1274]
+NORMALIZATION_PARAMS['theta_850'] = [227.0, 329.0, 287.8841, 16.2686, 294.7201, 12.8921]
+NORMALIZATION_PARAMS['theta_e_surface'] = [221.0, 381.0, 298.2637, 29.3206, 310.8837, 25.0137]
+NORMALIZATION_PARAMS['theta_e_1000'] = [206.0, 374.0, 296.1982, 28.8536, 308.1083, 25.5387]
+NORMALIZATION_PARAMS['theta_e_950'] = [210.0, 365.0, 297.2637, 27.3586, 308.7698, 23.8046]
+NORMALIZATION_PARAMS['theta_e_900'] = [213.0, 364.0, 298.0386, 25.5295, 308.8332, 21.8929]
+NORMALIZATION_PARAMS['theta_e_850'] = [218.0, 364.0, 299.0262, 24.2639, 309.2334, 20.7013]
+NORMALIZATION_PARAMS['theta_v_surface'] = [194.0, 327.0, 280.0701, 21.9879, 289.3344, 16.0927]
+NORMALIZATION_PARAMS['theta_v_1000'] = [204.0, 326.0, 281.7824, 18.5628, 289.1034, 15.9593]
+NORMALIZATION_PARAMS['theta_v_950'] = [205.0, 322.0, 279.4688, 17.2940, 286.5322, 14.3546]
+NORMALIZATION_PARAMS['theta_v_900'] = [205.0, 319.0, 277.5419, 16.4519, 284.4114, 13.3055]
+NORMALIZATION_PARAMS['theta_v_850'] = [205.0, 315.0, 275.6090, 16.0502, 282.3733, 12.7919]
+NORMALIZATION_PARAMS['theta_w_surface'] = [212.0, 303.0, 277.3626, 14.8143, 283.6143, 11.3163]
+NORMALIZATION_PARAMS['theta_w_1000'] = [207.0, 302.0, 276.4311, 15.1130, 282.3757, 12.6142]
+NORMALIZATION_PARAMS['theta_w_950'] = [210.0, 301.0, 277.2736, 13.9066, 282.9502, 11.1852]
+NORMALIZATION_PARAMS['theta_w_900'] = [214.0, 300.0, 278.0026, 12.6755, 283.2781, 9.8552]
+NORMALIZATION_PARAMS['theta_w_850'] = [219.0, 300.0, 278.7026, 11.8143, 283.6136, 9.0547]
 NORMALIZATION_PARAMS['RH_surface'] = [0.0250, 1.0, 0.7682, 0.1511, 0.7617, 0.1611]
 NORMALIZATION_PARAMS['RH_1000'] = [0.0, 1.0, 0.6845, 0.2341, 0.7152, 0.1968]
 NORMALIZATION_PARAMS['RH_950'] = [0.0, 1.0, 0.7254, 0.2546, 0.7661, 0.2241]
@@ -53,27 +71,43 @@ NORMALIZATION_PARAMS['r_1000'] = [0.0, 25.0, 6.5472, 5.1682, 8.6093, 4.9994]
 NORMALIZATION_PARAMS['r_950'] = [0.0, 21.6250, 6.1540, 4.8663, 8.0858, 4.7294]
 NORMALIZATION_PARAMS['r_900'] = [0.0, 20.3750, 5.3323, 4.2284, 6.9627, 4.1496]
 NORMALIZATION_PARAMS['r_850'] = [0.0, 19.3750, 4.5023, 3.7559, 5.8485, 3.7996]
+NORMALIZATION_PARAMS['q_surface'] = [0.0, 24.7500, 6.8514, 5.3646, 9.0210, 5.1520]
+NORMALIZATION_PARAMS['q_1000'] = [0.0, 28.8750, 7.0682, 5.9041, 9.4005, 5.7783]
+NORMALIZATION_PARAMS['q_950'] = [0.0, 24.7500, 6.5765, 5.5152, 8.7433, 5.4237]
+NORMALIZATION_PARAMS['q_900'] = [0.0, 23.0000, 5.5970, 4.7264, 7.3993, 4.6938]
+NORMALIZATION_PARAMS['q_850'] = [0.0, 21.6250, 4.6350, 4.1411, 6.1008, 4.2357]
+NORMALIZATION_PARAMS['u_surface'] = [-33.6000, 29.6000, -0.0700, 5.5954, -0.4027, 5.5432]
+NORMALIZATION_PARAMS['u_1000'] = [-33.6000, 30.4000, -0.0556, 6.1977, -0.4351, 6.1994]
+NORMALIZATION_PARAMS['u_950'] = [-47.6000, 43.2000, 0.3739, 7.6969, -0.0670, 7.6670]
+NORMALIZATION_PARAMS['u_900'] = [-55.6000, 50.8000, 0.8388, 8.1331, 0.4178, 8.1233]
+NORMALIZATION_PARAMS['u_850'] = [-55.6000, 53.2000, 1.3811, 8.2633, 1.0174, 8.2693]
+NORMALIZATION_PARAMS['v_surface'] = [-29.2000, 30.8000, 0.1979, 4.7952, 0.1934, 4.5878]
+NORMALIZATION_PARAMS['v_1000'] = [-31.6000, 30.8000, 0.1962, 5.3461, 0.1989, 5.1716]
+NORMALIZATION_PARAMS['v_950'] = [-44.8000, 46.8000, 0.2094, 6.4513, 0.1981, 6.1904]
+NORMALIZATION_PARAMS['v_900'] = [-48.4000, 51.6000, 0.2035, 6.4340, 0.1748, 6.0936]
+NORMALIZATION_PARAMS['v_850'] = [-49.6000, 52.8000, 0.1477, 6.2983, 0.0937, 5.8957]
+NORMALIZATION_PARAMS['sp_z_surface'] = [486.0, 1068.0, 966.5001, 95.9131, 985.6985, 67.5667]
+NORMALIZATION_PARAMS['sp_z_1000'] = [-69.0, 49.0, 7.5000, 11.0970, 9.6099, 9.3454]
+NORMALIZATION_PARAMS['sp_z_950'] = [-28.0, 88.0, 49.7423, 12.0723, 52.8449, 10.0539]
+NORMALIZATION_PARAMS['sp_z_900'] = [15.0, 130.0, 93.9396, 13.4494, 98.0529, 11.0937]
+NORMALIZATION_PARAMS['sp_z_850'] = [60.0, 175.0, 140.3329, 15.1683, 145.4879, 12.4430]
+NORMALIZATION_PARAMS['band_1'] = [0.0, 1.0, 0.1109, 0.1496, 0.1074, 0.1468]
+NORMALIZATION_PARAMS['band_2'] = [0.0, 1.0, 0.0829, 0.1271, 0.0803, 0.1260]
+NORMALIZATION_PARAMS['band_3'] = [0.0, 1.0, 0.0970, 0.1494, 0.0931, 0.1475]
+NORMALIZATION_PARAMS['band_4'] = [0.0, 0.6525, 0.0116, 0.0337, 0.0113, 0.0342]
+NORMALIZATION_PARAMS['band_5'] = [0.0, 1.0, 0.0636, 0.1028, 0.0620, 0.1018]
+NORMALIZATION_PARAMS['band_6'] = [0.0, 1.0, 0.0522, 0.0849, 0.0506, 0.0836]
+NORMALIZATION_PARAMS['band_7'] = [150.0, 400.0, 273.5342, 19.2931, 276.0468, 18.8582]
+NORMALIZATION_PARAMS['band_8'] = [150.0, 312.0, 232.2834, 8.8554, 233.3464, 8.9243]
+NORMALIZATION_PARAMS['band_9'] = [150.0, 311.5000, 239.8635, 10.3123, 241.2207, 10.4178]
+NORMALIZATION_PARAMS['band_10'] = [150.0, 332.0, 246.9413, 12.7686, 248.6041, 12.7834]
+NORMALIZATION_PARAMS['band_11'] = [150.0, 342.0, 264.4350, 19.6611, 267.1664, 19.6000]
+NORMALIZATION_PARAMS['band_12'] = [150.0, 312.0, 244.5114, 16.2914, 246.8653, 16.1795]
+NORMALIZATION_PARAMS['band_13'] = [150.0, 342.0, 266.7880, 20.2235, 269.5526, 20.1508]
+NORMALIZATION_PARAMS['band_14'] = [150.0, 342.0, 266.2653, 20.5145, 269.0157, 20.4462]
+NORMALIZATION_PARAMS['band_15'] = [150.0, 342.0, 263.9627, 20.8428, 266.5635, 20.8524]
+NORMALIZATION_PARAMS['band_16'] = [150.0, 319.0, 252.2881, 16.1823, 254.5364, 16.1751]
 
-# Each variable has parameters in the format of [max, min]
-normalization_parameters = {
-    'mslp_z_surface': [1050., 960.], 'mslp_z_1000': [48., -69.], 'mslp_z_950': [86., -27.], 'mslp_z_900': [127., 17.], 'mslp_z_850': [174., 63.],
-    'q_surface': [24., 0.], 'q_1013': [24., 0.], 'q_1000': [26., 0.], 'q_950': [26., 0.], 'q_900': [23., 0.], 'q_850': [21., 0.],
-    'RH_surface': [1., 0.], 'RH_1013': [1., 0.], 'RH_1000': [1., 0.], 'RH_950': [1., 0.], 'RH_900': [1., 0.], 'RH_850': [1., 0.],
-    'r_surface': [25., 0.], 'r_1013': [25., 0.], 'r_1000': [22., 0.], 'r_950': [22., 0.], 'r_900': [20., 0.], 'r_850': [18., 0.],
-    'sp_z_surface': [1075., 620.], 'sp_z_1000': [48., -69.], 'sp_z_950': [86., -27.], 'sp_z_900': [127., 17.], 'sp_z_850': [174., 63.],
-    'theta_surface': [331., 213.], 'theta_1013': [331., 213.], 'theta_1000': [322., 218.], 'theta_950': [323., 219.], 'theta_900': [325., 227.], 'theta_850': [330., 237.],
-    'theta_e_surface': [375., 213.], 'theta_e_1013': [375., 213.], 'theta_e_1000': [366., 208.], 'theta_e_950': [367., 210.], 'theta_e_900': [364., 227.], 'theta_e_850': [359., 238.],
-    'theta_v_surface': [324., 212.], 'theta_v_1013': [324., 212.], 'theta_v_1000': [323., 218.], 'theta_v_950': [319., 215.], 'theta_v_900': [315., 220.], 'theta_v_850': [316., 227.],
-    'theta_w_surface': [304., 212.], 'theta_w_1000': [301., 207.], 'theta_w_950': [302., 210.], 'theta_w_900': [301., 214.], 'theta_w_850': [300., 237.],
-    'T_surface': [323., 212.], 'T_1013': [323., 212.], 'T_1000': [322., 218.], 'T_950': [319., 216.], 'T_900': [314., 220.], 'T_850': [315., 227.],
-    'Td_surface': [304., 207.], 'Td_1013': [304., 207.], 'Td_1000': [302., 208.], 'Td_950': [301., 210.], 'Td_900': [298., 200.], 'Td_850': [296., 200.],
-    'Tv_surface': [324., 211.], 'Tv_1013': [324., 211.], 'Tv_1000': [323., 206.], 'Tv_950': [319., 206.], 'Tv_900': [316., 220.], 'Tv_850': [316., 227.],
-    'Tw_surface': [305., 212.], 'Tw_1000': [305., 218.], 'Tw_950': [304., 216.], 'Tw_900': [301., 219.], 'Tw_850': [299., 227.],
-    'u_surface': [36., -35.], 'u_1013': [36., -35.], 'u_1000': [38., -35.], 'u_950': [48., -55.], 'u_900': [59., -58.], 'u_850': [59., -58.],
-    'v_surface': [30., -35.], 'v_1013': [30., -35.], 'v_1000': [35., -38.], 'v_950': [55., -56.], 'v_900': [58., -59.], 'v_850': [58., -59.],
-    'z_1013': [40., -82.], 'z_1000': [48., -69.], 'z_950': [86., -27.], 'z_900': [127., 17.], 'z_850': [174., 63.],
-    'CMI_C01': [0., 1.], 'CMI_C02': [0., 1.], 'CMI_C07': [200., 350.], 'CMI_C08': [200., 300.], 'CMI_C09': [200., 300.], 'CMI_C10': [200., 325.],
-    'CMI_C13': [200., 330.], 'CMI_C16': [200., 300.]}
 
 # default values for extents of domains [start lon, end lon, start lat, end lat]
 DOMAIN_EXTENTS = {'atlantic': [290, 349.75, 16, 55.75],
@@ -595,76 +629,61 @@ def reformat_fronts(fronts, front_types):
     return fronts
 
 
-def normalize_variables(variable_ds, normalization_parameters=normalization_parameters):
+def normalize_dataset(ds, method='standard', normalization_parameters=NORMALIZATION_PARAMS) -> xr.Dataset:
     """
-    Function that normalizes thermodynamic variables via min-max normalization.
-
+    Normalizes variables in an xarray dataset. This function can also accept xarray datasets for GOES satellite data.
+    
     Parameters
     ----------
-    variable_ds: xarray Dataset or DataArray
-        Dataset containing thermodynamic variable data.
+    ds: xarray dataset
+        Dataset containing variables to normalize.
+    method: 'standard', 'standard_weighted', 'min-max'
+        Normalization method to perform on the variables.
+        - 'standard': Standard z-score normalization.
+        - 'standard_weighted': Standard z-score normalization with latitude-weighted means and standard deviations.
+        - 'min-max': Min-max normalization.
     normalization_parameters: dict
         Dictionary containing parameters for normalization.
-
+    
     Returns
     -------
-    variable_ds: xr.Dataset
-        Same as input dataset, but the variables are normalized via min-max normalization.
-    """
-
-    # Place pressure levels as the last dimension of the dataset
-    original_dim_order = variable_ds.dims
-    variable_ds = variable_ds.transpose(*[dim for dim in original_dim_order if dim != 'pressure_level'], 'pressure_level')
-
-    variable_list = list(variable_ds.keys())
-    pressure_levels = variable_ds['pressure_level'].values
-
-    for var in variable_list:
-
-        current_variable_values = variable_ds[var].values
-        new_variable_values = np.zeros_like(current_variable_values)
-
-        for idx, pressure_level in enumerate(pressure_levels):
-            norm_var = '_'.join([var, pressure_level])  # name of the variable as it appears in the normalization parameters dictionary
-            max_val, min_val = normalization_parameters[norm_var]
-            new_variable_values[..., idx] = np.nan_to_num((variable_ds[var].values[..., idx] - min_val) / (max_val - min_val))
-
-        variable_ds[var].values = new_variable_values  # assign new values for variable
-    
-    variable_ds = variable_ds.transpose(*[dim for dim in original_dim_order])
-    return variable_ds
-
-
-def normalize_satellite(satellite_ds, normalization_parameters=normalization_parameters):
-    """
-    Function that normalizes satellite variables via min-max normalization.
-
-    Parameters
-    ----------
-    satellite_ds: xarray Dataset or DataArray
-        Dataset containing thermodynamic variable data.
-    normalization_parameters: dict
-        Dictionary containing parameters for normalization.
-
-    Returns
-    -------
-    satellite_ds: xr.Dataset
-        Same as input dataset, but the variables are normalized via min-max normalization.
+    normalized_ds: xarray dataset
+        Normalized xarray dataset.
     """
     
-    # Place pressure levels as the last dimension of the dataset
-    band_list = list(satellite_ds.keys())
+    ds_copy = ds.copy()
+    ds.close()
     
-    # prevents original dataset outside of the function scope from being overwritten
-    satellite_ds = satellite_ds.copy(deep=True)
+    variables = list(ds_copy.keys())
     
-    for band in band_list:
-        current_variable_values = satellite_ds[band].values
-        min_val, max_val = normalization_parameters[band]
-        new_variable_values = np.nan_to_num((current_variable_values - min_val) / (max_val - min_val))
-        satellite_ds[band].values = new_variable_values  # assign new values for variable
+    is_satellite_dataset = 'band_' in variables[0]  # check for satellite variables
+    
+    try:
+        if is_satellite_dataset:
+            norm_params = xr.Dataset(data_vars={var: ('param', normalization_parameters['%s' % var]) for var in variables},
+                                     coords={'param': ['min', 'max', 'mean', 'std', 'mean_weighted', 'std_weighted']})
+        else:
+            pressure_levels = ds_copy['pressure_level'].values
+            norm_params = xr.Dataset(data_vars={var: (('pressure_level', 'param'), [normalization_parameters['%s_%s' % (var, lvl)] for lvl in pressure_levels])
+                                                for var in variables},
+                                     coords={'param': ['min', 'max', 'mean', 'std', 'mean_weighted', 'std_weighted'],
+                                             'pressure_level': pressure_levels})
+    except ValueError:  # models before the 2025.1.10 update only have min and max values
+        pressure_levels = ds_copy['pressure_level'].values
+        norm_params = xr.Dataset(data_vars={var: (('pressure_level', 'param'), [normalization_parameters['%s_%s' % (var, lvl)] for lvl in pressure_levels])
+                                            for var in variables},
+                                 coords={'param': ['max', 'min'], 'pressure_level': pressure_levels})
 
-    return satellite_ds
+    if method == 'min-max':
+        normalized_ds = (ds_copy - norm_params.sel(param='min')) / (norm_params.sel(param='max') - norm_params.sel(param='min'))
+    elif method == 'standard':
+        normalized_ds = (ds_copy - norm_params.sel(param='mean')) / norm_params.sel(param='std')
+    elif method == 'standard_weighted':
+        normalized_ds = (ds_copy - norm_params.sel(param='mean_weighted')) / norm_params.sel(param='std_weighted')
+    else:
+        raise ValueError("Unrecognized normalization method: %s. Valid normalization methods are 'min-max', 'standard', 'standard-weighted'." % method)
+    
+    return normalized_ds
 
 
 def combine_datasets(input_files: list[str],
@@ -709,11 +728,11 @@ def combine_datasets(input_files: list[str],
 
 
 def lambert_conformal_to_cartesian(
-        lon: np.ndarray | tuple | list | int | float,
-        lat: np.ndarray | tuple | list | int | float,
-        std_parallels: tuple | list = (20., 50.),
-        lon_ref: int | float = 0.,
-        lat_ref: int | float = 0.):
+    lon: np.ndarray | tuple | list | int | float,
+    lat: np.ndarray | tuple | list | int | float,
+    std_parallels: tuple | list = (20., 50.),
+    lon_ref: int | float = 0.,
+    lat_ref: int | float = 0.):
     """
     Transform points on a Lambert Conformal lat/lon grid to cartesian coordinates.
 

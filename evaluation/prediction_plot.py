@@ -2,7 +2,7 @@
 Plot model predictions.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.20
+Script version: 2025.2.1
 """
 import itertools
 import argparse
@@ -106,7 +106,7 @@ if __name__ == '__main__':
         front_types = [front_types, ]
 
     mask, prob_int = args['prob_mask'][0], args['prob_mask'][1]  # Probability mask, contour interval for probabilities
-    vmax, cbar_tick_adjust, cbar_label_adjust, n_colors = 1.01, prob_int, 10, 11
+    vmax, cbar_tick_adjust, cbar_label_adjust, n_colors = 1.01, prob_int, 10, (1 / prob_int) + 1
     levels = np.around(np.arange(0, 1 + prob_int, prob_int), 2)
     cbar_ticks = np.around(np.arange(mask, 1 + prob_int, prob_int), 2)
 

@@ -2,7 +2,7 @@
 Function that trains a new U-Net model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.20
+Script version: 2025.2.1
 """
 import argparse
 import pandas as pd
@@ -327,7 +327,6 @@ if __name__ == "__main__":
         # Create dictionary containing information about the model. This simplifies the process of loading the model
         model_properties = dict({})
         model_properties['domains'] = [train_dataset_properties['domain'], valid_dataset_properties['domain']]
-        model_properties['normalization_parameters'] = data_utils.normalization_parameters
         model_properties['dataset_properties'] = train_dataset_properties
         model_properties['classes'] = num_classes
 

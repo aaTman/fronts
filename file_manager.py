@@ -2,7 +2,7 @@
 Functions in this code manage data files and models.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.19
+Script version: 2025.2.1
 """
 
 import argparse
@@ -286,6 +286,8 @@ class DataFileLoader:
         
         if data_type == 'fronts' and self._file_format != 'tensorflow':
             data_type = 'FrontObjects'
+            new_domains = ['full', ]
+        elif data_type == 'goes-merged':
             new_domains = ['full', ]
         else:
             new_domains = ['global', ]

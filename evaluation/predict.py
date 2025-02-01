@@ -2,7 +2,7 @@
 Generate predictions with a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.26
+Script version: 2025.2.1
 """
 import argparse
 import pandas as pd
@@ -431,8 +431,9 @@ if __name__ == '__main__':
     
     load_mergir = 'Tb' in variables  # load MERGIR data if brightness temperature (Tb) is requested
     variables = [var for var in variables if var != 'Tb']
-
+    
     normalization_parameters = model_properties['normalization_parameters']
+    normalization_method = model_properties['dataset_properties']['normalization_method']
 
     classes = model_properties['classes']
     test_years, valid_years = model_properties['test_years'], model_properties['validation_years']
@@ -540,7 +541,7 @@ if __name__ == '__main__':
             image_lats = variable_ds.latitude.values[:domain_size_lat]
             image_lons = variable_ds.longitude.values[:domain_size_lon]
 
-    variable_batch_ds = data_utils.normalize_variables(variable_ds, normalization_parameters)
+    variable_batch_ds = data_utils.normalize_dataset(variable_ds, method=normalization_method, normalization_parameters=normalization_parameters)
     
     timesteps = variable_batch_ds['time'].values
     num_timesteps = len(timesteps)
@@ -573,12 +574,12 @@ if __name__ == '__main__':
                     Tb = Tb[..., np.newaxis, :, :]  # add vertical dimension
                     Tb = np.tile(Tb, [*[1 for dim in range(len(Tb.shape)-3)], len(pressure_levels), 1, 1])
                 variable_batch_ds_new = np.concatenate([variable_batch_ds_new, Tb], axis=0)
-
+            
             if args['data_source'] == 'era5':
-                variable_batch_ds_new = variable_batch_ds_new.transpose([1, 2, 4, 3, 0])  # (time, longitude, latitude, pressure level, variable)
+                variable_batch_ds_new = variable_batch_ds_new.transpose([1, 2, 3, 4, 0])  # (time, longitude, latitude, pressure level, variable)
             else:
-                variable_batch_ds_new = variable_batch_ds_new.transpose([1, 2, 5, 4, 3, 0])  # (time, forecast hour, longitude, latitude, pressure level, variable)
-
+                variable_batch_ds_new = variable_batch_ds_new.transpose([1, 2, 3, 4, 5, 0])  # (time, forecast hour, longitude, latitude, pressure level, variable)
+                
             if num_dimensions == 2:
 
                 ### Combine pressure levels and variables into one dimension ###

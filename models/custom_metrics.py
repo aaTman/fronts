@@ -6,7 +6,7 @@ Custom metrics for U-Net models.
     - Probability of Detection (POD)
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.5.18
+Script version: 2025.2.1
 """
 import tensorflow as tf
 
@@ -186,7 +186,7 @@ def heidke_skill_score(threshold: float = None,
         true_positives = tf.math.reduce_sum(y_true * y_pred, axis=sum_over_axes)
         false_positives = tf.math.reduce_sum((1 - y_true) * y_pred, axis=sum_over_axes)
         false_negatives = tf.math.reduce_sum(y_true * (1 - y_pred), axis=sum_over_axes)
-        true_negatives = (1 - false_negatives) * (1 - false_positives) * (1 - true_positives)
+        true_negatives = tf.math.reduce_sum((1 - y_true) * (1 - y_pred), axis=sum_over_axes)
 
         if class_weights is not None:
             relative_class_weights = tf.cast(class_weights / tf.math.reduce_sum(class_weights), tf.float32)

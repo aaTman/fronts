@@ -2,7 +2,7 @@
 Convert front XML files to netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.5.14
+Script version: 2025.2.1
 """
 
 import argparse
@@ -22,7 +22,7 @@ pgenType_identifiers = {'COLD_FRONT': 1, 'WARM_FRONT': 2, 'STATIONARY_FRONT': 3,
 """
 conus: 132 W to 60.25 W, 57 N to 26.25 N
 full: 130 E pointing eastward to 10 E, 80 N to 0.25 N
-global: 179.75 W to 180 E, 90 N to 89.75 N
+global: 179.75 W to 180 E, 90 N to 89.75 S
 """
 domain_coords = {'conus': {'lons': np.arange(-132, -60, 0.25), 'lats': np.arange(57, 25, -0.25)},
                  'full': {'lons': np.append(np.arange(-179.75, 10, 0.25), np.arange(130, 180.25, 0.25)), 'lats': np.arange(80, 0, -0.25)},
@@ -161,11 +161,11 @@ if __name__ == "__main__":
 
                 identifier[gridded_indices_unique[:, 0], gridded_indices_unique[:, 1]] = pgenType_identifiers[type_of_front]  # assign labels to the gridded points based on the front type
 
-                fronts_ds = xr.Dataset({"identifier": (('longitude', 'latitude'), identifier)},
-                                       coords={"longitude": gridded_lons, "latitude": gridded_lats}).expand_dims(**expand_dims_args)
+                fronts_ds = xr.Dataset({"identifier": (('latitude', 'longitude'), identifier.transpose())},
+                                       coords={"latitude": gridded_lats, "longitude": gridded_lons}).expand_dims(**expand_dims_args)
 
                 if args['domain'] == 'full':
-                    fronts_ds = fronts_ds.sel(longitude=np.append(np.arange(130, 180.25, 0.25), np.arange(-179.75, 10, 0.25)))
+                    fronts_ds = fronts_ds.sel(longitude=np.append(np.arange(130, 180.01, 0.25), np.arange(-179.75, 10, 0.25)))
 
                 # convert longitudes back to 360-degree system
                 fronts_ds["longitude"] = domain_lons_360[args["domain"]]
@@ -177,6 +177,5 @@ if __name__ == "__main__":
         fronts_ds.attrs["interpolation_distance_km"] = args["distance"]
         fronts_ds.attrs["num_front_types"] = 16
         fronts_ds.attrs["front_types"] = "ALL"
-        fronts_ds.attrs["xml_to_nc_script_version"] = "2024.5.14"
 
         fronts_ds.to_netcdf(path="%s/%d%02d/%s" % (args['netcdf_outdir'], year, month, filename_netcdf), engine='netcdf4', mode='w')
