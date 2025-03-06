@@ -2,7 +2,7 @@
 Convert GDAS and/or GFS grib files to netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.6.6
+Script version: 2025.2.3
 """
 
 import argparse
@@ -115,7 +115,11 @@ if __name__ == "__main__":
                                      xr.open_mfdataset(grib_files, filter_by_keys={"paramId": 260242}, **open_ds_args).rename({"r2": "r"}).drop_vars("heightAboveGround")])
         elif args["model"] == "hrrr":
             sp_data = xr.open_mfdataset(grib_files, backend_kwargs={"filter_by_keys": {'typeOfLevel': 'surface', 'stepType': 'instant'}}, **open_ds_args)["sp"].values[:, np.newaxis, ...]
-            surface_data = xr.open_mfdataset(grib_files, backend_kwargs={"filter_by_keys": {'typeOfLevel': 'surface', 'stepType': 'instant'}}, **open_ds_args)
+            # surface_data = xr.open_mfdataset(grib_files, backend_kwargs={"filter_by_keys": {'typeOfLevel': 'surface', 'stepType': 'instant'}}, **open_ds_args)
+            surface_data = xr.merge([xr.open_mfdataset(grib_files, filter_by_keys={"paramId": 167}, **open_ds_args).rename({"t2m": "t"}).drop_vars("heightAboveGround"),
+                                     xr.open_mfdataset(grib_files, filter_by_keys={"paramId": 165}, **open_ds_args).rename({"u10": "u"}).drop_vars("heightAboveGround"),
+                                     xr.open_mfdataset(grib_files, filter_by_keys={"paramId": 166}, **open_ds_args).rename({"v10": "v"}).drop_vars("heightAboveGround"),
+                                     xr.open_mfdataset(grib_files, filter_by_keys={"paramId": 260242}, **open_ds_args).rename({"r2": "r"}).drop_vars("heightAboveGround")])
         else:  # NAM
             raise NotImplementedError("NAM surface data currently not supported.")
             # TODO: Figure out how to get NAM surface data implemented

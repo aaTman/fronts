@@ -1,8 +1,8 @@
 """
-Function that trains a new U-Net model.
+Script that trains a new U-Net model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.5
 """
 import argparse
 import pandas as pd
@@ -19,7 +19,7 @@ import wandb
 
 
 class ArgumentParser(argparse.ArgumentParser):
-    """ Custom argument parser class """
+    """ Custom argument parser class that allows a list of arguments to be passed on the same line from a text file """
     def convert_arg_line_to_args(self, arg_line):
         """ Allow multiple arguments to be passed on one line if calling a text file with arguments (e.g., --arg 2 5 6) """
         return arg_line.split()
@@ -556,7 +556,9 @@ if __name__ == "__main__":
 
         model.fit(training_dataset.repeat(), validation_data=validation_dataset, validation_freq=valid_freq, epochs=args['epochs'],
             steps_per_epoch=train_steps, validation_steps=valid_steps, callbacks=callbacks, verbose=args['verbose'])
-
+        
+        wandb.finish()
+        
     else:
 
         print("NOTE: Remove the --no_train argument from the command line to start the training process.")

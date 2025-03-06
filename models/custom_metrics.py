@@ -6,7 +6,7 @@ Custom metrics for U-Net models.
     - Probability of Detection (POD)
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.3.5
 """
 import tensorflow as tf
 
@@ -95,12 +95,29 @@ def critical_success_index(threshold: float = None,
     return csi
 
 
-def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3)):
+def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3),
+                          alpha: int | float = 1.0,
+                          beta: int | float = 0.5,
+                          class_weights: list[int | float, ...] = None):
     """
-    Fractions skill score (FSS) loss function.
+    Fractions skill score metric.
 
-    mask_size: int or tuple or list of ints
+    Parameters
+    ----------
+    mask_size: int or tuple
         Size of the mask/pool in the AveragePooling layers.
+    alpha: int or float
+        Parameter that controls how steep the sigmoid function is for discretization. Higher alpha makes the sigmoid function
+            steeper.
+    beta: int or float
+        Parameter used to control some behaviors of the sigmoid discretization function. Default and recommended value is 0.5.
+    class_weights: list of values or None
+            List of weights to apply to each class. The length must be equal to the number of classes in y_pred and y_true.
+
+    Returns
+    -------
+    fss: float
+        Fractions skill score.
 
     References
     ----------
@@ -119,11 +136,14 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
     elif isinstance(mask_size, list):
         mask_size = tuple(mask_size)
 
-    # make sure the length of the mask size is between 1 and 3
+    # make sure the mask size is between 1 and 3
     assert 1 <= len(mask_size) <= 3, "mask_size must have length between 1 and 3, received length %d" % len(mask_size)
 
     # get the pooling layer based off the length of the mask_size tuple
     pool = getattr(tf.keras.layers, "AveragePooling%dD" % len(mask_size))(**pool_args)
+
+    if class_weights is not None:
+        class_weights = tf.cast(class_weights, tf.float32)
 
     @tf.function
     def fss(y_true, y_pred):
@@ -134,11 +154,19 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
             Tensor containing model predictions.
         """
 
+        if class_weights is not None:
+            y_true *= class_weights
+            y_pred *= class_weights
+
+        # discretize model predictions and labels
+        y_true = tf.math.sigmoid(alpha * (y_true - beta))
+        y_pred = tf.math.sigmoid(alpha * (y_pred - beta))
+
         O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
         M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
 
-        MSE_n = tf.keras.metrics.mean_squared_error(O_n, M_n)  # MSE for model forecast fractions (Eq. 5 in RL2008)
-        MSE_ref = tf.reduce_mean(tf.square(O_n)) + tf.reduce_mean(tf.square(M_n))  # reference forecast (Eq. 7 in RL2008)
+        MSE_n = tf.keras.metrics.mean_squared_error(O_n * class_weights, M_n * class_weights)  # MSE for model forecast fractions (Eq. 5 in RL2008)
+        MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(tf.square(M_n * class_weights))  # reference forecast (Eq. 7 in RL2008)
 
         FSS = 1 - MSE_n / (MSE_ref + 1e-10)  # fractions skill score (Eq. 6 in RL2008)
 

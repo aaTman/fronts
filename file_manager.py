@@ -2,7 +2,7 @@
 Functions in this code manage data files and models.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.9
 """
 
 import argparse
@@ -255,12 +255,19 @@ class DataFileLoader:
             raise ValueError('Unknown file type: %s' % self._file_format)
         
         if self._file_format in ['grib', 'netcdf']:
-            glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_{domain}{self._file_extension}'
-                         for yr in self._years
-                         for mo in self._months
-                         for dy in self._days
-                         for hr in self._hours
-                         for domain in self._domains]
+            if data_type in ['era5', 'gfs']:
+                glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_{domain}{self._file_extension}'
+                             for yr in self._years
+                             for mo in self._months
+                             for dy in self._days
+                             for hr in self._hours
+                             for domain in self._domains]
+            else:
+                glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_*{self._file_extension}'
+                             for yr in self._years
+                             for mo in self._months
+                             for dy in self._days
+                             for hr in self._hours]
         else:
             glob_strs = [f'{file_dir}/{data_type}_{yr}{mo}{self._file_extension}'
                          for yr in self._years
@@ -289,16 +296,25 @@ class DataFileLoader:
             new_domains = ['full', ]
         elif data_type == 'goes-merged':
             new_domains = ['full', ]
+        elif data_type == 'hrrr':
+            new_domains = ['hrrr', ]
         else:
-            new_domains = ['global', ]
+            new_domains = 'global'
         
         if self._file_format in ['grib', 'netcdf']:
-            glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_{domain}{self._file_extension}'
-                         for yr in self._years
-                         for mo in self._months
-                         for dy in self._days
-                         for hr in self._hours
-                         for domain in new_domains]
+            if data_type in ['era5', 'gfs']:
+                glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_{domain}{self._file_extension}'
+                             for yr in self._years
+                             for mo in self._months
+                             for dy in self._days
+                             for hr in self._hours
+                             for domain in new_domains]
+            else:
+                glob_strs = [f'{file_dir}/{yr}{mo}/{data_type}_{yr}{mo}{dy}{hr}_*{self._file_extension}'
+                             for yr in self._years
+                             for mo in self._months
+                             for dy in self._days
+                             for hr in self._hours]
         else:  # tensorflow
             glob_strs = [f'{file_dir}/{data_type}_{yr}{mo}{self._file_extension}'
                          for yr in self._years
@@ -316,15 +332,25 @@ class DataFileLoader:
         control_basename_list = [os.path.basename(file) for file in self.files[0]]
         current_basename_list = [os.path.basename(file) for file in current_file_list]
         
+        # pull the data sources of the files so we can properly add forecast hours or domains to the file info lists
+        control_data_source = control_basename_list[0].split('_')[0]
+        current_data_source = current_basename_list[0].split('_')[0]
+
         # get details contained within the file names
         control_basename_info = [file.replace(self._file_extension, '').split('_')[1:] for file in control_basename_list]
         current_basename_info = [file.replace(self._file_extension, '').split('_')[1:] for file in current_basename_list]
         
-        # if the file info has length 2, there is no forecast hour tag, so we need to add it
         if len(control_basename_info[0]) == 2:
-            [file_info.insert(1, 'f000') for file_info in control_basename_info]
+            if control_data_source in ['era5', 'FrontObjects', 'goes-merged']:
+                [file_info.insert(1, 'f000') for file_info in control_basename_info]
+            else:
+                [file_info.insert(2, control_data_source) for file_info in control_basename_info]
+
         if len(current_basename_info[0]) == 2:
-            [file_info.insert(1, 'f000') for file_info in current_basename_info]
+            if current_data_source in ['era5', 'FrontObjects', 'goes-merged']:
+                [file_info.insert(1, 'f000') for file_info in current_basename_info]
+            else:
+                [file_info.insert(2, current_data_source) for file_info in current_basename_info]
         
         # remove the domain from the information arrays (if requested)
         if ignore_domain:

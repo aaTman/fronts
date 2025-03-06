@@ -4,7 +4,7 @@
 Generate predictions using a model with tensorflow datasets.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.13
 """
 import argparse
 import sys
@@ -27,6 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_source', type=str, default='era5', help='Data source for variables')
     parser.add_argument('--gpu_device', type=int, nargs='+', help='GPU device number.')
     parser.add_argument('--batch_size', type=int, default=8, help="Batch size for the model predictions.")
+    parser.add_argument('--steps', type=int, default=4, help="Number of steps to take when generating the model predictions.")
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
     parser.add_argument('--overwrite', action='store_true', help="Overwrite any existing prediction files.")
     args = vars(parser.parse_args())
@@ -77,13 +78,18 @@ if __name__ == '__main__':
     # The axis that the predicts will be concatenated on depends on the shape of the output, which is determined by deep supervision
     concat_axis = 1 if model_properties['deep_supervision'] else 0
     
-    if dataset_properties['override_extent'] is not None:
-        extent = dataset_properties['override_extent']
-        lons = np.arange(extent[0], extent[1] + 0.25, 0.25)
-        lats = np.arange(extent[2], extent[3] + 0.25, 0.25)[::-1]
-    else:
-        lons = np.arange(DOMAIN_EXTENTS[domain][0], DOMAIN_EXTENTS[domain][1] + 0.25, 0.25)
-        lats = np.arange(DOMAIN_EXTENTS[domain][2], DOMAIN_EXTENTS[domain][3] + 0.25, 0.25)[::-1]
+    if args['data_source'] in ['era5', 'gfs', 'gdas']:
+        if dataset_properties['override_extent'] is not None:
+            extent = dataset_properties['override_extent']
+            lats = np.arange(extent[2], extent[3] + 0.25, 0.25)[::-1]
+            lons = np.arange(extent[0], extent[1] + 0.25, 0.25)
+        else:
+            lats = np.arange(DOMAIN_EXTENTS[domain][2], DOMAIN_EXTENTS[domain][3] + 0.25, 0.25)[::-1]
+            lons = np.arange(DOMAIN_EXTENTS[domain][0], DOMAIN_EXTENTS[domain][1] + 0.25, 0.25)
+    elif args['data_source'] == 'hrrr':
+        hrrr_coords = xr.open_dataset('%s/coordinates/hrrr.nc' % os.getcwd())
+        lats = hrrr_coords['latitude'][:1056, :1728].to_numpy()
+        lons = hrrr_coords['longitude'][:1056, :1728].to_numpy()
 
     model = fm.load_model(args['model_number'], args['model_dir'])
 
@@ -101,23 +107,38 @@ if __name__ == '__main__':
             
             time_array = pd.read_pickle('%s/timesteps_%d%02d.pkl' % (args['tf_indir'], year, month))
             
+            if args['data_source'] in ['era5', 'gfs', 'gdas']:
+                xr_ds_coords = (('time', 'latitude', 'longitude'), {'time': time_array, 'latitude': lats, 'longitude': lons})
+            else:
+                xr_ds_coords = (('time', 'y', 'x'), {'time': time_array, 'latitude': (('y', 'x'), lats), 'longitude': (('y', 'x'), lons)})
+            
             input_file = [file for file in files_for_year if '_%d%02d' % (year, month) in file][0]
             tf_ds = tf.data.Dataset.load(input_file)
-            tf_ds = tf_ds.batch(args['batch_size'])
-            prediction = np.array(model.predict(tf_ds)).astype(np.float16)
-
+            # tf_ds = tf_ds.batch(args['batch_size'])
+            
+            num_timesteps = len(time_array)
+            timestep_indices = np.linspace(0, num_timesteps, args['steps'] + 1).astype(int)
+            
+            # generate model predictions
+            predictions = []
+            for step in range(args['steps']):
+                tf_ds_step = tf_ds.skip(timestep_indices[step]).take(timestep_indices[step + 1] - timestep_indices[step])
+                prediction = np.array(model.predict(tf_ds_step, batch_size=args['batch_size'])).astype('float16')
+                predictions.append(prediction)
+            predictions = np.concatenate(predictions, axis=1)
+            
             if model_properties['deep_supervision']:
-                prediction = prediction[0, ...]  # select the top output of the model, since it is the only one we care about
+                predictions = predictions[0, ...]  # select the top output of the model, since it is the only one we care about
 
             if num_dims[1] == 3:
                 # Take the maxmimum probability for each front type over the vertical dimension (pressure levels)
-                prediction = np.amax(prediction, axis=3)  # shape: (time, latitude, longitude, front type)
+                predictions = np.amax(predictions, axis=3)  # shape: (time, latitude, longitude, front type)
 
-            prediction = prediction[..., 1:]  # remove the 'no front' type from the array
+            predictions = predictions[..., 1:]  # remove the 'no front' type from the array
 
-            xr.Dataset(data_vars={front_type: (('time', 'latitude', 'longitude'), prediction[:, :, :, front_type_no])
+            xr.Dataset(data_vars={front_type: (xr_ds_coords[0], predictions[:, :, :, front_type_no])
                                   for front_type_no, front_type in enumerate(front_types)},
-                       coords={'time': time_array, 'longitude': lons, 'latitude': lats}).astype('float32').\
+                       coords=xr_ds_coords[1]).astype('float32').\
                 to_netcdf(path=prediction_dataset_path, mode='w', engine='netcdf4')
 
-            del prediction  # Delete the prediction variable so it can be recreated for the next month
+            del predictions  # Delete the predictions variable so it can be recreated for the next month

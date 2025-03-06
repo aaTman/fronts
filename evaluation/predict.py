@@ -2,7 +2,7 @@
 Generate predictions with a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.12
 """
 import argparse
 import pandas as pd
@@ -442,7 +442,7 @@ if __name__ == '__main__':
         domain_extent = data_utils.DOMAIN_EXTENTS[args['data_source']]
     except KeyError:
         domain_extent = data_utils.DOMAIN_EXTENTS[args['domain']]
-
+    
     ### Properties of the final map made from stitched images ###
     num_images_lon, num_images_lat = args['num_images'][0], args['num_images'][1]
     if args["num_images"] == [1, 1]:

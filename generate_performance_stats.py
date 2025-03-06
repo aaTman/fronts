@@ -2,7 +2,7 @@
 Generate performance statistics for a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.16
 """
 import argparse
 import numpy as np
@@ -10,23 +10,20 @@ import pandas as pd
 import tensorflow as tf
 import xarray as xr
 import os
-import file_manager as fm
 from utils import data_utils
-from utils.data_utils import DOMAIN_EXTENTS, missing_fronts_ind
+from utils.data_utils import DOMAIN_EXTENTS
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model_dir', type=str, required=True, help='Directory for the models.')
+    parser.add_argument('--model_number', type=int, required=True, help='Model number.')
+    parser.add_argument('--tf_indir', type=str, help='Directory for the TensorFlow dataset used for model evaluation.')
     parser.add_argument('--dataset', type=str, help="Dataset for which to make predictions. Options are: 'training', 'validation', 'test'")
     parser.add_argument('--year_and_month', type=int, nargs=2, help="Year and month for which to make predictions.")
     parser.add_argument('--domain', type=str, help='Domain of the data.')
     parser.add_argument('--gpu_device', type=int, nargs='+', help='GPU device number.')
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
-    parser.add_argument('--model_dir', type=str, required=True, help='Directory for the models.')
-    parser.add_argument('--model_number', type=int, required=True, help='Model number.')
-    parser.add_argument('--fronts_indir', type=str, help='Main directory for the netcdf files containing frontal objects.')
-    parser.add_argument('--data_source', type=str, default='era5', help='Data source for variables')
-    parser.add_argument('--satellite_indir', type=str, help='Main directory for the netcdf files containing satellite data.')
     parser.add_argument('--overwrite', action='store_true', help="Overwrite any existing statistics files.")
     args = vars(parser.parse_args())
 
@@ -34,10 +31,6 @@ if __name__ == '__main__':
     domain = args['domain']
     
     variables = model_properties['dataset_properties']['variables']
-    all_goes_vars = ['band_%d' for band in range(1, 17)]
-    goes_vars = [var for var in variables if var in all_goes_vars]  # GOES satellite variables
-    
-    model_uses_goes = args['goes_indir'] is not None and len(goes_vars) > 0  # load GOES data if any satellite bands are requested
 
     # Some older models do not have the 'dataset_properties' dictionary
     try:
@@ -69,25 +62,9 @@ if __name__ == '__main__':
 
     for year in years:
         
-        front_files_obj = fm.DataFileLoader(args['fronts_indir'], years=year, data_type='fronts', file_format='netcdf', domains=['full',])
-
-        ### add GOES data files ###
-        if model_uses_goes:
-            front_files_obj.add_file_list(args['goes_indir'], 'goes')
-            _, front_files, _ = front_files_obj.files
-        else:
-            _, front_files = front_files_obj.files
-
         for month in months:
-
-            front_files_month = [file for file in front_files if '_%d%02d' % (year, month) in file]
-
-            ### remove timesteps that do not have data ###
-            missing_indices = np.array([])
-            missing_fronts = "%d-%02d" % (year, month) in missing_fronts_ind
-            if missing_fronts:
-                missing_indices = np.append(missing_indices, missing_fronts_ind["%d-%02d" % (year, month)])
-                front_files_month = [i for j, i in enumerate(front_files_month) if j not in missing_indices]
+            
+            front_files_month = pd.read_pickle('%s/front_files_%d%02d.pkl' % (args['tf_indir'], year, month))
             
             if domain != 'conus':
                 for front_file in front_files_month[::-1]:
@@ -117,11 +94,11 @@ if __name__ == '__main__':
                 if model_properties['dataset_properties']['override_extent'] is None:
                     slice_extent = dict(longitude=slice(DOMAIN_EXTENTS[args['domain']][0], DOMAIN_EXTENTS[args['domain']][1]),
                                         latitude=slice(DOMAIN_EXTENTS[args['domain']][3], DOMAIN_EXTENTS[args['domain']][2]))
-
+            
             fronts_ds = xr.open_mfdataset(front_files_month, combine='nested', concat_dim='time').sel(**slice_extent)
             fronts_ds_month = data_utils.reformat_fronts(fronts_ds.sel(time='%d-%02d' % (year, month)), front_types)
             
-            time_array = probs_ds['time'].values
+            time_array = pd.read_pickle('%s/timesteps_%d%02d.pkl' % (args['tf_indir'], year, month))
             num_timesteps = len(time_array)
             lons = fronts_ds_month['longitude'].values
             lats = fronts_ds_month['latitude'].values

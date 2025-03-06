@@ -2,7 +2,7 @@
 Plot performance diagrams for a model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.12.20
+Script version: 2025.2.2
 """
 import argparse
 import cartopy.crs as ccrs
@@ -47,7 +47,7 @@ if __name__ == '__main__':
         front_types = model_properties['front_types']
     
     spatial_files = list(sorted(glob('%s/model_%d/statistics/model_%d_statistics_%s_*_spatial.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain']))))
-    temporal_files = list(sorted(glob('%s/model_%d/statistics/model_%d_statistics_%s_2019*_temporal.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain']))))
+    temporal_files = list(sorted(glob('%s/model_%d/statistics/model_%d_statistics_%s_*_temporal.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain']))))
     
     spatial_ds = xr.open_mfdataset(spatial_files, combine='nested', concat_dim='time')
     temporal_ds = xr.open_mfdataset(temporal_files, combine='nested', concat_dim='time')

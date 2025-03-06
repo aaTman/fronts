@@ -2,7 +2,7 @@
 Plot model predictions.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.12
 """
 import itertools
 import argparse
@@ -25,6 +25,7 @@ if __name__ == '__main__':
     parser.add_argument('--init_time', type=int, nargs=4, help='Date and time of the data. Pass 4 ints in the following order: year, month, day, hour')
     parser.add_argument('--domain', type=str, required=True, help='Domain of the data.')
     parser.add_argument('--forecast_hour', type=int, help='Forecast hour for the GDAS data')
+    parser.add_argument('--front_dilation', type=int, default=1, help='Number of pixels to expand the fronts by in all directions.')
     parser.add_argument('--model_dir', type=str, required=True, help='Directory for the models.')
     parser.add_argument('--model_number', type=int, required=True, help='Model number.')
     parser.add_argument('--fronts_netcdf_indir', type=str, help='Main directory for the netcdf files containing frontal objects.')
@@ -43,7 +44,7 @@ if __name__ == '__main__':
     if args['deterministic'] and args['targets']:
         raise TypeError("Cannot plot deterministic splines and ground truth targets at the same time. Only one of --deterministic, --targets may be passed")
 
-    DEFAULT_COLORBAR_POSITION = {'conus': 0.75, 'full': 0.85, 'MERGIR': 0.9, 'global': 0.74}
+    DEFAULT_COLORBAR_POSITION = {'conus': 0.75, 'full': 0.85, 'goes-merged': 0.88, 'hrrr': 0.77, 'MERGIR': 0.9, 'global': 0.74}
     cbar_position = DEFAULT_COLORBAR_POSITION[args['domain']]
 
     model_properties = pd.read_pickle(f"{args['model_dir']}/model_{args['model_number']}/model_{args['model_number']}_properties.pkl")
@@ -58,21 +59,27 @@ if __name__ == '__main__':
     extent = data_utils.DOMAIN_EXTENTS[args['domain']]
 
     year, month, day, hour = args['init_time'][0], args['init_time'][1], args['init_time'][2], args['init_time'][3]
-
+    timestep = np.datetime64('%d-%02d-%02dT%02d' % (year, month, day, hour)).astype(object)
+    
     ### Attempt to pull predictions from a monthly netcdf file generated with tensorflow datasets, otherwise try to pull a single netcdf file ###
     try:
         probs_file = f"{args['model_dir']}/model_{args['model_number']}/probabilities/model_{args['model_number']}_pred_{args['domain']}_{year}%02d.nc" % month
-        fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_full.nc' % (args['fronts_netcdf_indir'], year, month, year, month, day, hour)
+        
         plot_filename = '%s/model_%d/maps/model_%d_%d%02d%02d%02d_%s.png' % (args['model_dir'], args['model_number'], args['model_number'], year, month, day, hour, args['domain'])
         probs_ds = xr.open_mfdataset(probs_file).sel(time=['%d-%02d-%02dT%02d' % (year, month, day, hour), ])
+        
+        if args['forecast_hour'] is not None:
+            fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_f%03d_%s.nc' % (args['fronts_netcdf_indir'], year, month, year, month, day, hour, args['forecast_hour'], args['data_source'])
+        else:
+            fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_%s.nc' % (args['fronts_netcdf_indir'], year, month, year, month, day, hour, args['data_source'])
+    
     except OSError:
         probs_dir = f"{args['model_dir']}/model_{args['model_number']}/predictions"
-
+    
         if args['forecast_hour'] is not None:
-            timestep = np.datetime64('%d-%02d-%02dT%02d' % (year, month, day, hour)).astype(object)
             forecast_timestep = timestep if args['forecast_hour'] == 0 else timestep + np.timedelta64(args['forecast_hour'], 'h').astype(object)
             new_year, new_month, new_day, new_hour = forecast_timestep.year, forecast_timestep.month, forecast_timestep.day, forecast_timestep.hour - (forecast_timestep.hour % 3)
-            fronts_file = '%s/%s%s/FrontObjects_%s%s%s%02d_full.nc' % (args['fronts_netcdf_indir'], new_year, new_month, new_year, new_month, new_day, new_hour)
+            fronts_file = '%s/%s%s/FrontObjects_%s%s%s%02d_f%03d_full.nc' % (args['fronts_netcdf_indir'], new_year, new_month, new_year, new_month, new_day, new_hour, args['forecast_hour'])
             filename_base = f'model_%d_{year}%02d%02d%02d_%s_%s_f%03d' % (args['model_number'], month, day, hour, args['domain'], args['data_source'], args['forecast_hour'])
         else:
             fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_full.nc' % (args['fronts_netcdf_indir'], year, month, year, month, day, hour)
@@ -83,19 +90,29 @@ if __name__ == '__main__':
         probs_file = f'{probs_dir}/{filename_base}_probabilities.nc'
         probs_ds = xr.open_dataset(probs_file)
 
+    fronts_file = '%s/%d%02d/FrontObjects_%d%02d%02d%02d_full.nc' % (args['fronts_netcdf_indir'], year, month, year, month, day, hour)
+
     try:
         front_types = model_properties['dataset_properties']['front_types']
     except KeyError:
         front_types = model_properties['front_types']
-
+    
+    # front_types = ['DL',]
     labels = front_types
     fronts_found = False
-
+    
     if args['targets']:
         right_title = 'Splines: NOAA fronts'
         try:
-            fronts = xr.open_dataset(fronts_file).sel(longitude=slice(extent[0], extent[1]), latitude=slice(extent[3], extent[2]))
+            if args['data_source'] in ['era5', 'gfs', 'gdas']:
+                fronts = xr.open_dataset(fronts_file).sel(longitude=slice(extent[0], extent[1]), latitude=slice(extent[3], extent[2]))
+            elif args['data_source'] == 'hrrr':
+                fronts = xr.open_dataset(fronts_file).isel(y=slice(0, 1056), x=slice(0, 1728))
+                hrrr_coords = xr.open_dataset('%s/coordinates/hrrr.nc' % os.getcwd()).isel(y=slice(0, 1056), x=slice(0, 1728))
+                fronts = fronts.assign_coords({'latitude': (('y', 'x'), hrrr_coords['latitude'].to_numpy()),
+                                               'longitude': (('y', 'x'), hrrr_coords['longitude'].to_numpy())})
             fronts = data_utils.reformat_fronts(fronts, front_types=front_types)
+            fronts = data_utils.expand_fronts(fronts, iterations=args['front_dilation'])
             labels = fronts.attrs['labels']
             fronts = xr.where(fronts == 0, float('NaN'), fronts)
             fronts_found = True
@@ -116,7 +133,8 @@ if __name__ == '__main__':
 
     cmap_front = colors.ListedColormap(front_colors_by_type, name='from_list', N=len(front_colors_by_type))
     norm_front = colors.Normalize(vmin=1, vmax=len(front_colors_by_type) + 1)
-
+    
+    # probs_ds = probs_ds.isel(time=0)
     probs_ds = probs_ds.isel(time=0) if args['data_source'] == 'era5' else probs_ds.isel(time=0, forecast_hour=0)
     probs_ds = probs_ds.transpose(*transpose_dims)
 
@@ -152,14 +170,14 @@ if __name__ == '__main__':
         data_title = 'Data: ERA5 reanalysis %d-%02d-%02d-%02dz\n' \
                      'Predictions valid: %d-%02d-%02d-%02dz' % (year, month, day, hour, year, month, day, hour)
 
-    fig, ax = plt.subplots(1, 1, figsize=(22, 8), subplot_kw={'projection': ccrs.PlateCarree(central_longitude=250)})
+    fig, ax = plt.subplots(1, 1, figsize=(22, 8), subplot_kw={'projection': ccrs.PlateCarree(central_longitude=0)})
     plot_background(extent, ax=ax, linewidth=0.5)
     # ax.gridlines(draw_labels=True, zorder=0)
 
     cbar_front_labels = []
     cbar_front_ticks = []
 
-    for front_no, front_key, front_name, front_label, cmap in zip(range(1, len(front_names_by_type) + 1), list(probs_ds.keys()), front_names_by_type, front_types, contour_maps_by_type):
+    for front_no, front_key, front_name, front_label, cmap in zip(range(1, len(front_names_by_type) + 1), front_types, front_names_by_type, front_types, contour_maps_by_type):
 
         if args['filled_contours']:
             cmap_probs, norm_probs = cm.get_cmap(cmap, n_colors), colors.Normalize(vmin=0, vmax=vmax)
@@ -202,5 +220,6 @@ if __name__ == '__main__':
     ax.set_title('')
     ax.set_title(data_title, loc='left')
     ax.set_title("model number: %d" % args['model_number'], loc='right')
+    ax.set_title("FrontFinder Predictions", loc='right')
     plt.savefig(plot_filename, bbox_inches='tight', dpi=500)
     plt.close()

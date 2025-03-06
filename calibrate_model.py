@@ -2,7 +2,7 @@
 Calibrate a trained model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.10.10
+Script version: 2025.2.2
 """
 import argparse
 import pandas as pd
@@ -13,6 +13,7 @@ import xarray as xr
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import r2_score
+from glob import glob
 
 
 if __name__ == '__main__':
@@ -46,18 +47,19 @@ if __name__ == '__main__':
 
     model_properties['calibration_models'][args['domain']] = dict()
 
-    stats_ds = xr.open_dataset('%s/model_%d/statistics/model_%d_statistics_%s_%s.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain'], args['dataset']))
-
+    temporal_files = list(sorted(glob('%s/model_%d/statistics/model_%d_statistics_%s_*_temporal.nc' % (args['model_dir'], args['model_number'], args['model_number'], args['domain']))))
+    temporal_ds = xr.open_mfdataset(temporal_files, combine='nested', concat_dim='time')
+    
     axis_ticks = np.arange(0.1, 1.1, 0.1)
 
     for front_label in front_types:
 
         model_properties['calibration_models'][args['domain']][front_label] = dict()
 
-        true_positives = stats_ds[f'tp_temporal_{front_label}'].values
-        false_positives = stats_ds[f'fp_temporal_{front_label}'].values
+        true_positives = temporal_ds[f'tp_temporal_{front_label}'].values
+        false_positives = temporal_ds[f'fp_temporal_{front_label}'].values
 
-        thresholds = stats_ds['threshold'].values
+        thresholds = temporal_ds['threshold'].values
 
         ### Sum the true positives along the 'time' axis ###
         true_positives_sum = np.sum(true_positives, axis=0)
@@ -81,14 +83,17 @@ if __name__ == '__main__':
 
             x = [threshold for threshold, frequency in zip(thresholds[1:], observed_relative_frequency[boundary]) if not np.isnan(frequency)]
             y = [frequency for threshold, frequency in zip(thresholds[1:], observed_relative_frequency[boundary]) if not np.isnan(frequency)]
-
+            
+            x.append(1.0)
+            y.append(1.0)
+            
             ### Isotonic Regression ###
             ir = IsotonicRegression(out_of_bounds='clip')
             ir.fit_transform(x, y)
             calibrated_probabilities.append(ir.predict(x))
             r_squared = r2_score(y, calibrated_probabilities[boundary])
 
-            axs[0].plot(x, y, color=color, linewidth=1, label='%d km' % ((boundary + 1) * 50))
+            axs[0].plot(x[:-1], y[:-1], color=color, linewidth=1, label='%d km' % ((boundary + 1) * 50))
             axs[1].plot(x, calibrated_probabilities[boundary], color=color, linestyle='--', linewidth=1, label=r'%d km ($R^2$ = %.3f)' % ((boundary + 1) * 50, r_squared))
             model_properties['calibration_models'][args['domain']][front_label]['%d km' % ((boundary + 1) * 50)] = ir
 

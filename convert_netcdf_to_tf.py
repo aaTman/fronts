@@ -2,7 +2,7 @@
 Convert netCDF files containing variable, satellite, and frontal boundary data into tensorflow datasets for model training.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.2.16
 """
 import argparse
 import itertools
@@ -159,10 +159,11 @@ if __name__ == '__main__':
     tf.random.set_seed(args["seed"])
     np.random.seed(args["seed"])
     
-    # Gather all ERA5/model and front label files that can be used to generate the dataset for the current month.
-    file_obj = fm.DataFileLoader(args['variables_indir'], args['data_source'], 'netcdf', years=year, months=month, domains='global')
-    file_obj.add_file_list(args['fronts_indir'], 'fronts', ignore_domain=True)
+    file_loader_domain = 'global' if args['data_source'] == 'era5' else args['domain']
     
+    # Gather all ERA5/model and front label files that can be used to generate the dataset for the current month.
+    file_obj = fm.DataFileLoader(args['variables_indir'], args['data_source'], 'netcdf', years=year, months=month, domains=file_loader_domain)
+    file_obj.add_file_list(args['fronts_indir'], 'fronts', ignore_domain=True)
     '''
     If applicable - load GOES satellite files.
     '''
@@ -219,7 +220,7 @@ if __name__ == '__main__':
         if args['override_extent'][1] > 360:
             extent_crosses_meridian = True
     
-    if args["domain"] in ["conus", "full"]:
+    if args["domain"] in ["conus", "full", "goes-merged"]:
         if args['override_extent'] is None:
             sel_kwargs = {'latitude': slice(data_utils.DOMAIN_EXTENTS[args['domain']][3], data_utils.DOMAIN_EXTENTS[args['domain']][2]),
                           'longitude': slice(data_utils.DOMAIN_EXTENTS[args['domain']][0], data_utils.DOMAIN_EXTENTS[args['domain']][1])}
@@ -249,7 +250,7 @@ if __name__ == '__main__':
     input_tensor_shapes = []
     front_tensor_shapes = []
     
-    timesteps = []
+    front_files_kept = []
 
     for timestep_no in range(num_timesteps):
 
@@ -257,6 +258,7 @@ if __name__ == '__main__':
 
         # open front dataset
         front_dataset = xr.open_dataset(fronts_netcdf_files[timestep_no], engine='netcdf4').isel(**isel_kwargs)
+
         if args["data_source"] not in ["hrrr", "namnest-conus", "nam-12km"]:
             front_dataset = front_dataset.sel(**sel_kwargs).astype('float16')
             transpose_dims = ('latitude', 'longitude')  # spatial dimensions that need to be transposed
@@ -321,7 +323,7 @@ if __name__ == '__main__':
                 for front_type_no, previous_front_type in enumerate(args['add_previous_fronts']):
                     previous_fronts[..., 0] = np.where(previous_front_dataset['identifier'].values == front_type_no + 1, 1, 0)  # Place previous front labels at the surface level
                     variables_dataset[previous_front_type] = ((*transpose_dims, 'pressure_level'), previous_fronts)  # Add previous fronts to the predictor dataset
-            
+
             # create a list of starting indices along the latitude dimension
             if args['images'][0] > 1 and domain_size[0] > args['image_size'][0] + args['images'][0]:
                 start_indices_lat = np.linspace(0, domain_size[0] - args['image_size'][0], args['images'][0]).astype(int)
@@ -335,12 +337,12 @@ if __name__ == '__main__':
                 start_indices_lon = np.zeros((args['images'][1], ), dtype=int)
 
             image_order = list(itertools.product(start_indices_lat, start_indices_lon))  # Every possible combination of longitude and latitude starting points
-
+            
             if args['shuffle_images']:
                 np.random.shuffle(image_order)
             
             images_to_keep = np.random.random(size=len(image_order)) <= args["image_fraction"]
-            
+
             for i, image_start_indices in enumerate(image_order):
                 
                 if args['verbose']:
@@ -375,7 +377,7 @@ if __name__ == '__main__':
 
                 # normalize variables and convert dataset to a tensor
                 new_variables_dataset = data_utils.normalize_dataset(new_variables_dataset, args['normalization_method'], dataset_props['normalization_parameters']).to_array().transpose(*transpose_dims, 'pressure_level', 'variable')
-                input_tensor = tf.convert_to_tensor(new_variables_dataset[start_index_lat:end_index_lat, start_index_lon:end_index_lon, :, :], dtype=tf.float16)
+                input_tensor = tf.convert_to_tensor(np.nan_to_num(new_variables_dataset[start_index_lat:end_index_lat, start_index_lon:end_index_lon, :, :]), dtype=tf.float16)
                 
                 random_values = tf.random.uniform(shape=input_tensor.shape)  # random noise values, will not necessarily be used
                 
@@ -403,7 +405,7 @@ if __name__ == '__main__':
                     new_goes_dataset = data_utils.normalize_dataset(new_goes_dataset, args['normalization_method'], dataset_props['normalization_parameters']).to_array().transpose(*transpose_dims, 'variable')
                     
                     # convert GOES dataset to a tensor
-                    goes_tensor = tf.convert_to_tensor(new_goes_dataset[start_index_lat:end_index_lat, start_index_lon:end_index_lon, :], dtype=tf.float16)
+                    goes_tensor = tf.convert_to_tensor(np.nan_to_num(new_goes_dataset[start_index_lat:end_index_lat, start_index_lon:end_index_lon, :]), dtype=tf.float16)
                     
                     # rotate GOES image ###
                     if flip_lat:
@@ -434,7 +436,7 @@ if __name__ == '__main__':
                 else:
                     input_tensors_for_month = input_tensors_for_month.concatenate(input_tensor_for_timestep)
                 
-                front_tensor = tf.convert_to_tensor(front_image, dtype=tf.int32)
+                front_tensor = tf.convert_to_tensor(np.nan_to_num(front_image), dtype=tf.int32)
                 front_tensor_shapes.append(front_tensor.shape)
         
                 assert len(set(front_tensor_shapes)) == 1, (f"ERROR: Attempted to add {front_tensor_shapes[-1]} to dataset with shape {front_tensor_shapes[0]}. "
@@ -460,7 +462,7 @@ if __name__ == '__main__':
                     front_tensors_for_month = front_tensors_for_month.concatenate(front_tensor_for_timestep)
                 
             timesteps_kept += 1
-            timesteps.append(front_dataset['time'].values)
+            front_files_kept.append(fronts_netcdf_files[timestep_no])
         else:
             timesteps_discarded += 1
     
@@ -474,6 +476,6 @@ if __name__ == '__main__':
     except NameError:
         print("No images could be retained with the provided arguments.")
     
-    with open('%s/timesteps_%d%02d.pkl' % (args['tf_outdir'], year, month), 'wb') as f:
-        pickle.dump(np.array(timesteps), f)
+    with open('%s/front_files_%d%02d.pkl' % (args['tf_outdir'], year, month), 'wb') as f:
+        pickle.dump(np.array(front_files_kept), f)
     
