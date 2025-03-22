@@ -28,8 +28,8 @@ NA = 6.02214076e23  # Avogrado constant (mol^-1)
 kB = 1.380649e-23  # Boltzmann constant (J/K)
 
 
-def absolute_humidity(T: int | float | np.ndarray | tf.Tensor,
-                      Td: int | float | np.ndarray | tf.Tensor):
+def absolute_humidity(T,
+                      Td):
     """
     Calculates absolute humidity from temperature and dewpoint temperature.
 
@@ -69,7 +69,7 @@ def absolute_humidity(T: int | float | np.ndarray | tf.Tensor,
     return AH
 
 
-def dewpoint_from_vapor_pressure(vapor_pressure: int | float | np.ndarray | tf.Tensor):
+def dewpoint_from_vapor_pressure(vapor_pressure):
     """
     Calculates dewpoint temperature from vapor pressure.
 
@@ -103,10 +103,7 @@ def dewpoint_from_vapor_pressure(vapor_pressure: int | float | np.ndarray | tf.T
     return Td
 
 
-def dewpoint_from_specific_humidity(
-    P: int | float | np.ndarray | tf.Tensor,
-    T: int | float | np.ndarray | tf.Tensor,
-    q: int | float | np.ndarray | tf.Tensor):
+def dewpoint_from_specific_humidity(P, T, q):
     """
     Calculates dewpoint temperature from specific humidity, pressure, and temperature.
 
@@ -169,8 +166,8 @@ def dewpoint_from_specific_humidity(
     return Td + 273.15
 
 
-def mixing_ratio_from_dewpoint(Td: int | float | np.ndarray | tf.Tensor,
-                               P: int | float | np.ndarray | tf.Tensor):
+def mixing_ratio_from_dewpoint(Td,
+                               P):
     """
     Calculates mixing ratio from dewpoint temperature and air pressure.
 
@@ -211,8 +208,8 @@ def mixing_ratio_from_dewpoint(Td: int | float | np.ndarray | tf.Tensor,
     return r
 
 
-def potential_temperature(T: int | float | np.ndarray | tf.Tensor,
-                          P: int | float | np.ndarray | tf.Tensor):
+def potential_temperature(T,
+                          P):
     """
     Returns potential temperature expressed as kelvin (K).
 
@@ -343,8 +340,8 @@ def relative_humidity_from_mixing_ratio(T, r, P):
     return RH
 
 
-def specific_humidity_from_dewpoint(Td: int | float | np.ndarray | tf.Tensor,
-                                    P: int | float | np.ndarray | tf.Tensor):
+def specific_humidity_from_dewpoint(Td,
+                                    P):
     """
     Calculates specific humidity from dewpoint and pressure.
 
@@ -384,7 +381,7 @@ def specific_humidity_from_dewpoint(Td: int | float | np.ndarray | tf.Tensor,
     return epsilon * e / (P - (0.378 * e))  # q: specific humidity
 
 
-def mixing_ratio_from_specific_humidity(q: int | float | np.ndarray | tf.Tensor):
+def mixing_ratio_from_specific_humidity(q):
     """
     Calculates mixing ratio from specific humidity.
 
@@ -417,7 +414,7 @@ def mixing_ratio_from_specific_humidity(q: int | float | np.ndarray | tf.Tensor)
     return q / (1 - q)  # r: mixing ratio
 
 
-def specific_humidity_from_mixing_ratio(r: int | float | np.ndarray | tf.Tensor):
+def specific_humidity_from_mixing_ratio(r):
     """
     Calculates specific humidity from mixing ratio.
 
@@ -451,9 +448,9 @@ def specific_humidity_from_mixing_ratio(r: int | float | np.ndarray | tf.Tensor)
 
 
 def specific_humidity_from_relative_humidity(
-    RH: int | float | np.ndarray | tf.Tensor,
-    T: int | float | np.ndarray | tf.Tensor,
-    P: int | float | np.ndarray | tf.Tensor):
+    RH,
+    T,
+    P):
     """
     Calculates specific humidity from relative humidity, air temperature, and pressure.
 
@@ -503,9 +500,9 @@ def specific_humidity_from_relative_humidity(
 
 
 def equivalent_potential_temperature(
-    T: int | float | np.ndarray | tf.Tensor,
-    Td: int | float | np.ndarray | tf.Tensor,
-    P: int | float | np.ndarray | tf.Tensor):
+    T,
+    Td,
+    P):
     """
     Calculates equivalent potential temperature (theta-e) from temperature, dewpoint, and pressure.
 
@@ -556,8 +553,8 @@ def equivalent_potential_temperature(
     return theta_e
 
 
-def wet_bulb_temperature(T: int | float | np.ndarray | tf.Tensor,
-                         Td: int | float | np.ndarray | tf.Tensor):
+def wet_bulb_temperature(T,
+                         Td):
     """
     Calculates wet-bulb temperature from temperature and dewpoint.
 
@@ -615,9 +612,9 @@ def wet_bulb_temperature(T: int | float | np.ndarray | tf.Tensor,
     return Tw
 
 
-def wet_bulb_potential_temperature(T: int | float | np.ndarray | tf.Tensor,
-                                   Td: int | float | np.ndarray | tf.Tensor,
-                                   P: int | float | np.ndarray | tf.Tensor):
+def wet_bulb_potential_temperature(T,
+                                   Td,
+                                   P):
     """
     Returns wet-bulb potential temperature (theta-w) in kelvin (K).
 
@@ -691,7 +688,7 @@ def wet_bulb_potential_temperature(T: int | float | np.ndarray | tf.Tensor,
     return theta_w
 
 
-def vapor_pressure(Td: int | float | np.ndarray | tf.Tensor):
+def vapor_pressure(Td):
     """
     Calculates vapor pressure in pascals (Pa) for a given Dewpoint temperature expressed as kelvin (K).
 
@@ -726,9 +723,9 @@ def vapor_pressure(Td: int | float | np.ndarray | tf.Tensor):
     return vap_pres
 
 
-def virtual_potential_temperature(T: int | float | np.ndarray | tf.Tensor,
-                                  Td: int | float | np.ndarray | tf.Tensor,
-                                  P: int | float | np.ndarray | tf.Tensor):
+def virtual_potential_temperature(T,
+                                  Td,
+                                  P):
     """
     Calculates virtual potential temperature (theta-v) from temperature, dewpoint, and pressure.
 
@@ -776,8 +773,8 @@ def virtual_potential_temperature(T: int | float | np.ndarray | tf.Tensor,
     return theta_v
 
 
-def virtual_temperature_from_mixing_ratio(T: int | float | np.ndarray | tf.Tensor,
-                                          r: int | float | np.ndarray | tf.Tensor):
+def virtual_temperature_from_mixing_ratio(T,
+                                          r):
     """
     Calculates virtual temperature from temperature and mixing ratio.
 
@@ -817,9 +814,9 @@ def virtual_temperature_from_mixing_ratio(T: int | float | np.ndarray | tf.Tenso
     return T * (1 + (r / epsilon)) / (1 + r)
 
 
-def virtual_temperature_from_dewpoint(T: int | float | np.ndarray | tf.Tensor,
-                                      Td: int | float | np.ndarray | tf.Tensor,
-                                      P: int | float | np.ndarray | tf.Tensor):
+def virtual_temperature_from_dewpoint(T,
+                                      Td,
+                                      P):
     """
     Calculates virtual temperature from temperature, dewpoint, and pressure.
 
