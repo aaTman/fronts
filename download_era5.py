@@ -2,7 +2,9 @@
 Download ERA5 data from the Climate Data Store.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
+Script version: 2025.5.3
 """
+
 import os
 import cdsapi
 import argparse
@@ -21,10 +23,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='reanalysis-era5-pressure-levels')
     parser.add_argument('--product_type', type=str, default='reanalysis', help='CDS product type.')
-    parser.add_argument('--outdir', type=str, default='Main output directory for the downloaded files.')
-    parser.add_argument('--pressure_level', type=str, help='Pressure levels of interest.')
-    parser.add_argument('--variable', type=str, help='Variable of interest. Must follow CDS nomenclature.')
-    parser.add_argument('--year', type=int, help='Year of interest.')
+    parser.add_argument('--outdir', type=str, required=True, help='Main output directory for the downloaded files.')
+    parser.add_argument('--pressure_level', type=str, required=True, help='Pressure levels of interest.')
+    parser.add_argument('--variable', type=str, required=True, help='Variable of interest. Must follow CDS nomenclature.')
+    parser.add_argument('--year', type=int, required=True, help='Year of interest.')
     parser.add_argument('--month', type=int, nargs='+', default=np.arange(1, 12.1).astype(int), help='Months of interest.')
     parser.add_argument('--day', type=int, nargs='+', default=np.arange(0, 31.1).astype(int), help='Days of interest.')
     parser.add_argument('--hour', type=int, nargs='+', default=np.arange(0, 21.1, 3).astype(int), help='Hours of interest.')
@@ -40,9 +42,9 @@ if __name__ == '__main__':
         request = {'product_type': [args['product_type']],
                    'variable': [args['variable']],
                    'year': [args['year']],
-                   'month': ['%02d' % mo for mo in args['month']],
-                   'day': ['%02d' % dy for dy in args['day']],
-                   'time': ['%02d:00' % hr for hr in args['hour']],
+                   'month': [f'{mo:02d}' for mo in args['month']],
+                   'day': [f'{dy:02d}' for dy in args['day']],
+                   'time': [f'{hr:02d}:00' % hr for hr in args['hour']],
                    'pressure_level': [args['pressure_level']],
                    'data_format': args['data_format'],
                    'download_format': args['download_format']}

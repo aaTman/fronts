@@ -2,7 +2,7 @@
 Convert GDAS and/or GFS grib files to netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.3
+Script version: 2025.5.3
 """
 
 import argparse
@@ -162,13 +162,13 @@ if __name__ == "__main__":
         P = tf.convert_to_tensor(P)
 
     # calculate additional variables
-    q = variables.specific_humidity_from_relative_humidity(RH, T, P)
-    Td = variables.dewpoint_from_specific_humidity(P, T, q)
-    Tv = variables.virtual_temperature_from_dewpoint(T, Td, P)
-    r = variables.mixing_ratio_from_dewpoint(Td, P) * 1000  # convert back to g/kg
-    theta = variables.potential_temperature(T, P)
-    theta_e = variables.equivalent_potential_temperature(T, Td, P)
-    theta_v = variables.virtual_potential_temperature(T, Td, P)
+    q = variables.specific_humidity_from_relative_humidity(P, T, RH)
+    Td = variables.dewpoint_from_specific_humidity(P, q)
+    Tv = variables.virtual_temperature_from_dewpoint(P, T, Td)
+    r = variables.mixing_ratio_from_dewpoint(P, Td) * 1000  # convert back to g/kg
+    theta = variables.potential_temperature(P, T)
+    theta_e = variables.equivalent_potential_temperature(P, T, Td)
+    theta_v = variables.virtual_potential_temperature(P, T, Td)
     print(" (%.1f seconds)" % (time.time() - start_time))
 
     # if a GPU was used to calculate additional variables, turn the tensors back to numpy arrays

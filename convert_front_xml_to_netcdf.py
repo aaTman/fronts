@@ -2,7 +2,7 @@
 Convert front XML files to netCDF files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.5.3
 """
 
 import argparse
@@ -44,9 +44,11 @@ if __name__ == "__main__":
 
     date = np.datetime64(args['date']).astype(object)
     year, month, day = date.year, date.month, date.day
+    
+    os.makedirs("%s/%d%02d" % (args['netcdf_outdir'], year, month), exist_ok=True)
 
     if args['domain'] == 'global':
-        files = sorted(glob.glob("%s/IBM*_%04d%02d%02d*f*.xml" % (args['xml_indir'], year, month, day)))
+        files = sorted(glob.glob("%s/TWC*_%04d%02d%02d*f*.xml" % (args['xml_indir'], year, month, day)))
     else:
         files = sorted(glob.glob("%s/pres*_%04d%02d%02d*f000.xml" % (args['xml_indir'], year, month, day)))
 
@@ -95,6 +97,11 @@ if __name__ == "__main__":
             lons, lats = zip(*[[float(point.get("Lon")), float(point.get("Lat"))] for point in line.iter('Point')])
             lons, lats = np.array(lons), np.array(lats)
 
+            # if there are less than 2 points, skip the front as it cannot be interpolated
+            if len(lons) < 2:
+                print(f"Bad front: {type_of_front}")
+                continue
+            
             # If the front crosses the dateline or the 180th meridian, its coordinates must be modified for proper interpolation
             front_needs_modification = np.max(np.abs(np.diff(lons))) > 180
 
@@ -166,12 +173,6 @@ if __name__ == "__main__":
 
                 if args['domain'] == 'full':
                     fronts_ds = fronts_ds.sel(longitude=np.append(np.arange(130, 180.01, 0.25), np.arange(-179.75, 10, 0.25)))
-
-                # convert longitudes back to 360-degree system
-                fronts_ds["longitude"] = domain_lons_360[args["domain"]]
-
-        if not os.path.isdir("%s/%d%02d" % (args['netcdf_outdir'], year, month)):
-            os.mkdir("%s/%d%02d" % (args['netcdf_outdir'], year, month))
 
         fronts_ds.attrs["domain"] = args["domain"]
         fronts_ds.attrs["interpolation_distance_km"] = args["distance"]

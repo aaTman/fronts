@@ -2,7 +2,7 @@
 Script that trains a new U-Net model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.5
+Script version: 2025.5.3
 """
 import argparse
 import pandas as pd
@@ -15,6 +15,7 @@ import os
 from models import unets, custom_metrics, custom_losses
 import datetime
 from utils import misc, data_utils
+from glob import glob
 import wandb
 
 
@@ -283,7 +284,7 @@ if __name__ == "__main__":
 
     if not args['retrain']:
 
-        all_years = np.arange(2007, 2022.1, 1)
+        all_years = np.arange(2008, 2024.1, 1)
 
         if args['num_training_years'] is not None:
             if args['training_years'] is not None:
@@ -303,7 +304,7 @@ if __name__ == "__main__":
                 raise TypeError("Must pass one of the following arguments: --validation_years, --num_validation_years")
             validation_years = list(sorted(args['validation_years']))
 
-        if len(training_years) + len(validation_years) > 15:
+        if len(training_years) + len(validation_years) > len(all_years) - 1:
             raise ValueError("No testing years are available: the total number of training and validation years cannot be greater than 15")
 
         test_years = [year for year in all_years if year not in training_years + validation_years]
@@ -391,34 +392,16 @@ if __name__ == "__main__":
     model_properties['batch_sizes'] = [train_batch_size, valid_batch_size]
 
     ### Training dataset ###
-    train_files_obj = fm.DataFileLoader(args['tf_indirs'][0], years=training_years, data_type='inputs', file_format='tensorflow')
-    train_files_obj.add_file_list(args['tf_indirs'][0], data_type='fronts')
-    training_inputs, training_labels = train_files_obj.files
-    
-    ### shuffle the months ###
-    training_files = list(zip(training_inputs, training_labels))
-    np.random.shuffle(training_files)
-    training_inputs, training_labels = zip(*training_files)
-
-    training_dataset = data_utils.combine_datasets(training_inputs, training_labels)
+    training_files = []
+    for year in training_years:
+        training_files.extend(list(sorted(glob(f"{args['tf_indirs'][0]}/{year}-*_tf"))))
+    np.random.shuffle(training_files)  # shuffle the order of the slices
+    print("Training slices:", len(training_files))
+    training_dataset = data_utils.combine_datasets(training_files)
     images_in_training_dataset = len(training_dataset)
-    print(f"Images in training dataset: {images_in_training_dataset:,}")
-
-    # Shuffle the entire training dataset
-    if args['shuffle'] == 'full':
-        training_buffer_size = args["buffer_size"] if args["buffer_size"] is not None else images_in_training_dataset
-        training_dataset = training_dataset.shuffle(buffer_size=training_buffer_size)
-
-    ### Cache the training dataset ###
-    if args["cache"] is not None:
-        if args["cache"] == "" or args["cache"] == "RAM":
-            training_dataset = training_dataset.cache()  # cache to RAM
-        else:
-            training_dataset = training_dataset.cache('%s/%d_training' % (args["cache"], args["model_number"]))  # cache to specified directory
-
-    training_dataset = training_dataset.batch(train_batch_size, drop_remainder=True, num_parallel_calls=args['num_parallel_calls'])
+    training_dataset = training_dataset.batch(train_batch_size, drop_remainder=False, num_parallel_calls=args['num_parallel_calls'])
     training_dataset = training_dataset.prefetch(tf.data.AUTOTUNE)
-
+    
     if valid_dataset_properties["domain"] in ["conus", "full"]:
         valid_data_source = "era5"
     elif valid_dataset_properties["domain"] == "global":
@@ -427,20 +410,11 @@ if __name__ == "__main__":
         valid_data_source = valid_dataset_properties["domain"]
     
     ### Validation dataset ###
-    valid_files_obj = fm.DataFileLoader(args['tf_indirs'][1], years=validation_years, data_type='inputs', file_format='tensorflow')
-    valid_files_obj.add_file_list(args['tf_indirs'][1], data_type='fronts')
-    validation_inputs, validation_labels = valid_files_obj.files
-    validation_dataset = data_utils.combine_datasets(validation_inputs, validation_labels)
+    validation_files = []
+    for year in validation_years:
+        validation_files.extend(list(sorted(glob(f"{args['tf_indirs'][0]}/{year}-*_tf"))))
+    validation_dataset = data_utils.combine_datasets(validation_files)
     images_in_validation_dataset = len(validation_dataset)
-    print(f"Images in validation dataset: {images_in_validation_dataset:,}")
-
-    ### Cache the validation dataset ###
-    if args["cache"] is not None:
-        if args["cache"] == "" or args["cache"] == "RAM":
-            validation_dataset = validation_dataset.cache()  # cache to RAM
-        else:
-            validation_dataset = validation_dataset.cache('%s/%d_validation' % (args["cache"], args["model_number"]))  # cache to specified directory
-
     validation_dataset = validation_dataset.batch(valid_batch_size, drop_remainder=True, num_parallel_calls=args['num_parallel_calls'])
     validation_dataset = validation_dataset.prefetch(tf.data.AUTOTUNE)
 
@@ -450,7 +424,7 @@ if __name__ == "__main__":
     dataset during each epoch.
     """
     if args['steps'] is None:
-        train_steps = int(images_in_training_dataset/train_batch_size)
+        train_steps = int(images_in_training_dataset/train_batch_size) + 1
         print("Using %d training steps per epoch" % train_steps)
         valid_steps = None
     else:
@@ -483,7 +457,7 @@ if __name__ == "__main__":
             loss_function = getattr(custom_losses, args['loss'][0])(**loss_args)
             metric_function = getattr(custom_metrics, args['metric'][0])(**metric_args)
             optimizer = getattr(tf.keras.optimizers, args['optimizer'][0])(**optimizer_args)
-            model.compile(loss=loss_function, optimizer=optimizer, metrics=metric_function)
+            model.compile(loss=loss_function, optimizer=optimizer, metrics=[metric_function])
 
             model_properties["loss_parent_string"] = args['loss'][0]
             model_properties["loss_child_string"] = loss_function.function_spec._name
@@ -553,7 +527,7 @@ if __name__ == "__main__":
 
             if args["upload_model"]:
                 callbacks.append(wandb.keras.WandbModelCheckpoint("models"))  # upload model checkpoints to wandb
-
+        
         model.fit(training_dataset.repeat(), validation_data=validation_dataset, validation_freq=valid_freq, epochs=args['epochs'],
             steps_per_epoch=train_steps, validation_steps=valid_steps, callbacks=callbacks, verbose=args['verbose'])
         

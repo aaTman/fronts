@@ -6,7 +6,7 @@ References
 * Snyder 1987: https://doi.org/10.3133/pp1395
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.2.1
+Script version: 2025.5.3
 
 TODO
     * Finish adding masks for xarray datasets
@@ -21,92 +21,83 @@ import regionmask
 
 # [min, max, mean, std, mean (lat weighted), std (lat weighted)]
 NORMALIZATION_PARAMS = dict()
-NORMALIZATION_PARAMS['T_surface'] = [194.0, 325.0, 278.8511, 21.1652, 287.7177, 15.3072]
-NORMALIZATION_PARAMS['T_1000'] = [204.0, 325.0, 280.6331, 17.7977, 287.5828, 15.2803]
-NORMALIZATION_PARAMS['T_950'] = [204.0, 322.0, 278.3984, 16.5755, 285.1174, 13.7075]
-NORMALIZATION_PARAMS['T_900'] = [204.0, 318.0, 276.6204, 15.8333, 283.2004, 12.7387]
-NORMALIZATION_PARAMS['T_850'] = [217.0, 314.0, 274.8355, 15.5315, 281.3617, 12.3081]
-NORMALIZATION_PARAMS['Td_surface'] = [191.0, 306.0, 274.2592, 20.6045, 282.5983, 15.0220]
-NORMALIZATION_PARAMS['Td_1000'] = [196.0, 306.0, 274.0085, 19.3558, 281.8818, 14.3379]
-NORMALIZATION_PARAMS['Td_950'] = [196.0, 302.0, 272.4435, 18.7956, 280.0716, 14.0316]
-NORMALIZATION_PARAMS['Td_900'] = [193.0, 300.0, 269.7244, 17.9245, 276.8357, 13.6538]
-NORMALIZATION_PARAMS['Td_850'] = [192.0, 298.0, 266.2805, 17.3056, 272.7754, 13.9287]
-NORMALIZATION_PARAMS['Tv_surface'] = [194.0, 327.0, 280.0701, 21.9879, 289.3344, 16.0927]
-NORMALIZATION_PARAMS['Tv_1000'] = [204.0, 326.0, 281.7824, 18.5628, 289.1034, 15.9593]
-NORMALIZATION_PARAMS['Tv_950'] = [205.0, 322.0, 279.4688, 17.2940, 286.5322, 14.3546]
-NORMALIZATION_PARAMS['Tv_900'] = [205.0, 319.0, 277.5419, 16.4519, 284.4114, 13.3055]
-NORMALIZATION_PARAMS['Tv_850'] = [205.0, 315.0, 275.6090, 16.0502, 282.3733, 12.7919]
-NORMALIZATION_PARAMS['Tw_surface'] = [195.0, 307.0, 276.6440, 19.8244, 284.9129, 14.3145]
-NORMALIZATION_PARAMS['Tw_1000'] = [219.0, 308.0, 278.5950, 15.2651, 285.1871, 12.0837]
-NORMALIZATION_PARAMS['Tw_950'] = [220.0, 303.0, 276.6420, 14.7729, 282.9826, 11.7804]
-NORMALIZATION_PARAMS['Tw_900'] = [224.0, 301.0, 274.4526, 14.0842, 280.4333, 11.2899]
-NORMALIZATION_PARAMS['Tw_850'] = [224.0, 299.0, 272.2181, 13.6107, 277.9495, 10.9174]
-NORMALIZATION_PARAMS['theta_surface'] = [212.0, 349.0, 281.7530, 17.5238, 289.0517, 13.9311]
-NORMALIZATION_PARAMS['theta_1000'] = [204.0, 325.0, 280.6331, 17.7977, 287.5828, 15.2803]
-NORMALIZATION_PARAMS['theta_950'] = [207.0, 326.0, 282.5041, 16.8199, 289.3222, 13.9095]
-NORMALIZATION_PARAMS['theta_900'] = [211.0, 328.0, 285.0651, 16.3165, 291.8460, 13.1274]
-NORMALIZATION_PARAMS['theta_850'] = [227.0, 329.0, 287.8841, 16.2686, 294.7201, 12.8921]
-NORMALIZATION_PARAMS['theta_e_surface'] = [221.0, 381.0, 298.2637, 29.3206, 310.8837, 25.0137]
-NORMALIZATION_PARAMS['theta_e_1000'] = [206.0, 374.0, 296.1982, 28.8536, 308.1083, 25.5387]
-NORMALIZATION_PARAMS['theta_e_950'] = [210.0, 365.0, 297.2637, 27.3586, 308.7698, 23.8046]
-NORMALIZATION_PARAMS['theta_e_900'] = [213.0, 364.0, 298.0386, 25.5295, 308.8332, 21.8929]
-NORMALIZATION_PARAMS['theta_e_850'] = [218.0, 364.0, 299.0262, 24.2639, 309.2334, 20.7013]
-NORMALIZATION_PARAMS['theta_v_surface'] = [194.0, 327.0, 280.0701, 21.9879, 289.3344, 16.0927]
-NORMALIZATION_PARAMS['theta_v_1000'] = [204.0, 326.0, 281.7824, 18.5628, 289.1034, 15.9593]
-NORMALIZATION_PARAMS['theta_v_950'] = [205.0, 322.0, 279.4688, 17.2940, 286.5322, 14.3546]
-NORMALIZATION_PARAMS['theta_v_900'] = [205.0, 319.0, 277.5419, 16.4519, 284.4114, 13.3055]
-NORMALIZATION_PARAMS['theta_v_850'] = [205.0, 315.0, 275.6090, 16.0502, 282.3733, 12.7919]
-NORMALIZATION_PARAMS['theta_w_surface'] = [212.0, 303.0, 277.3626, 14.8143, 283.6143, 11.3163]
-NORMALIZATION_PARAMS['theta_w_1000'] = [207.0, 302.0, 276.4311, 15.1130, 282.3757, 12.6142]
-NORMALIZATION_PARAMS['theta_w_950'] = [210.0, 301.0, 277.2736, 13.9066, 282.9502, 11.1852]
-NORMALIZATION_PARAMS['theta_w_900'] = [214.0, 300.0, 278.0026, 12.6755, 283.2781, 9.8552]
-NORMALIZATION_PARAMS['theta_w_850'] = [219.0, 300.0, 278.7026, 11.8143, 283.6136, 9.0547]
-NORMALIZATION_PARAMS['RH_surface'] = [0.0250, 1.0, 0.7682, 0.1511, 0.7617, 0.1611]
-NORMALIZATION_PARAMS['RH_1000'] = [0.0, 1.0, 0.6845, 0.2341, 0.7152, 0.1968]
-NORMALIZATION_PARAMS['RH_950'] = [0.0, 1.0, 0.7254, 0.2546, 0.7661, 0.2241]
-NORMALIZATION_PARAMS['RH_900'] = [0.0, 1.0, 0.6906, 0.2544, 0.7231, 0.2344]
-NORMALIZATION_PARAMS['RH_850'] = [0.0, 1.0, 0.6300, 0.2587, 0.6470, 0.2537]
-NORMALIZATION_PARAMS['r_surface'] = [0.0, 25.3750, 6.9281, 5.4531, 9.1304, 5.2461]
-NORMALIZATION_PARAMS['r_1000'] = [0.0, 25.0, 6.5472, 5.1682, 8.6093, 4.9994]
-NORMALIZATION_PARAMS['r_950'] = [0.0, 21.6250, 6.1540, 4.8663, 8.0858, 4.7294]
-NORMALIZATION_PARAMS['r_900'] = [0.0, 20.3750, 5.3323, 4.2284, 6.9627, 4.1496]
-NORMALIZATION_PARAMS['r_850'] = [0.0, 19.3750, 4.5023, 3.7559, 5.8485, 3.7996]
-NORMALIZATION_PARAMS['q_surface'] = [0.0, 24.7500, 6.8514, 5.3646, 9.0210, 5.1520]
-NORMALIZATION_PARAMS['q_1000'] = [0.0, 28.8750, 7.0682, 5.9041, 9.4005, 5.7783]
-NORMALIZATION_PARAMS['q_950'] = [0.0, 24.7500, 6.5765, 5.5152, 8.7433, 5.4237]
-NORMALIZATION_PARAMS['q_900'] = [0.0, 23.0000, 5.5970, 4.7264, 7.3993, 4.6938]
-NORMALIZATION_PARAMS['q_850'] = [0.0, 21.6250, 4.6350, 4.1411, 6.1008, 4.2357]
-NORMALIZATION_PARAMS['u_surface'] = [-33.6000, 29.6000, -0.0700, 5.5954, -0.4027, 5.5432]
-NORMALIZATION_PARAMS['u_1000'] = [-33.6000, 30.4000, -0.0556, 6.1977, -0.4351, 6.1994]
-NORMALIZATION_PARAMS['u_950'] = [-47.6000, 43.2000, 0.3739, 7.6969, -0.0670, 7.6670]
-NORMALIZATION_PARAMS['u_900'] = [-55.6000, 50.8000, 0.8388, 8.1331, 0.4178, 8.1233]
-NORMALIZATION_PARAMS['u_850'] = [-55.6000, 53.2000, 1.3811, 8.2633, 1.0174, 8.2693]
-NORMALIZATION_PARAMS['v_surface'] = [-29.2000, 30.8000, 0.1979, 4.7952, 0.1934, 4.5878]
-NORMALIZATION_PARAMS['v_1000'] = [-31.6000, 30.8000, 0.1962, 5.3461, 0.1989, 5.1716]
-NORMALIZATION_PARAMS['v_950'] = [-44.8000, 46.8000, 0.2094, 6.4513, 0.1981, 6.1904]
-NORMALIZATION_PARAMS['v_900'] = [-48.4000, 51.6000, 0.2035, 6.4340, 0.1748, 6.0936]
-NORMALIZATION_PARAMS['v_850'] = [-49.6000, 52.8000, 0.1477, 6.2983, 0.0937, 5.8957]
-NORMALIZATION_PARAMS['sp_z_surface'] = [486.0, 1068.0, 966.5001, 95.9131, 985.6985, 67.5667]
-NORMALIZATION_PARAMS['sp_z_1000'] = [-69.0, 49.0, 7.5000, 11.0970, 9.6099, 9.3454]
-NORMALIZATION_PARAMS['sp_z_950'] = [-28.0, 88.0, 49.7423, 12.0723, 52.8449, 10.0539]
-NORMALIZATION_PARAMS['sp_z_900'] = [15.0, 130.0, 93.9396, 13.4494, 98.0529, 11.0937]
-NORMALIZATION_PARAMS['sp_z_850'] = [60.0, 175.0, 140.3329, 15.1683, 145.4879, 12.4430]
-NORMALIZATION_PARAMS['band_1'] = [0.0, 1.0, 0.1109, 0.1496, 0.1074, 0.1468]
-NORMALIZATION_PARAMS['band_2'] = [0.0, 1.0, 0.0829, 0.1271, 0.0803, 0.1260]
-NORMALIZATION_PARAMS['band_3'] = [0.0, 1.0, 0.0970, 0.1494, 0.0931, 0.1475]
-NORMALIZATION_PARAMS['band_4'] = [0.0, 0.6525, 0.0116, 0.0337, 0.0113, 0.0342]
-NORMALIZATION_PARAMS['band_5'] = [0.0, 1.0, 0.0636, 0.1028, 0.0620, 0.1018]
-NORMALIZATION_PARAMS['band_6'] = [0.0, 1.0, 0.0522, 0.0849, 0.0506, 0.0836]
-NORMALIZATION_PARAMS['band_7'] = [150.0, 400.0, 273.5342, 19.2931, 276.0468, 18.8582]
-NORMALIZATION_PARAMS['band_8'] = [150.0, 312.0, 232.2834, 8.8554, 233.3464, 8.9243]
-NORMALIZATION_PARAMS['band_9'] = [150.0, 311.5000, 239.8635, 10.3123, 241.2207, 10.4178]
-NORMALIZATION_PARAMS['band_10'] = [150.0, 332.0, 246.9413, 12.7686, 248.6041, 12.7834]
-NORMALIZATION_PARAMS['band_11'] = [150.0, 342.0, 264.4350, 19.6611, 267.1664, 19.6000]
-NORMALIZATION_PARAMS['band_12'] = [150.0, 312.0, 244.5114, 16.2914, 246.8653, 16.1795]
-NORMALIZATION_PARAMS['band_13'] = [150.0, 342.0, 266.7880, 20.2235, 269.5526, 20.1508]
-NORMALIZATION_PARAMS['band_14'] = [150.0, 342.0, 266.2653, 20.5145, 269.0157, 20.4462]
-NORMALIZATION_PARAMS['band_15'] = [150.0, 342.0, 263.9627, 20.8428, 266.5635, 20.8524]
-NORMALIZATION_PARAMS['band_16'] = [150.0, 319.0, 252.2881, 16.1823, 254.5364, 16.1751]
+NORMALIZATION_PARAMS['q_300'] = [0.0, 2.25, 0.1484, 0.1701, 0.1854, 0.1957]
+NORMALIZATION_PARAMS['q_500'] = [0.0, 9.375, 0.8906, 1.1321, 1.1552, 1.2790]
+NORMALIZATION_PARAMS['q_700'] = [0.0, 16.0, 2.4991, 2.6180, 3.2535, 2.8386]
+NORMALIZATION_PARAMS['q_850'] = [0.0, 21.75, 4.6545, 4.1544, 6.1259, 4.2482]
+NORMALIZATION_PARAMS['q_900'] = [0.0, 23.25, 5.6176, 4.7384, 7.4258, 4.7040]
+NORMALIZATION_PARAMS['q_950'] = [0.0, 25.125, 6.5983, 5.5294, 8.7716, 5.4365]
+NORMALIZATION_PARAMS['q_1000'] = [0.0, 29.25, 7.0913, 5.9191, 9.4306, 5.7912]
+NORMALIZATION_PARAMS['RH_300'] = [0.0, 1.0, 0.3426, 0.2172, 0.3225, 0.2226]
+NORMALIZATION_PARAMS['RH_500'] = [0.0, 1.0, 0.4073, 0.264, 0.3737, 0.2755]
+NORMALIZATION_PARAMS['RH_700'] = [0.0, 1.0, 0.4791, 0.273, 0.4614, 0.2811]
+NORMALIZATION_PARAMS['RH_850'] = [0.0, 1.0, 0.6047, 0.2687, 0.6242, 0.2623]
+NORMALIZATION_PARAMS['RH_900'] = [0.0, 1.0, 0.6682, 0.2657, 0.7033, 0.2444]
+NORMALIZATION_PARAMS['RH_950'] = [0.0, 1.0, 0.7037, 0.2673, 0.7464, 0.2371]
+NORMALIZATION_PARAMS['RH_1000'] = [0.0, 1.0, 0.659, 0.2457, 0.6897, 0.2104]
+NORMALIZATION_PARAMS['sp_z_300'] = [796.0, 989.0, 913.0033, 52.2398, 935.2045, 43.2219]
+NORMALIZATION_PARAMS['sp_z_500'] = [442.0, 605.0, 552.4796, 34.4652, 566.8235, 28.0863]
+NORMALIZATION_PARAMS['sp_z_700'] = [206.0, 334.0, 295.3216, 22.0330, 303.9771, 17.9648]
+NORMALIZATION_PARAMS['sp_z_850'] = [60.0, 177.0, 140.3339, 15.2319, 145.5283, 12.4728]
+NORMALIZATION_PARAMS['sp_z_900'] = [16.0, 130.0, 93.9296, 13.5094, 98.0819, 11.1214]
+NORMALIZATION_PARAMS['sp_z_950'] = [-27.0, 88.0, 49.7221, 12.1269, 52.8635, 10.0784]
+NORMALIZATION_PARAMS['sp_z_1000'] = [-69.0, 49.0, 7.4702, 11.1432, 9.6184, 9.3651]
+NORMALIZATION_PARAMS['T_300'] = [199.0, 257.0, 229.2386, 10.8319, 233.7161, 9.4612]
+NORMALIZATION_PARAMS['T_500'] = [215.0, 284.0, 253.2812, 13.0718, 258.8222, 10.9391]
+NORMALIZATION_PARAMS['T_700'] = [208.0, 302.0, 267.7375, 14.8156, 274.0165, 11.5235]
+NORMALIZATION_PARAMS['T_850'] = [217.0, 315.0, 274.9058, 15.5217, 281.4309, 12.2972]
+NORMALIZATION_PARAMS['T_900'] = [219.0, 319.0, 276.7593, 15.7479, 283.3672, 12.5458]
+NORMALIZATION_PARAMS['T_950'] = [219.0, 322.0, 278.7952, 16.2086, 285.6539, 12.8296]
+NORMALIZATION_PARAMS['T_1000'] = [216.0, 326.0, 281.4339, 16.9643, 288.7020, 13.3128]
+NORMALIZATION_PARAMS['Td_300'] = [159.0, 254.0, 217.3682, 10.5844, 220.6169, 10.3878]
+NORMALIZATION_PARAMS['Td_500'] = [165.0, 279.0, 239.8065, 13.0666, 243.1986, 13.2075]
+NORMALIZATION_PARAMS['Td_700'] = [176.0, 291.0, 255.3803, 15.7529, 260.1953, 14.6048]
+NORMALIZATION_PARAMS['Td_850'] = [186.0, 298.0, 266.3356, 17.3281, 272.8387, 13.9459]
+NORMALIZATION_PARAMS['Td_900'] = [190.0, 300.0, 269.7803, 17.9404, 276.8977, 13.6627]
+NORMALIZATION_PARAMS['Td_950'] = [194.0, 302.0, 272.4960, 18.8094, 280.1294, 14.0384]
+NORMALIZATION_PARAMS['Td_1000'] = [195.0, 306.0, 274.0599, 19.37, 281.9399, 14.3432]
+NORMALIZATION_PARAMS['Tv_300'] = [199.0, 257.0, 229.2578, 10.8478, 233.7418, 9.4773]
+NORMALIZATION_PARAMS['Tv_500'] = [215.0, 285.0, 253.4233, 13.1756, 259.0079, 11.0404]
+NORMALIZATION_PARAMS['Tv_700'] = [208.0, 303.0, 268.1590, 15.1075, 274.5694, 11.8080]
+NORMALIZATION_PARAMS['Tv_850'] = [217.0, 316.0, 275.7130, 16.0917, 282.5005, 12.8374]
+NORMALIZATION_PARAMS['Tv_900'] = [219.0, 320.0, 277.7404, 16.4410, 284.6725, 13.1932]
+NORMALIZATION_PARAMS['Tv_950'] = [218.0, 323.0, 279.9575, 17.0354, 287.2087, 13.5979]
+NORMALIZATION_PARAMS['Tv_1000'] = [216.0, 327.0, 282.6972, 17.8702, 290.3930, 14.1572]
+NORMALIZATION_PARAMS['theta_300'] = [281.0, 362.0, 323.2393, 15.2710, 329.5529, 13.3377]
+NORMALIZATION_PARAMS['theta_500'] = [262.0, 346.0, 308.6888, 15.9301, 315.4419, 13.3306]
+NORMALIZATION_PARAMS['theta_700'] = [231.0, 334.0, 296.4287, 16.4027, 303.3806, 12.7576]
+NORMALIZATION_PARAMS['theta_850'] = [227.0, 330.0, 287.9577, 16.2584, 294.7926, 12.8807]
+NORMALIZATION_PARAMS['theta_900'] = [226.0, 329.0, 285.2081, 16.2285, 292.0178, 12.9286]
+NORMALIZATION_PARAMS['theta_950'] = [222.0, 327.0, 282.9067, 16.4475, 289.8666, 13.0187]
+NORMALIZATION_PARAMS['theta_1000'] = [216.0, 326.0, 281.4339, 16.9643, 288.7020, 13.3128]
+NORMALIZATION_PARAMS['theta_e_300'] = [281.0, 368.0, 323.7062, 15.6360, 330.1604, 13.7126]
+NORMALIZATION_PARAMS['theta_e_500'] = [262.0, 360.0, 311.2741, 17.9377, 318.7880, 15.4055]
+NORMALIZATION_PARAMS['theta_e_700'] = [229.0, 367.0, 303.0449, 21.4989, 312.0104, 18.0769]
+NORMALIZATION_PARAMS['theta_e_850'] = [226.0, 372.0, 299.6698, 25.2475, 310.2498, 21.8210]
+NORMALIZATION_PARAMS['theta_e_900'] = [224.0, 373.0, 299.1296, 26.7758, 310.4758, 23.1717]
+NORMALIZATION_PARAMS['theta_e_950'] = [220.0, 375.0, 299.0758, 28.8183, 311.4362, 24.9726]
+NORMALIZATION_PARAMS['theta_e_1000'] = [215.0, 390.0, 298.7088, 30.2554, 311.7681, 26.1548]
+NORMALIZATION_PARAMS['theta_v_300'] = [281.0, 362.0, 323.2664, 15.2933, 329.5891, 13.3604]
+NORMALIZATION_PARAMS['theta_v_500'] = [262.0, 347.0, 308.8620, 16.0566, 315.6682, 13.4540]
+NORMALIZATION_PARAMS['theta_v_700'] = [231.0, 335.0, 296.8954, 16.7259, 303.9928, 13.0726]
+NORMALIZATION_PARAMS['theta_v_850'] = [227.0, 330.0, 288.8032, 16.8555, 295.9130, 13.4466]
+NORMALIZATION_PARAMS['theta_v_900'] = [225.0, 329.0, 286.2193, 16.9428, 293.3630, 13.5958]
+NORMALIZATION_PARAMS['theta_v_950'] = [220.0, 328.0, 284.0862, 17.2865, 291.4443, 13.7983]
+NORMALIZATION_PARAMS['theta_v_1000'] = [216.0, 327.0, 282.6972, 17.8702, 290.3930, 14.1572]
+NORMALIZATION_PARAMS['u_300'] = [-65.2, 115.6, 11.6922, 17.1698, 12.5158, 17.4089]
+NORMALIZATION_PARAMS['u_500'] = [-51.6, 82.4, 6.5193, 12.0255, 6.6043, 12.0727]
+NORMALIZATION_PARAMS['u_700'] = [-50.4, 58.4, 3.3234, 9.24, 3.1705, 9.2717]
+NORMALIZATION_PARAMS['u_850'] = [-55.2, 53.2, 1.4020, 8.2607, 1.0348, 8.2607]
+NORMALIZATION_PARAMS['u_900'] = [-55.6, 50.8, 0.8581, 8.1317, 0.4330, 8.1176]
+NORMALIZATION_PARAMS['u_950'] = [-47.6, 43.2, 7.6961, -0.0558, 7.6638]
+NORMALIZATION_PARAMS['u_1000'] = [-33.6, 30.4, -0.0452, 6.1942, -0.4278, 6.1954]
+NORMALIZATION_PARAMS['v_300'] = [-80.0, 94.0, -0.0227, 13.3571, -0.0253, 12.6938]
+NORMALIZATION_PARAMS['v_500'] = [-65.6, 70.0, -0.0251, 9.2148, -0.0366, 8.5501]
+NORMALIZATION_PARAMS['v_700'] = [-48.4, 53.2, 0.0255, 6.9146, -0.0117, 6.4236]
+NORMALIZATION_PARAMS['v_850'] = [-49.6, 52.8, 0.1468, 6.2973, 0.0924, 5.8921]
+NORMALIZATION_PARAMS['v_900'] = [-48.4, 51.6, 0.2032, 6.4313, 0.1744, 6.0884]
+NORMALIZATION_PARAMS['v_950'] = [-44.8, 46.8, 0.2083, 6.4496, 0.1977, 6.187]
+NORMALIZATION_PARAMS['v_1000'] = [-31.6, 30.8, 0.1949, 5.3437, 0.1984, 5.1694]
 
 
 # default values for extents of domains [start lon, end lon, start lat, end lat]
@@ -664,13 +655,14 @@ def normalize_dataset(ds, method='standard', normalization_parameters=NORMALIZAT
             norm_params = xr.Dataset(data_vars={var: ('param', normalization_parameters['%s' % var]) for var in variables},
                                      coords={'param': ['min', 'max', 'mean', 'std', 'mean_weighted', 'std_weighted']})
         else:
-            pressure_levels = ds_copy['pressure_level'].values
+            pressure_levels = ds_copy['pressure_level'].values.astype(int)  # TODO: will not work with surface data
+            
             norm_params = xr.Dataset(data_vars={var: (('pressure_level', 'param'), [normalization_parameters['%s_%s' % (var, lvl)] for lvl in pressure_levels])
                                                 for var in variables},
                                      coords={'param': ['min', 'max', 'mean', 'std', 'mean_weighted', 'std_weighted'],
                                              'pressure_level': pressure_levels})
     except ValueError:  # models before the 2025.1.10 update only have min and max values
-        pressure_levels = ds_copy['pressure_level'].values
+        pressure_levels = ds_copy['pressure_level'].values.astype(int)  # TODO: will not work with surface data
         norm_params = xr.Dataset(data_vars={var: (('pressure_level', 'param'), [normalization_parameters['%s_%s' % (var, lvl)] for lvl in pressure_levels])
                                             for var in variables},
                                  coords={'param': ['max', 'min'], 'pressure_level': pressure_levels})
@@ -687,45 +679,20 @@ def normalize_dataset(ds, method='standard', normalization_parameters=NORMALIZAT
     return normalized_ds
 
 
-def combine_datasets(input_files: list[str],
-                     label_files: list[str] = None,
-                     satellite_files: list[str] = None):
+def combine_datasets(tf_files: list[str]):
     """
     Combine many tensorflow datasets into one entire dataset.
 
     Returns
     -------
-    complete_dataset: tf.data.Dataset object
+    dataset: tf.data.Dataset object
         Concatenated tensorflow dataset.
     """
-    if label_files is not None and satellite_files is None:
-        inputs = tf.data.Dataset.load(input_files[0])
-        labels = tf.data.Dataset.load(label_files[0])
-        for input_file, label_file in zip(input_files[1:], label_files[1:]):
-            inputs = inputs.concatenate(tf.data.Dataset.load(input_file))
-            labels = labels.concatenate(tf.data.Dataset.load(label_file))
+    dataset = tf.data.Dataset.load(tf_files[0])
+    for file in tf_files[1:]:
+        dataset = dataset.concatenate(tf.data.Dataset.load(file))
 
-        return tf.data.Dataset.zip((inputs, labels))
-
-    elif label_files is not None and satellite_files is not None:
-        inputs = tf.data.Dataset.load(input_files[0])
-        sat = tf.data.Dataset.load(satellite_files[0])
-        labels = tf.data.Dataset.load(label_files[0])
-        for input_file, satellite_file, label_file in zip(input_files[1:], satellite_files[1:], label_files[1:]):
-            inputs = inputs.concatenate(tf.data.Dataset.load(input_file))
-            sat = sat.concatenate(tf.data.Dataset.load(satellite_file))
-            labels = labels.concatenate(tf.data.Dataset.load(label_file))
-        
-        new_inputs = tf.data.Dataset.zip((sat, inputs))
-        
-        return tf.data.Dataset.zip((new_inputs, labels))
-
-    else:
-        inputs = tf.data.Dataset.load(input_files[0])
-        for input_file in input_files[1:]:
-            inputs = inputs.concatenate(tf.data.Dataset.load(input_file))
-
-        return inputs
+    return dataset
 
 
 def lambert_conformal_to_cartesian(

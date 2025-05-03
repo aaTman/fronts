@@ -1,8 +1,8 @@
 """
-Convert GML files containing IBM/TWC fronts into XML files.
+Convert GML files containing TWC fronts into XML files.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2023.9.2
+Script version: 2025.5.3
 """
 
 import argparse
@@ -28,7 +28,7 @@ LINE_KWARGS = dict(pgenCategory="Front", lineWidth="4", sizeScale="  1.0", smoot
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gml_indir', type=str, required=True, help="Input directory for IBM/TWC front GML files.")
+    parser.add_argument('--gml_indir', type=str, required=True, help="Input directory for TWC front GML files.")
     parser.add_argument('--xml_outdir', type=str, required=True, help="Output directory for front XML files.")
     parser.add_argument('--date', type=int, nargs=3, required=True, help="Date for the data to be read in. (year, month, day)")
     args = vars(parser.parse_args())
@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
         forecast_hour = int((valid_time - init_time) / np.timedelta64(1, 'h'))
 
-        root_xml = ET.Element("Product", name="IBM_global_fronts", init_time=init_time_str, valid_time=valid_time_str, forecast_hour=str(forecast_hour))
+        root_xml = ET.Element("Product", name="TWC_global_fronts", init_time=init_time_str, valid_time=valid_time_str, forecast_hour=str(forecast_hour))
         tree = ET.parse(gml_file, parser=ET.XMLPullParser(encoding='utf-8'))
         root_gml = tree.getroot()
 
@@ -80,9 +80,7 @@ if __name__ == "__main__":
             for coord_pair in coords:
                 ET.SubElement(Line, "Point", Lat="%.6f" % float(coord_pair[1]), Lon="%.6f" % float(coord_pair[0]))
 
-        save_path_file = "%s/IBM_fronts_%sf%03d.xml" % (args['xml_outdir'], init_time_str.replace('-', '').replace('T', ''), forecast_hour)
-
-        print(save_path_file)
+        save_path_file = "%s/TWC_fronts_%sf%03d.xml" % (args['xml_outdir'], init_time_str.replace('-', '').replace('T', ''), forecast_hour)
 
         ET.indent(root_xml)
         mydata = ET.tostring(root_xml)

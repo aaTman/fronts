@@ -1,4 +1,4 @@
-# AI2ES Fronts Project Training Guide (outdated, needs updates)
+# AI2ES Fronts Project Training Guide (DO NOT USE - this guide is outdated)
 
 The following guide will detail the steps toward successfully train a UNET-style model for frontal boundary predictions.
 

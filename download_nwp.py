@@ -2,7 +2,7 @@
 Download grib files containing NWP model data.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2024.8.14
+Script version: 2025.5.3
 """
 
 import argparse
@@ -22,7 +22,7 @@ def bar_progress(current, total, width=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--grib_outdir', type=str, required=True, help="Output directory for GDAS grib files downloaded from NCEP.")
+    parser.add_argument('--outdir', type=str, required=True, help="Output directory for GDAS grib files downloaded from NCEP.")
     parser.add_argument('--model', type=str, required=True, help="NWP model to use as the data source.")
     parser.add_argument('--init_time', type=str, help="Initialization time of the model. Format: YYYY-MM-DD-HH.")
     parser.add_argument('--range', type=str, nargs=3,
@@ -122,12 +122,12 @@ if __name__ == '__main__':
 
         timestring = local_filename.split('_')[1]
         year, month = timestring[:4], timestring[4:6]
-        monthly_directory = '%s/%s%s' % (args['grib_outdir'], year, month)  # Directory for the grib files for the given days
+        monthly_directory = f"{args['outdir']}/{year}{month}"  # Directory for the grib files for the given days
 
         ### If the directory does not exist, check to see if the file link is valid. If the file link is NOT valid, then the directory will not be created since it will be empty. ###
         if not os.path.isdir(monthly_directory):
             if requests.head(file).status_code == requests.codes.ok or requests.head(file.replace('/atmos', '')).status_code == requests.codes.ok:
-                os.mkdir(monthly_directory)
+                os.makedirs(monthly_directory, exist_ok=True)
 
         full_file_path = f'{monthly_directory}/{local_filename}'
 
