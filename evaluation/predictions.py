@@ -1,15 +1,18 @@
 import argparse
 import os
-
+import pickle
 import tensorflow as tf
 
 import dataclasses
-# import dacite
+import dacite
 # from fronts import file_manager, data_utils
-from typing import Literal
+from typing import Literal, Union
 import yaml
 import logging
+import pathlib
 
+IMAGE_SIZE_DEFAULT: list[int] = [1, 1]
+BATCH_SIZE_DEFAULT: int = 1
 logging.basicConfig()
 logger = logging.getLogger(name=__name__)
 logger.setLevel(logging.INFO)
@@ -73,37 +76,42 @@ class ModelProperties:
     pressure_levels: list[str]
     image_size: tuple[int, int]
 
+@dataclasses.dataclass
+class TensorflowProperties:
+    """Properties to pass through into set_ai2es_tf_physical_devices.
 
-def set_ai2es_tf_physical_devices(gpu_device: int, memory_growth: bool=False):
-    """Set tensorflow configuration for physical devices and options.
-    
-    Args:
-    
-    gpu_device: which GPU to use as an integer.
-    memory_growth: whether or not to set memory growth for a PhysicalDevice (see 
+    Attributes:
+    gpu_device: the number of the device being used.
+    memory_growth: whether or not to utilize memory growth, which if True
+        will prevent the runtime initialization from allocating all of the 
+        memory on the device (see 
         https://www.tensorflow.org/api_docs/python/tf/config/experimental/set_memory_growth). 
     """
+    gpu_device: int
+    memory_growth: bool
 
-    # From https://dopplerchase-ai2es-schooner-hpc.readthedocs.io/en/latest/general_gpu.html#sharing-gpus
-    if "CUDA_VISIBLE_DEVICES" in os.environ.keys():
-        # Fetch list of logical GPUs that have been allocated
-        # Will always be numbered 0, 1, …
-        physical_devices = tf.config.get_visible_devices('GPU')
-        n_physical_devices = len(physical_devices)
-        if n_physical_devices > 0:
-            tf.config.set_visible_devices(devices=physical_devices[gpu_device], device_type='GPU')
-            if memory_growth:
-                tf.config.experimental.set_memory_growth(device=physical_devices[gpu_device], enable=True)
+    def build(self):
+        # From https://dopplerchase-ai2es-schooner-hpc.readthedocs.io/en/latest/general_gpu.html#sharing-gpus
+        if "CUDA_VISIBLE_DEVICES" in os.environ.keys():
+            # Fetch list of logical GPUs that have been allocated
+            # Will always be numbered 0, 1, …
+            physical_devices = tf.config.get_visible_devices('GPU')
+            n_physical_devices = len(physical_devices)
+            if n_physical_devices > 0:
+                tf.config.set_visible_devices(devices=physical_devices[self.gpu_device], device_type='GPU')
+                if self.memory_growth:
+                    tf.config.experimental.set_memory_growth(device=physical_devices[self.gpu_device], enable=True)
 
-        # Set memory growth for each
-        for device in physical_devices:
-            tf.config.experimental.set_memory_growth(device, memory_growth)
-    else:
-            #No allocated GPUs: do not delete this case!\
-        logger.info('WARNING: No GPUs found, all computations will be performed on CPUs.')
-        tf.config.set_visible_devices([], 'GPU')
+            # Set memory growth for each
+            for device in physical_devices:
+                tf.config.experimental.set_memory_growth(device, self.memory_growth)
+        else:
+                #No allocated GPUs: do not delete this case!\
+            logger.info('WARNING: No GPUs found, all computations will be performed on CPUs.')
+            tf.config.set_visible_devices([], 'GPU')
 
-def parse_arguments():
+
+def parse_arguments() -> dict:
     """Parse CLI arguments. 
     
     Arguments set in the CLI will supercede any option set in a provided
@@ -122,7 +130,7 @@ def parse_arguments():
     parser.add_argument('--batch_size', type=int, help="Batch size for the model predictions.")
     parser.add_argument('--image_size', type=int, nargs=2, help="Number of pixels along each dimension of the model's output: lon, lat")
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
-    parser.add_argument('--model_dir', type=str, help='Directory for the models.')
+    parser.add_argument('--model_dir', type=str, help='Directory for the models and properties.')
     parser.add_argument('--model_number', type=int, help='Model number.')
     parser.add_argument('--data_source', type=str, help='Data source for variables')
 
@@ -146,5 +154,59 @@ def parse_arguments():
             if key not in prediction_config.keys():
                 prediction_config[key] = None
 
+    return prediction_config
+
+def assign_config_to_dataclasses(prediction_config: dict) -> tuple[TensorflowProperties, ModelProperties]:
+    """Initializes dataclasses with respective configuration arguments.
+
+    Using the incoming prediction_config based on the configuration yaml 
+    and/or the command line arguments, builds dataclasses based on the keys
+    in the dictionary.
+
+    Args:
+    prediction_config: the prediction configuration dictionary.
+
+    Returns ModelProperties and TensorflowProperties dataclasses.
+    """
+    tensorflow_dict = {k: v for k, v in prediction_config if k in dataclasses.fields(TensorflowProperties)}
+    tensorflow_properties = dacite.from_dict(data_class=TensorflowProperties, data=tensorflow_dict)
+
+    model_dict =  {k: v for k, v in prediction_config if k in dataclasses.fields(ModelProperties)}
+    model_properties = dacite.from_dict(data_class=ModelProperties, data=model_dict)
+
+    return tensorflow_properties, model_properties
+
+def generate_model_properties(model_directory: Union[str, pathlib.Path]):
+    """Generates a ModelProperties dataclass from incoming pickle file."""
+
+    with open(model_directory,'rb') as f:
+        model_properties_dict = pickle.load(f)
+    
+
+    
+
+def assign_normalization_properties_to_dataclass(normalization_config: dict) -> NormalizationProperties:
+    """Initializes dataclasses for normalization parameters provided in the model properties.
+    
+    Args:
+    normalization_config: dictionary of the configuration options for normalization procedures.
+
+    Returns NormalizationProperties dataclass.
+    """
+    normalization_dict =  {k: v for k, v in normalization_config if k in dataclasses.fields(NormalizationProperties)}
+    normalization_properties = dacite.from_dict(data_class=NormalizationProperties, data=normalization_dict)
+
+    return normalization_properties
+
+
+def run_prediction() -> None:
+    prediction_config = parse_arguments()
+
+    # Convert model path string to Path object and convert to dataclass
+    model_path = pathlib.Path(prediction_config['model_dir'])
+    model_properties = generate_model_properties(model_path)
+
 if __name__ == '__main__':
-    parse_arguments()
+    run_prediction()
+    
+    
