@@ -1,17 +1,18 @@
 import argparse
-import pandas as pd
-import numpy as np
-import xarray as xr
 import os
-import sys
-import tensorflow as tf
-import scipy
+
+# import tensorflow as tf
+
 import dataclasses
-import dacite
-from fronts import file_manager, data_utils
+# import dacite
+# from fronts import file_manager, data_utils
 from typing import Literal
 import yaml
+import logging
 
+logging.basicConfig()
+logger = logging.getLogger(name=__name__)
+logger.setLevel(logging.INFO)
 @dataclasses.dataclass
 class NormalizationParameters:
     """Properties for normalizations of variables.
@@ -73,42 +74,79 @@ class ModelProperties:
     image_size: tuple[int, int]
 
 
-def parse_arguments_no_config(parser: argparse.ArgumentParser) -> dict:
-    """Parse CLI arguments into a dict if a config file is not provided.
+def set_ai2es_tf_physical_devices(gpu_device: int, memory_growth: bool=False):
+    """Set tensorflow configuration for physical devices and options.
     
     Args:
-    parser: ArgumentParser base to build off of.
     
-    Returns a dictionary using `parse_args()` using arguments included in function.
+    gpu_device: which GPU to use as an integer.
+    memory_growth: whether or not to set memory growth for a PhysicalDevice (see 
+        https://www.tensorflow.org/api_docs/python/tf/config/experimental/set_memory_growth). 
     """
 
-    parser.add_argument('--netcdf_indir', type=str, help='Main directory for the netcdf files containing variable data.')
-    parser.add_argument('--mergir_indir', type=str, help="Input directory for the netCDF files containing MERGIR data.")
+    # From https://dopplerchase-ai2es-schooner-hpc.readthedocs.io/en/latest/general_gpu.html#sharing-gpus
+    if "CUDA_VISIBLE_DEVICES" in os.environ.keys():
+        # Fetch list of logical GPUs that have been allocated
+        # Will always be numbered 0, 1, …
+        physical_devices = tf.config.list_visible_devices('GPU')
+        n_physical_devices = len(physical_devices)
+        if len(n_physical_devices) > 0:
+            tf.config.set_visible_devices(devices=gpus[gpu_device], device_type='GPU')
+            if memory_growth:
+                tf.config.experimental.set_memory_growth(device=gpus[args['gpu_device']], enable=True)
+
+        # Set memory growth for each
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, memory_growth)
+    else:
+            #No allocated GPUs: do not delete this case!\
+        logger.info('WARNING: No GPUs found, all computations will be performed on CPUs.')
+        tf.config.set_visible_devices([], 'GPU')
+
+def parse_arguments():
+    """Parse CLI arguments. 
+    
+    Arguments set in the CLI will supercede any option set in a provided
+    configuration yaml file.
+    """
+    # Set up and parse to see if config is in arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", type=str, help="path to configuration yaml file")
+
+    # Add all other arguments relevant for prediction to run
+    parser.add_argument('--variable_netcdf_dir', type=str, help='Main directory for the netcdf files containing variable data.')
     parser.add_argument('--init_time', type=int, nargs=4, help='Date and time of the data. Pass 4 ints in the following order: year, month, day, hour')
     parser.add_argument('--domain', type=str, help='Domain of the data.')
-    parser.add_argument('--num_images', type=int, nargs=2, default=[1, 1], help='Number of images for each dimension the final stitched map for predictions: lon, lat')
+    parser.add_argument('--num_images', type=int, nargs=2, help='Number of images for each dimension the final stitched map for predictions: lon, lat')
     parser.add_argument('--gpu_device', type=int, help='GPU device number.')
-    parser.add_argument('--batch_size', type=int, default=1, help="Batch size for the model predictions.")
+    parser.add_argument('--batch_size', type=int, help="Batch size for the model predictions.")
     parser.add_argument('--image_size', type=int, nargs=2, help="Number of pixels along each dimension of the model's output: lon, lat")
     parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
     parser.add_argument('--model_dir', type=str, help='Directory for the models.')
     parser.add_argument('--model_number', type=int, help='Model number.')
-    parser.add_argument('--data_source', type=str, default='era5', help='Data source for variables')
-    return parser.parse_args()
+    parser.add_argument('--data_source', type=str, help='Data source for variables')
 
-def parse_arguments():
-    """Parse CLI arguments."""
-    # Set up and parse to see if config is in arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", type=str, help="path to configuration yaml file")
-    args = parser.parse_args()
-    if args.config is not None:
-        model_properties = yaml.safe_load(args['config'])
+    # Set args as a dict instead of a Namespace
+    args = vars(parser.parse_args())
+
+
+    # Load configuration if exists
+    if args['config'] is not None:
+        prediction_config = yaml.safe_load(args['config'])
+    # If not, initialize an empty dict    
     else:
-        model_properties = parse_arguments_no_config(parser)
-    
+        prediction_config = dict()
+    logger.info(args)
+    for key, value in args:
+        if value is not None:
+            prediction_config[key] = args[key]
+        
+         
+
+
+
 
 
 
 if __name__ == '__main__':
-    pass
+    parse_arguments()
