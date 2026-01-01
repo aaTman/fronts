@@ -1,0 +1,8 @@
+variable_netcdf_dir: '/path/to/files'
+init_time:
+    - 2022
+    - 1
+    - 1
+    - 12
+domain: 'conus'
+
