@@ -1,7 +1,7 @@
 import argparse
 import os
 
-# import tensorflow as tf
+import tensorflow as tf
 
 import dataclasses
 # import dacite
@@ -88,12 +88,12 @@ def set_ai2es_tf_physical_devices(gpu_device: int, memory_growth: bool=False):
     if "CUDA_VISIBLE_DEVICES" in os.environ.keys():
         # Fetch list of logical GPUs that have been allocated
         # Will always be numbered 0, 1, …
-        physical_devices = tf.config.list_visible_devices('GPU')
+        physical_devices = tf.config.get_visible_devices('GPU')
         n_physical_devices = len(physical_devices)
-        if len(n_physical_devices) > 0:
-            tf.config.set_visible_devices(devices=gpus[gpu_device], device_type='GPU')
+        if n_physical_devices > 0:
+            tf.config.set_visible_devices(devices=physical_devices[gpu_device], device_type='GPU')
             if memory_growth:
-                tf.config.experimental.set_memory_growth(device=gpus[args['gpu_device']], enable=True)
+                tf.config.experimental.set_memory_growth(device=physical_devices[gpu_device], enable=True)
 
         # Set memory growth for each
         for device in physical_devices:
@@ -129,24 +129,22 @@ def parse_arguments():
     # Set args as a dict instead of a Namespace
     args = vars(parser.parse_args())
 
-
     # Load configuration if exists
     if args['config'] is not None:
-        prediction_config = yaml.safe_load(args['config'])
+        with open(args['config'], "r") as config_file:
+            prediction_config = yaml.safe_load(config_file)
     # If not, initialize an empty dict    
     else:
         prediction_config = dict()
-    logger.info(args)
-    for key, value in args:
+
+    for key, value in args.items():
+        # Replace args if they were set in command line call
         if value is not None:
             prediction_config[key] = args[key]
-        
-         
-
-
-
-
-
+        else:
+            # Fill rest of prediction_config in with keys were not declared in the config yaml
+            if key not in prediction_config.keys():
+                prediction_config[key] = None
 
 if __name__ == '__main__':
     parse_arguments()
