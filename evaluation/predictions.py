@@ -5,6 +5,7 @@ import tensorflow as tf
 
 import dataclasses
 import dacite
+
 # from fronts import file_manager, data_utils
 from typing import Literal, Union
 import yaml
@@ -16,10 +17,12 @@ BATCH_SIZE_DEFAULT: int = 1
 logging.basicConfig()
 logger = logging.getLogger(name=__name__)
 logger.setLevel(logging.INFO)
+
+
 @dataclasses.dataclass
 class NormalizationParameters:
     """Properties for normalizations of variables.
-    
+
     Attributes:
     variable: the data variable, e.g. q, T, Td.
     pressure_level: the pressure level in hPa, e.g. 950.
@@ -30,6 +33,7 @@ class NormalizationParameters:
     mean_weighted: the latitude-weighted mean.
     std_weighted: the latitude-weighted standard deviation.
     """
+
     variable: str
     pressure_level: int
     min: float
@@ -45,36 +49,38 @@ class NormalizationProperties:
     """Normalization properties for incoming data for predictions.
 
     Attributes:
-    normalize_method: normalize method for incoming data. Options are 
-        'standard' (z-score standardization), 'standard_weighted' (same, but 
-        with latitude weighting), or 'min_max' (min-max normalization).
-    normalize_parameters: a dictionary of (variable, list) key value pairs where 
-        the list consists of 'min', 'max', 'mean', 'std', 'mean_weighted', 
-        and 'std_weighted' parameters.
-"""
-    normalize_method: Literal['standard','standard_weighted','min_max']
+    normalize_method: normalize method for incoming data. Options are 'standard'
+        (z-score standardization), 'standard_weighted' (same, but with latitude
+        weighting), or 'min_max' (min-max normalization).
+    normalize_parameters: a dictionary of (variable, list) key value pairs where the
+        list consists of 'min', 'max', 'mean', 'std', 'mean_weighted', and
+        'std_weighted' parameters.
+    """
+
+    normalize_method: Literal["standard", "standard_weighted", "min_max"]
     normalize_parameters: list[NormalizationParameters]
 
 
 @dataclasses.dataclass
 class ModelProperties:
     """ML model properties to determine functionality and outputs.
-    
+
     Attributes:
-    model_type: a string indicating which model type. Options include
-        unet, attention_unet, or unet_3plus.
-    front_types: which fronts are included in the model to predict. See
-        more information in `utils.data_utils.reformat_fronts`. 
+    model_type: a string indicating which model type. Options include unet,
+        attention_unet, or unet_3plus.
+    front_types: which fronts are included in the model to predict. See more information
+        in `utils.data_utils.reformat_fronts`.
     variables: variables that will be used to predict front type.
-    pressure_levels: pressure levels that will be used to predict front
-        type.
+    pressure_levels: pressure levels that will be used to predict front type.
     image_size: longitude, latitude size of model predictions (in degrees).
     """
+
     model_type: str
     front_types: list[str]
     variables: list[str]
     pressure_levels: list[str]
     image_size: tuple[int, int]
+
 
 @dataclasses.dataclass
 class TensorflowProperties:
@@ -82,11 +88,11 @@ class TensorflowProperties:
 
     Attributes:
     gpu_device: the number of the device being used.
-    memory_growth: whether or not to utilize memory growth, which if True
-        will prevent the runtime initialization from allocating all of the 
-        memory on the device (see 
-        https://www.tensorflow.org/api_docs/python/tf/config/experimental/set_memory_growth). 
+    memory_growth: whether or not to utilize memory growth, which if True will prevent
+        the runtime initialization from allocating all of the memory on the device (see
+        https://www.tensorflow.org/api_docs/python/tf/config/experimental/set_memory_growth).
     """
+
     gpu_device: int
     memory_growth: bool
 
@@ -95,53 +101,92 @@ class TensorflowProperties:
         if "CUDA_VISIBLE_DEVICES" in os.environ.keys():
             # Fetch list of logical GPUs that have been allocated
             # Will always be numbered 0, 1, …
-            physical_devices = tf.config.get_visible_devices('GPU')
+            physical_devices = tf.config.get_visible_devices("GPU")
             n_physical_devices = len(physical_devices)
             if n_physical_devices > 0:
-                tf.config.set_visible_devices(devices=physical_devices[self.gpu_device], device_type='GPU')
+                tf.config.set_visible_devices(
+                    devices=physical_devices[self.gpu_device], device_type="GPU"
+                )
                 if self.memory_growth:
-                    tf.config.experimental.set_memory_growth(device=physical_devices[self.gpu_device], enable=True)
+                    tf.config.experimental.set_memory_growth(
+                        device=physical_devices[self.gpu_device], enable=True
+                    )
 
             # Set memory growth for each
             for device in physical_devices:
                 tf.config.experimental.set_memory_growth(device, self.memory_growth)
         else:
-                #No allocated GPUs: do not delete this case!\
-            logger.info('WARNING: No GPUs found, all computations will be performed on CPUs.')
-            tf.config.set_visible_devices([], 'GPU')
+            # No allocated GPUs: do not delete this case!\
+            logger.info(
+                ("WARNING: No GPUs found, all computations will be performed on CPUs.")
+            )
+            tf.config.set_visible_devices([], "GPU")
 
 
 def parse_arguments() -> dict:
-    """Parse CLI arguments. 
-    
+    """Parse CLI arguments.
+
     Arguments set in the CLI will supercede any option set in a provided
     configuration yaml file.
     """
     # Set up and parse to see if config is in arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", type=str, help="path to configuration yaml file")
+    parser.add_argument(
+        "-c", "--config", type=str, help="path to configuration yaml file"
+    )
 
     # Add all other arguments relevant for prediction to run
-    parser.add_argument('--variable_netcdf_dir', type=str, help='Main directory for the netcdf files containing variable data.')
-    parser.add_argument('--init_time', type=int, nargs=4, help='Date and time of the data. Pass 4 ints in the following order: year, month, day, hour')
-    parser.add_argument('--domain', type=str, help='Domain of the data.')
-    parser.add_argument('--num_images', type=int, nargs=2, help='Number of images for each dimension the final stitched map for predictions: lon, lat')
-    parser.add_argument('--gpu_device', type=int, help='GPU device number.')
-    parser.add_argument('--batch_size', type=int, help="Batch size for the model predictions.")
-    parser.add_argument('--image_size', type=int, nargs=2, help="Number of pixels along each dimension of the model's output: lon, lat")
-    parser.add_argument('--memory_growth', action='store_true', help='Use memory growth on the GPU')
-    parser.add_argument('--model_dir', type=str, help='Directory for the models and properties.')
-    parser.add_argument('--model_number', type=int, help='Model number.')
-    parser.add_argument('--data_source', type=str, help='Data source for variables')
+    parser.add_argument(
+        "--variable_netcdf_dir",
+        type=str,
+        help="Main directory for the netcdf files containing variable data.",
+    )
+    parser.add_argument(
+        "--init_time",
+        type=int,
+        nargs=4,
+        help=(
+            "Date and time of the data. Pass 4 ints in the following order: year, "
+            "month, day, hour"
+        ),
+    )
+    parser.add_argument("--domain", type=str, help="Domain of the data.")
+    parser.add_argument(
+        "--num_images",
+        type=int,
+        nargs=2,
+        help=(
+            "Number of images for each dimension the final stitched map for "
+            "predictions: lon, lat"
+        ),
+    )
+    parser.add_argument("--gpu_device", type=int, help="GPU device number.")
+    parser.add_argument(
+        "--batch_size", type=int, help="Batch size for the model predictions."
+    )
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        nargs=2,
+        help="Number of pixels along each dimension of the model's output: lon, lat",
+    )
+    parser.add_argument(
+        "--memory_growth", action="store_true", help="Use memory growth on the GPU"
+    )
+    parser.add_argument(
+        "--model_dir", type=str, help="Directory for the models and properties."
+    )
+    parser.add_argument("--model_number", type=int, help="Model number.")
+    parser.add_argument("--data_source", type=str, help="Data source for variables")
 
     # Set args as a dict instead of a Namespace
     args = vars(parser.parse_args())
 
     # Load configuration if exists
-    if args['config'] is not None:
-        with open(args['config'], "r") as config_file:
+    if args["config"] is not None:
+        with open(args["config"], "r") as config_file:
             prediction_config = yaml.safe_load(config_file)
-    # If not, initialize an empty dict    
+    # If not, initialize an empty dict
     else:
         prediction_config = dict()
 
@@ -150,51 +195,71 @@ def parse_arguments() -> dict:
         if value is not None:
             prediction_config[key] = args[key]
         else:
-            # Fill rest of prediction_config in with keys were not declared in the config yaml
+            # Fill rest of prediction_config in with keys were not declared in the
+            # config yaml
             if key not in prediction_config.keys():
                 prediction_config[key] = None
 
     return prediction_config
 
-def assign_config_to_dataclasses(prediction_config: dict) -> tuple[TensorflowProperties, ModelProperties]:
+
+def assign_config_to_dataclasses(
+    prediction_config: dict,
+) -> tuple[TensorflowProperties, ModelProperties]:
     """Initializes dataclasses with respective configuration arguments.
 
-    Using the incoming prediction_config based on the configuration yaml 
-    and/or the command line arguments, builds dataclasses based on the keys
-    in the dictionary.
+    Using the incoming prediction_config based on the configuration yaml and/or the
+    command line arguments, builds dataclasses based on the keys in the dictionary.
 
     Args:
     prediction_config: the prediction configuration dictionary.
 
     Returns ModelProperties and TensorflowProperties dataclasses.
     """
-    tensorflow_dict = {k: v for k, v in prediction_config if k in dataclasses.fields(TensorflowProperties)}
-    tensorflow_properties = dacite.from_dict(data_class=TensorflowProperties, data=tensorflow_dict)
+    tensorflow_dict = {
+        k: v
+        for k, v in prediction_config
+        if k in dataclasses.fields(TensorflowProperties)
+    }
+    tensorflow_properties = dacite.from_dict(
+        data_class=TensorflowProperties, data=tensorflow_dict
+    )
 
-    model_dict =  {k: v for k, v in prediction_config if k in dataclasses.fields(ModelProperties)}
+    model_dict = {
+        k: v for k, v in prediction_config if k in dataclasses.fields(ModelProperties)
+    }
     model_properties = dacite.from_dict(data_class=ModelProperties, data=model_dict)
 
     return tensorflow_properties, model_properties
 
+
 def generate_model_properties(model_directory: Union[str, pathlib.Path]):
     """Generates a ModelProperties dataclass from incoming pickle file."""
 
-    with open(model_directory,'rb') as f:
+    with open(model_directory, "rb") as f:
         model_properties_dict = pickle.load(f)
-    
 
-    
 
-def assign_normalization_properties_to_dataclass(normalization_config: dict) -> NormalizationProperties:
-    """Initializes dataclasses for normalization parameters provided in the model properties.
-    
+def assign_normalization_properties_to_dataclass(
+    normalization_config: dict,
+) -> NormalizationProperties:
+    """Initializes dataclasses for normalization parameters provided in the model
+    properties.
+
     Args:
-    normalization_config: dictionary of the configuration options for normalization procedures.
+    normalization_config: dictionary of the configuration options for normalization
+        procedures.
 
     Returns NormalizationProperties dataclass.
     """
-    normalization_dict =  {k: v for k, v in normalization_config if k in dataclasses.fields(NormalizationProperties)}
-    normalization_properties = dacite.from_dict(data_class=NormalizationProperties, data=normalization_dict)
+    normalization_dict = {
+        k: v
+        for k, v in normalization_config
+        if k in dataclasses.fields(NormalizationProperties)
+    }
+    normalization_properties = dacite.from_dict(
+        data_class=NormalizationProperties, data=normalization_dict
+    )
 
     return normalization_properties
 
@@ -203,10 +268,9 @@ def run_prediction() -> None:
     prediction_config = parse_arguments()
 
     # Convert model path string to Path object and convert to dataclass
-    model_path = pathlib.Path(prediction_config['model_dir'])
+    model_path = pathlib.Path(prediction_config["model_dir"])
     model_properties = generate_model_properties(model_path)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     run_prediction()
-    
-    
