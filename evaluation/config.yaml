@@ -5,4 +5,5 @@ init_time:
     - 1
     - 12
 domain: 'conus'
-
+model_dir: "/ourdisk/hpc/ai2es/tman/models/"
+model_number: 27998912

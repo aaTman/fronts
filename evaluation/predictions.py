@@ -1,19 +1,23 @@
 import argparse
 import os
 import pickle
-import tensorflow as tf
+from collections.abc import MutableMapping
 
 import dataclasses
 import dacite
+import datetime
 
 # from fronts import file_manager, data_utils
-from typing import Literal, Union
+from typing import Literal, Union, Sequence
 import yaml
 import logging
 import pathlib
+import utils.data_utils
+import file_manager
 
 IMAGE_SIZE_DEFAULT: list[int] = [1, 1]
 BATCH_SIZE_DEFAULT: int = 1
+
 logging.basicConfig()
 logger = logging.getLogger(name=__name__)
 logger.setLevel(logging.INFO)
@@ -62,24 +66,11 @@ class NormalizationProperties:
 
 
 @dataclasses.dataclass
-class ModelProperties:
-    """ML model properties to determine functionality and outputs.
-
-    Attributes:
-    model_type: a string indicating which model type. Options include unet,
-        attention_unet, or unet_3plus.
-    front_types: which fronts are included in the model to predict. See more information
-        in `utils.data_utils.reformat_fronts`.
-    variables: variables that will be used to predict front type.
-    pressure_levels: pressure levels that will be used to predict front type.
-    image_size: longitude, latitude size of model predictions (in degrees).
-    """
-
-    model_type: str
-    front_types: list[str]
-    variables: list[str]
-    pressure_levels: list[str]
-    image_size: tuple[int, int]
+class CustomObjects:
+    loss_args: str
+    loss_full_name: str
+    loss_function_name: str
+    metric_args: str
 
 
 @dataclasses.dataclass
@@ -97,6 +88,8 @@ class TensorflowProperties:
     memory_growth: bool
 
     def build(self):
+        import tensorflow as tf
+
         # From https://dopplerchase-ai2es-schooner-hpc.readthedocs.io/en/latest/general_gpu.html#sharing-gpus
         if "CUDA_VISIBLE_DEVICES" in os.environ.keys():
             # Fetch list of logical GPUs that have been allocated
@@ -123,6 +116,25 @@ class TensorflowProperties:
             tf.config.set_visible_devices([], "GPU")
 
 
+def flatten_dict(dictionary, parent_key="", separator="_"):
+    """
+    Turn a nested dictionary into a flattened dictionary
+    with concatenated keys.
+    """
+    items = []
+    for key, value in dictionary.items():
+        # Create the new key, handling the first level
+        new_key = str(parent_key) + separator + str(key) if parent_key else str(key)
+
+        # If the value is another dictionary, recurse
+        if isinstance(value, MutableMapping):
+            items.extend(flatten_dict(value, new_key, separator=separator).items())
+        else:
+            items.append((new_key, value))
+
+    return dict(items)
+
+
 def parse_arguments() -> dict:
     """Parse CLI arguments.
 
@@ -143,12 +155,8 @@ def parse_arguments() -> dict:
     )
     parser.add_argument(
         "--init_time",
-        type=int,
-        nargs=4,
-        help=(
-            "Date and time of the data. Pass 4 ints in the following order: year, "
-            "month, day, hour"
-        ),
+        type=str,
+        help=("Date and time of the data in the format yyyy-mm-dd-hh."),
     )
     parser.add_argument("--domain", type=str, help="Domain of the data.")
     parser.add_argument(
@@ -166,9 +174,11 @@ def parse_arguments() -> dict:
     )
     parser.add_argument(
         "--image_size",
-        type=int,
-        nargs=2,
-        help="Number of pixels along each dimension of the model's output: lon, lat",
+        type=str,
+        help=(
+            "Number of pixels along each dimension of the model's output in the format"
+            " lon,lat"
+        ),
     )
     parser.add_argument(
         "--memory_growth", action="store_true", help="Use memory growth on the GPU"
@@ -200,44 +210,49 @@ def parse_arguments() -> dict:
             if key not in prediction_config.keys():
                 prediction_config[key] = None
 
+    # For args with defaults, check if not None, else apply defaults
+
     return prediction_config
 
 
-def assign_config_to_dataclasses(
-    prediction_config: dict,
-) -> tuple[TensorflowProperties, ModelProperties]:
-    """Initializes dataclasses with respective configuration arguments.
+# def assign_config_to_dataclasses(
+#     prediction_config: dict,
+# ) -> tuple[TensorflowProperties, ModelProperties]:
+#     """Initializes dataclasses with respective configuration arguments.
 
-    Using the incoming prediction_config based on the configuration yaml and/or the
-    command line arguments, builds dataclasses based on the keys in the dictionary.
+#     Using the incoming prediction_config based on the configuration yaml and/or the
+#     command line arguments, builds dataclasses based on the keys in the dictionary.
 
-    Args:
-    prediction_config: the prediction configuration dictionary.
+#     Args:
+#     prediction_config: the prediction configuration dictionary.
 
-    Returns ModelProperties and TensorflowProperties dataclasses.
-    """
-    tensorflow_dict = {
-        k: v
-        for k, v in prediction_config
-        if k in dataclasses.fields(TensorflowProperties)
-    }
-    tensorflow_properties = dacite.from_dict(
-        data_class=TensorflowProperties, data=tensorflow_dict
-    )
+#     Returns ModelProperties and TensorflowProperties dataclasses.
+#     """
+#     tensorflow_dict = {
+#         k: v
+#         for k, v in prediction_config
+#         if k in dataclasses.fields(TensorflowProperties)
+#     }
+#     tensorflow_properties = dacite.from_dict(
+#         data_class=TensorflowProperties, data=tensorflow_dict
+#     )
 
-    model_dict = {
-        k: v for k, v in prediction_config if k in dataclasses.fields(ModelProperties)
-    }
-    model_properties = dacite.from_dict(data_class=ModelProperties, data=model_dict)
+#     model_dict = {
+#         k: v for k, v in prediction_config if k in dataclasses.fields(ModelProperties)
+#     }
+#     model_properties = dacite.from_dict(data_class=ModelProperties, data=model_dict)
 
-    return tensorflow_properties, model_properties
+#     return tensorflow_properties, model_properties
 
 
-def generate_model_properties(model_directory: Union[str, pathlib.Path]):
+def load_model_properties(model_directory: Union[str, pathlib.Path]):
     """Generates a ModelProperties dataclass from incoming pickle file."""
 
     with open(model_directory, "rb") as f:
         model_properties_dict = pickle.load(f)
+
+    model_properties_dict = flatten_dict(model_properties_dict)
+    return model_properties_dict
 
 
 def assign_normalization_properties_to_dataclass(
@@ -269,7 +284,21 @@ def run_prediction() -> None:
 
     # Convert model path string to Path object and convert to dataclass
     model_path = pathlib.Path(prediction_config["model_dir"])
-    model_properties = generate_model_properties(model_path)
+    model_number = prediction_config["model_number"]
+    model_subpath = f"model_{prediction_config['model_number']}"
+
+    # Get the pickle file from the fronts training output
+    model_pickle = (
+        model_path / model_subpath / "_".join([model_subpath, "properties.pkl"])
+    )
+
+    model_h5 = model_path / model_subpath / "".join([model_subpath, ".h5"])
+    model_properties = load_model_properties(model_pickle)
+    model = file_manager.load_model(
+        model_number=model_number, model_dir=model_path.as_posix()
+    )
+    logger.info(model_properties)
+    breakpoint()
 
 
 if __name__ == "__main__":
