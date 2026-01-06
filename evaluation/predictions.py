@@ -2,20 +2,27 @@ import argparse
 import os
 import pickle
 from collections.abc import MutableMapping
-
+import xarray as xr
 import dataclasses
-import dacite
 import datetime
 
 # from fronts import file_manager, data_utils
-from typing import Literal, Union, Sequence
+from typing import Literal, Union
 import yaml
 import logging
 import pathlib
-import utils.data_utils
+
+
+# TODO: convert to library and avoid sys import
+import sys
+
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+)  # this line allows us to import scripts outside the current directory
+from utils import data_utils
 import file_manager
 
-IMAGE_SIZE_DEFAULT: list[int] = [1, 1]
+NUM_IMAGES_DEFAULT: list[int] = [1, 1]
 BATCH_SIZE_DEFAULT: int = 1
 
 logging.basicConfig()
@@ -116,21 +123,37 @@ class TensorflowProperties:
             tf.config.set_visible_devices([], "GPU")
 
 
-def flatten_dict(dictionary, parent_key="", separator="_"):
+def flatten_dict(dictionary, parent_key="", separator="_", concatenate=False):
     """
     Turn a nested dictionary into a flattened dictionary
     with concatenated keys.
     """
     items = []
     for key, value in dictionary.items():
-        # Create the new key, handling the first level
-        new_key = str(parent_key) + separator + str(key) if parent_key else str(key)
-
+        if concatenate:
+            # Create the new key, handling the first level
+            new_key = str(parent_key) + separator + str(key) if parent_key else str(key)
+        else:
+            new_key = str(parent_key) if parent_key else str(key)
         # If the value is another dictionary, recurse
         if isinstance(value, MutableMapping):
             items.extend(flatten_dict(value, new_key, separator=separator).items())
         else:
             items.append((new_key, value))
+
+    return dict(items)
+
+
+def filter_nested_dict(dictionary: dict, filter: str, **kwargs):
+    """
+    Filter a nested dictionary based on string and return a flattened dictionary.
+    """
+    items = []
+    for key, value in dictionary.items():
+        # If the value is another dictionary, recurse
+        if filter in key:
+            if isinstance(value, MutableMapping):
+                items.extend(flatten_dict(dictionary=value, **kwargs).items())
 
     return dict(items)
 
@@ -155,7 +178,7 @@ def parse_arguments() -> dict:
     )
     parser.add_argument(
         "--init_time",
-        type=str,
+        type=lambda t: datetime.datetime.strptime(t, "%Y-%m-%d-%H"),
         help=("Date and time of the data in the format yyyy-mm-dd-hh."),
     )
     parser.add_argument("--domain", type=str, help="Domain of the data.")
@@ -196,6 +219,10 @@ def parse_arguments() -> dict:
     if args["config"] is not None:
         with open(args["config"], "r") as config_file:
             prediction_config = yaml.safe_load(config_file)
+        # Convert date to datetime object
+        prediction_config["init_time"] = datetime.datetime.strptime(
+            prediction_config["init_time"], "%Y-%m-%d-%H"
+        )
     # If not, initialize an empty dict
     else:
         prediction_config = dict()
@@ -211,6 +238,17 @@ def parse_arguments() -> dict:
                 prediction_config[key] = None
 
     # For args with defaults, check if not None, else apply defaults
+    prediction_config["num_images"] = (
+        NUM_IMAGES_DEFAULT
+        if prediction_config["num_images"] is None
+        else prediction_config["num_images"]
+    )
+
+    prediction_config["batch_size"] = (
+        BATCH_SIZE_DEFAULT
+        if prediction_config["batch_size"] is None
+        else prediction_config["batch_size"]
+    )
 
     return prediction_config
 
@@ -245,38 +283,35 @@ def parse_arguments() -> dict:
 #     return tensorflow_properties, model_properties
 
 
-def load_model_properties(model_directory: Union[str, pathlib.Path]):
+def load_model_properties(model_pickle_path: Union[str, pathlib.Path]):
     """Generates a ModelProperties dataclass from incoming pickle file."""
 
-    with open(model_directory, "rb") as f:
+    with open(model_pickle_path, "rb") as f:
         model_properties_dict = pickle.load(f)
 
-    model_properties_dict = flatten_dict(model_properties_dict)
     return model_properties_dict
 
 
-def assign_normalization_properties_to_dataclass(
-    normalization_config: dict,
-) -> NormalizationProperties:
-    """Initializes dataclasses for normalization parameters provided in the model
-    properties.
+# TODO: update normalize_dataset to take in cleaned data similar to this function
+# def assign_normalization_properties_to_dataclass(
+#     normalization_config: dict,
+# ) -> NormalizationProperties:
+#     """Initializes dataclasses for normalization parameters provided in the model
+#     properties.
 
-    Args:
-    normalization_config: dictionary of the configuration options for normalization
-        procedures.
+#     Args:
+#     normalization_config: dictionary of the configuration options for normalization
+#         procedures.
 
-    Returns NormalizationProperties dataclass.
-    """
-    normalization_dict = {
-        k: v
-        for k, v in normalization_config
-        if k in dataclasses.fields(NormalizationProperties)
-    }
-    normalization_properties = dacite.from_dict(
-        data_class=NormalizationProperties, data=normalization_dict
-    )
+#     Returns NormalizationProperties dataclass.
+#     """
+#     breakpoint()
+#     normalization_dict = { k: v for k, v in normalization_config.items() if k in dataclasses.fields(NormalizationProperties) }
+#     normalization_properties = dacite.from_dict(
+#         data_class=NormalizationProperties, data=normalization_dict
+#     )
 
-    return normalization_properties
+#     return normalization_properties
 
 
 def run_prediction() -> None:
@@ -292,13 +327,86 @@ def run_prediction() -> None:
         model_path / model_subpath / "_".join([model_subpath, "properties.pkl"])
     )
 
+    # TODO: simplify load model to pass in properties and path directly, avoid
+    # reload
     model_h5 = model_path / model_subpath / "".join([model_subpath, ".h5"])
     model_properties = load_model_properties(model_pickle)
+
+    # Create and set Tensorflow devices and memory growth options
+    tensorflow_config = TensorflowProperties(
+        gpu_device=prediction_config["gpu_device"],
+        memory_growth=True
+        if prediction_config["memory_growth"] is None
+        else prediction_config["memory_growth"],
+    )
+    tensorflow_config.build()
+
+    # Load the model from local storage
     model = file_manager.load_model(
         model_number=model_number, model_dir=model_path.as_posix()
     )
     logger.info(model_properties)
-    breakpoint()
+    variable_files_obj = file_manager.DataFileLoader(
+        prediction_config["variable_netcdf_dir"],
+        data_type=prediction_config["data_source"],
+        file_format="netcdf",
+        years=prediction_config["init_time"].year,
+        months=prediction_config["init_time"].month,
+        days=prediction_config["init_time"].day,
+        hours=prediction_config["init_time"].hour,
+    )
+
+    transpose_dims = (
+        "time",
+        "longitude",
+        "latitude",
+        "pressure_level",
+    )
+    variable_ds = xr.open_mfdataset(variable_files_obj.files[0])
+
+    variable_ds_variables = [
+        n
+        for n in variable_ds.data_vars
+        if n in model_properties["dataset_properties"]["variables"]
+    ]
+    variable_ds = variable_ds[variable_ds_variables]
+    if "time" not in variable_ds.dims:
+        variable_ds = variable_ds.expand_dims(
+            {"time": [prediction_config["init_time"]]}
+        )
+    variable_ds = variable_ds.sel(
+        pressure_level=model_properties["dataset_properties"]["pressure_levels"]
+    ).transpose(*transpose_dims)
+
+    normalization_method = model_properties["dataset_properties"][
+        "normalization_method"
+    ]
+    normalization_params = model_properties["dataset_properties"][
+        "normalization_parameters"
+    ]
+
+    variable_batch_ds = data_utils.normalize_dataset(
+        variable_ds,
+        method=normalization_method,
+        normalization_parameters=normalization_params,
+    )
+
+    # Transpose data to (time, longitude, latitude, pressure level, variable)
+    variable_batch_array = variable_batch_ds.to_dataarray().transpose(
+        "time", "longitude", "latitude", "pressure_level", "variable"
+    )
+    # Convert to numpy ndarray
+    variable_batch_array = variable_batch_array.to_numpy()
+    prediction = model.predict(
+        variable_batch_array, batch_size=prediction_config["batch_size"]
+    )
+
+    logger.info("Prediction: ")
+    logger.info(len(prediction))
+    logger.info(prediction)
+    logger.info("Prediction shape: ")
+    logger.info(prediction[0].shape)
+    logger.info(prediction[1].shape)
 
 
 if __name__ == "__main__":
