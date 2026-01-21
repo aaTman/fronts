@@ -19,6 +19,8 @@ dask = ">=2023.3.0,<2024"
 distributed = ">=2023.3.0,<2024"
 xarray = ">=2024.3.0,<2025"
 dacite = ">=1.9.2,<2"
+py3nvml = ">=0.2.6,<0.3"
+ipykernel = ">=7.1.0,<8"
 
 [system-requirements]
 libc = "2.17"
