@@ -11,7 +11,7 @@ from typing import Literal, Union
 import yaml
 import logging
 import pathlib
-
+import numpy as np
 
 # TODO: convert to library and avoid sys import
 import sys
@@ -211,7 +211,11 @@ def parse_arguments() -> dict:
     )
     parser.add_argument("--model_number", type=int, help="Model number.")
     parser.add_argument("--data_source", type=str, help="Data source for variables")
-
+    parser.add_argument(
+        "--time_range",
+        type=str,
+        help="Range of times to predict in yyyy-mm-dd-hh,yyyy-mm-dd-hh format.",
+    )
     # Set args as a dict instead of a Namespace
     args = vars(parser.parse_args())
 
@@ -219,10 +223,6 @@ def parse_arguments() -> dict:
     if args["config"] is not None:
         with open(args["config"], "r") as config_file:
             prediction_config = yaml.safe_load(config_file)
-        # Convert date to datetime object
-        prediction_config["init_time"] = datetime.datetime.strptime(
-            prediction_config["init_time"], "%Y-%m-%d-%H"
-        )
     # If not, initialize an empty dict
     else:
         prediction_config = dict()
@@ -249,6 +249,20 @@ def parse_arguments() -> dict:
         if prediction_config["batch_size"] is None
         else prediction_config["batch_size"]
     )
+    if prediction_config["init_time"] is not None:
+        # Convert date to datetime object
+        prediction_config["init_time"] = datetime.datetime.strptime(
+            prediction_config["init_time"], "%Y-%m-%d-%H"
+        )
+    # If time range is given, set start and end times
+    if prediction_config["time_range"]:
+        import pandas as pd
+
+        start_time, end_time = prediction_config["time_range"].split(",")
+        start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d-%H")
+        end_time = datetime.datetime.strptime(end_time, "%Y-%m-%d-%H")
+        date_range = pd.date_range(start_time, end_time, freq="6h")
+        prediction_config["time_range"] = date_range
 
     return prediction_config
 
@@ -346,14 +360,24 @@ def run_prediction() -> None:
         model_number=model_number, model_dir=model_path.as_posix()
     )
     logger.info(model_properties)
+    if "time_range" in prediction_config.keys():
+        years = prediction_config["time_range"].year.unique()
+        months = prediction_config["time_range"].month.unique()
+        days = prediction_config["time_range"].day.unique()
+        hours = prediction_config["time_range"].hour.unique()
+    else:
+        years = prediction_config["init_time"].year
+        months = prediction_config["init_time"].month
+        days = prediction_config["init_time"].day
+        hours = prediction_config["init_time"].hour
     variable_files_obj = file_manager.DataFileLoader(
         prediction_config["variable_netcdf_dir"],
         data_type=prediction_config["data_source"],
         file_format="netcdf",
-        years=prediction_config["init_time"].year,
-        months=prediction_config["init_time"].month,
-        days=prediction_config["init_time"].day,
-        hours=prediction_config["init_time"].hour,
+        years=years,
+        months=months,
+        days=days,
+        hours=hours,
     )
 
     transpose_dims = (
@@ -362,7 +386,9 @@ def run_prediction() -> None:
         "latitude",
         "pressure_level",
     )
-    variable_ds = xr.open_mfdataset(variable_files_obj.files[0])
+    variable_ds = xr.open_mfdataset(
+        variable_files_obj.files[0], combine="nested", concat_dim="time"
+    )
 
     variable_ds_variables = [
         n
@@ -390,24 +416,46 @@ def run_prediction() -> None:
         method=normalization_method,
         normalization_parameters=normalization_params,
     )
-
+    domain_extent = data_utils.DOMAIN_EXTENTS[prediction_config["domain"]]
+    variable_batch_ds = variable_batch_ds.sel(
+        longitude=slice(domain_extent[0], domain_extent[1]),
+        latitude=slice(domain_extent[3], domain_extent[2]),
+    )
     # Transpose data to (time, longitude, latitude, pressure level, variable)
     variable_batch_array = variable_batch_ds.to_dataarray().transpose(
         "time", "longitude", "latitude", "pressure_level", "variable"
     )
+    logger.info("variable_batch_array:")
+    logger.info(variable_batch_array)
+
     # Convert to numpy ndarray
     variable_batch_array = variable_batch_array.to_numpy()
     prediction = model.predict(
         variable_batch_array, batch_size=prediction_config["batch_size"]
     )
-
-    logger.info("Prediction: ")
-    logger.info(len(prediction))
-    logger.info(prediction)
-    logger.info("Prediction shape: ")
-    logger.info(prediction[0].shape)
-    logger.info(prediction[1].shape)
+    # Model outputs a list of arrays; this turns it into a sole array
+    prediction = prediction[0][..., 1:]
+    prediction_ds = xr.Dataset(
+        data_vars=dict(
+            probability=(
+                ["time", "longitude", "latitude", "front_type"],
+                # Based on predict.py, taking everything after the first front output
+                prediction,
+            )
+        ),
+        coords=dict(
+            front_type=model_properties["dataset_properties"]["front_types"],
+            longitude=variable_batch_ds.longitude,
+            latitude=variable_batch_ds.latitude,
+            time=variable_batch_ds.time,
+        ),
+    )
+    prediction_ds.to_netcdf("/ourdisk/hpc/ai2es/tman/test.nc")
 
 
 if __name__ == "__main__":
+    start_time = datetime.datetime.now()
     run_prediction()
+    end_time = datetime.datetime.now()
+
+    logger.info("Total time: %s" % np.round((end_time - start_time).total_seconds(), 2))
