@@ -433,6 +433,7 @@ def run_prediction() -> None:
     prediction = model.predict(
         variable_batch_array, batch_size=prediction_config["batch_size"]
     )
+
     # Model outputs a list of arrays; this turns it into a sole array
     prediction = prediction[0][..., 1:]
     prediction_ds = xr.Dataset(
@@ -450,7 +451,7 @@ def run_prediction() -> None:
             time=variable_batch_ds.time,
         ),
     )
-    prediction_ds.to_netcdf("/ourdisk/hpc/ai2es/tman/test.nc")
+    prediction_ds.to_netcdf(f"/ourdisk/hpc/ai2es/tman/{model_number}_preds.nc")
 
 
 if __name__ == "__main__":
