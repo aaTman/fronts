@@ -12,7 +12,16 @@ Script version: 2024.11.15
 """
 
 import numpy as np
-from tensorflow.keras.layers import Activation, Conv2D, Conv3D, BatchNormalization, MaxPooling2D, MaxPooling3D, UpSampling2D, UpSampling3D
+from tensorflow.keras.layers import (
+    Activation,
+    Conv2D,
+    Conv3D,
+    BatchNormalization,
+    MaxPooling2D,
+    MaxPooling3D,
+    UpSampling2D,
+    UpSampling3D,
+)
 from tensorflow.keras import layers
 import tensorflow as tf
 from . import custom_activations
@@ -23,7 +32,8 @@ def attention_gate(
     g: tf.Tensor,
     kernel_size: int | tuple[int],
     pool_size: tuple[int],
-    name: str or None = None):
+    name: str or None = None,
+):
     """
     Attention gate for the Attention U-Net.
 
@@ -45,8 +55,12 @@ def attention_gate(
     https://towardsdatascience.com/a-detailed-explanation-of-the-attention-u-net-b371a5590831
     """
 
-    conv_layer = getattr(tf.keras.layers, f'Conv{len(x.shape) - 2}D')  # Select the convolution layer for the x and g tensors
-    upsample_layer = getattr(tf.keras.layers, f'UpSampling{len(x.shape) - 2}D')  # Select the upsampling layer
+    conv_layer = getattr(
+        tf.keras.layers, f"Conv{len(x.shape) - 2}D"
+    )  # Select the convolution layer for the x and g tensors
+    upsample_layer = getattr(
+        tf.keras.layers, f"UpSampling{len(x.shape) - 2}D"
+    )  # Select the upsampling layer
 
     shape_x = x.shape  # Shapes of the ORIGINAL inputs
     filters_x = shape_x[-1]
@@ -55,27 +69,52 @@ def attention_gate(
     x: Get the x tensor to the same shape as the gating signal (g tensor)
     g: Perform a 1x1-style convolution on the gating signal so it has the same number of filters as the x signal  
     """
-    x_conv = conv_layer(filters=filters_x,
-                        kernel_size=kernel_size,
-                        strides=pool_size,
-                        padding='same',
-                        name=f'{name}_Conv{len(x.shape) - 2}D_x')(x)
-    g_conv = conv_layer(filters=filters_x, kernel_size=1, padding='same', name=f'{name}_Conv{len(x.shape) - 2}D_g')(g)
+    x_conv = conv_layer(
+        filters=filters_x,
+        kernel_size=kernel_size,
+        strides=pool_size,
+        padding="same",
+        name=f"{name}_Conv{len(x.shape) - 2}D_x",
+    )(x)
+    g_conv = conv_layer(
+        filters=filters_x,
+        kernel_size=1,
+        padding="same",
+        name=f"{name}_Conv{len(x.shape) - 2}D_g",
+    )(g)
 
-    xg = tf.add(x_conv, g_conv, name=f'{name}_sum')  # Sum the x and g signals element-wise
-    xg = Activation(activation='relu', name=f'{name}_relu')(xg)  # Pass the summed signals through a ReLU activation layer
+    xg = tf.add(
+        x_conv, g_conv, name=f"{name}_sum"
+    )  # Sum the x and g signals element-wise
+    xg = Activation(activation="relu", name=f"{name}_relu")(
+        xg
+    )  # Pass the summed signals through a ReLU activation layer
 
-    xg_collapse = conv_layer(filters=1, kernel_size=1, padding='same', name=f'{name}_collapse')(xg)  # Collapse the number of filters to just 1
-    xg_collapse = Activation(activation='sigmoid', name=f'{name}_sigmoid')(xg_collapse)  # Pass collapsed tensor through a sigmoid activation layer
+    xg_collapse = conv_layer(
+        filters=1, kernel_size=1, padding="same", name=f"{name}_collapse"
+    )(xg)  # Collapse the number of filters to just 1
+    xg_collapse = Activation(activation="sigmoid", name=f"{name}_sigmoid")(
+        xg_collapse
+    )  # Pass collapsed tensor through a sigmoid activation layer
 
     # Upsample the collapsed tensor so its dimensions match the original shape of the x signal, then expand the filters to match the g signal filters
-    upsample_xg = upsample_layer(size=pool_size, name=f'{name}_UpSampling{len(x.shape) - 2}D')(xg_collapse)
-    upsample_xg = tf.repeat(upsample_xg, filters_x, axis=-1, name=f'{name}_repeat')
+    upsample_xg = upsample_layer(
+        size=pool_size, name=f"{name}_UpSampling{len(x.shape) - 2}D"
+    )(xg_collapse)
+    upsample_xg = tf.repeat(upsample_xg, filters_x, axis=-1, name=f"{name}_repeat")
 
-    coeffs = tf.multiply(upsample_xg, x, name=f'{name}_multiply')  # Element-wise multiplication onto the original x signal
+    coeffs = tf.multiply(
+        upsample_xg, x, name=f"{name}_multiply"
+    )  # Element-wise multiplication onto the original x signal
 
-    attention_tensor = conv_layer(filters=filters_x, kernel_size=1, strides=1, padding='same', name=f'{name}_Conv{len(x.shape) - 2}D_coeffs')(coeffs)
-    attention_tensor = BatchNormalization(name=f'{name}_BatchNorm')(attention_tensor)
+    attention_tensor = conv_layer(
+        filters=filters_x,
+        kernel_size=1,
+        strides=1,
+        padding="same",
+        name=f"{name}_Conv{len(x.shape) - 2}D_coeffs",
+    )(coeffs)
+    attention_tensor = BatchNormalization(name=f"{name}_BatchNorm")(attention_tensor)
 
     return attention_tensor
 
@@ -85,19 +124,20 @@ def convolution_module(
     filters: int,
     kernel_size: int | tuple[int],
     num_modules: int = 1,
-    padding: str = 'same',
+    padding: str = "same",
     use_bias: bool = False,
     batch_normalization: bool = True,
-    activation: str = 'relu',
-    kernel_initializer = 'glorot_uniform',
-    bias_initializer = 'zeros',
-    kernel_regularizer = None,
-    bias_regularizer = None,
-    activity_regularizer = None,
-    kernel_constraint = None,
-    bias_constraint = None,
-    shared_axes = None,
-    name: str = None):
+    activation: str = "relu",
+    kernel_initializer="glorot_uniform",
+    bias_initializer="zeros",
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
+    shared_axes=None,
+    name: str = None,
+):
     """
     Insert modules into an encoder or decoder node.
 
@@ -146,46 +186,82 @@ def convolution_module(
         Output tensor.
     """
 
-    tensor_dims = len(tensor.shape)  # Number of dims in the tensor (including the first 'None' dimension for batch size)
+    tensor_dims = len(
+        tensor.shape
+    )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
     if num_modules < 1:
-        raise ValueError("num_modules must be greater than 0, at least one module must be added")
+        raise ValueError(
+            "num_modules must be greater than 0, at least one module must be added"
+        )
 
-    if tensor_dims == 4:  # A 2D image tensor has 4 dimensions: (None [for batch size], image_size_x, image_size_y, n_channels)
+    if (
+        tensor_dims == 4
+    ):  # A 2D image tensor has 4 dimensions: (None [for batch size], image_size_x, image_size_y, n_channels)
         conv_layer = Conv2D
-    elif tensor_dims == 5:  # A 3D image tensor has 5 dimensions: (None [for batch size], image_size_x, image_size_y, image_size_z, n_channels)
+    elif (
+        tensor_dims == 5
+    ):  # A 3D image tensor has 5 dimensions: (None [for batch size], image_size_x, image_size_y, image_size_z, n_channels)
         conv_layer = Conv3D
     else:
-        raise TypeError(f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions")
+        raise TypeError(
+            f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions"
+        )
 
     # Arguments for the Conv2D/Conv3D layer.
     conv_kwargs = dict({})
-    for arg in ['filters', 'use_bias', 'kernel_size', 'padding', 'kernel_initializer', 'bias_initializer', 'kernel_regularizer',
-                'bias_regularizer', 'activity_regularizer', 'kernel_constraint', 'bias_constraint']:
+    for arg in [
+        "filters",
+        "use_bias",
+        "kernel_size",
+        "padding",
+        "kernel_initializer",
+        "bias_initializer",
+        "kernel_regularizer",
+        "bias_regularizer",
+        "activity_regularizer",
+        "kernel_constraint",
+        "bias_constraint",
+    ]:
         conv_kwargs[arg] = locals()[arg]
 
-    activation_layer = choose_activation_layer(activation)  # Choose activation layer for the convolution modules.
+    activation_layer = choose_activation_layer(
+        activation
+    )  # Choose activation layer for the convolution modules.
 
     activation_kwargs = dict({})
     if activation_layer == Activation:
-        activation_kwargs['activation'] = activation
-    elif activation in ['prelu', 'smelu', 'snake']:  # these activation functions have learnable parameters
-        activation_kwargs['shared_axes'] = shared_axes
+        activation_kwargs["activation"] = activation
+    elif activation in [
+        "prelu",
+        "smelu",
+        "snake",
+    ]:  # these activation functions have learnable parameters
+        activation_kwargs["shared_axes"] = shared_axes
 
     # Insert convolution modules
     for module in range(num_modules):
-
         # Create names for the Conv2D/Conv3D layers and the activation layer.
-        conv_kwargs['name'] = f'{name}_Conv{tensor_dims - 2}D_{module+1}'
-        activation_kwargs['name'] = f'{name}_{activation}_{module+1}'
+        conv_kwargs["name"] = f"{name}_Conv{tensor_dims - 2}D_{module + 1}"
+        activation_kwargs["name"] = f"{name}_{activation}_{module + 1}"
 
-        conv_tensor = conv_layer(**conv_kwargs)(tensor)  # Perform convolution on the input tensor
+        conv_tensor = conv_layer(**conv_kwargs)(
+            tensor
+        )  # Perform convolution on the input tensor
 
         if batch_normalization:
-            batch_norm_tensor = BatchNormalization(name=f'{name}_BatchNorm_{module+1}')(conv_tensor)  # Insert layer for batch normalization
-            activation_tensor = activation_layer(**activation_kwargs)(batch_norm_tensor)  # Pass output tensor from BatchNormalization into the activation layer
+            batch_norm_tensor = BatchNormalization(
+                name=f"{name}_BatchNorm_{module + 1}"
+            )(conv_tensor)  # Insert layer for batch normalization
+            activation_tensor = activation_layer(**activation_kwargs)(
+                batch_norm_tensor
+            )  # Pass output tensor from BatchNormalization into the activation layer
         else:
-            activation_tensor = activation_layer(**activation_kwargs)(conv_tensor)  # Pass output tensor from the convolution layer into the activation layer.
+            activation_tensor = activation_layer(
+                **activation_kwargs
+            )(
+                conv_tensor
+            )  # Pass output tensor from the convolution layer into the activation layer.
 
         tensor = activation_tensor
 
@@ -199,19 +275,20 @@ def aggregated_feature_map(
     level1: int,
     level2: int,
     upsample_size: tuple[int],
-    padding: str = 'same',
+    padding: str = "same",
     use_bias: bool = False,
     batch_normalization: bool = True,
-    activation: str = 'relu',
-    kernel_initializer = 'glorot_uniform',
-    bias_initializer = 'zeros',
-    kernel_regularizer = None,
-    bias_regularizer = None,
-    activity_regularizer = None,
-    kernel_constraint = None,
-    bias_constraint = None,
-    shared_axes = None,
-    name: str = None):
+    activation: str = "relu",
+    kernel_initializer="glorot_uniform",
+    bias_initializer="zeros",
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
+    shared_axes=None,
+    name: str = None,
+):
     """
     Connect two nodes in the U-Net 3+ with an aggregated feature map (AFM).
 
@@ -268,38 +345,66 @@ def aggregated_feature_map(
         Output tensor.
     """
 
-    tensor_dims = len(tensor.shape)  # Number of dims in the tensor (including the first 'None' dimension for batch size)
+    tensor_dims = len(
+        tensor.shape
+    )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
     if level1 <= level2:
-        raise ValueError("level2 must be smaller than level1 in aggregated feature maps")
+        raise ValueError(
+            "level2 must be smaller than level1 in aggregated feature maps"
+        )
 
     # Arguments for the convolution module.
     module_kwargs = dict({})
-    module_kwargs['num_modules'] = 1
-    for arg in ['filters', 'kernel_size', 'padding', 'use_bias', 'batch_normalization', 'activation', 'kernel_initializer',
-                'bias_initializer', 'kernel_regularizer', 'bias_regularizer', 'activity_regularizer', 'kernel_constraint',
-                'bias_constraint', 'shared_axes', 'name']:
+    module_kwargs["num_modules"] = 1
+    for arg in [
+        "filters",
+        "kernel_size",
+        "padding",
+        "use_bias",
+        "batch_normalization",
+        "activation",
+        "kernel_initializer",
+        "bias_initializer",
+        "kernel_regularizer",
+        "bias_regularizer",
+        "activity_regularizer",
+        "kernel_constraint",
+        "bias_constraint",
+        "shared_axes",
+        "name",
+    ]:
         module_kwargs[arg] = locals()[arg]
 
     # Keyword arguments for the UpSampling2D/UpSampling3D layers
     upsample_kwargs = dict({})
-    upsample_kwargs['name'] = f'{name}_UpSampling{tensor_dims - 2}D'
-    upsample_kwargs['size'] = np.power(upsample_size, abs(level1 - level2))
+    upsample_kwargs["name"] = f"{name}_UpSampling{tensor_dims - 2}D"
+    upsample_kwargs["size"] = np.power(upsample_size, abs(level1 - level2))
 
     if tensor_dims == 4:  # If the image is 2D
         upsample_layer = UpSampling2D
         if len(upsample_size) != 2:
-            raise TypeError(f"For 2D up-sampling, the pool size must be a tuple or list with 2 integers. Received shape: {np.shape(upsample_size)}")
+            raise TypeError(
+                f"For 2D up-sampling, the pool size must be a tuple or list with 2 integers. Received shape: {np.shape(upsample_size)}"
+            )
     elif tensor_dims == 5:  # If the image is 3D
         upsample_layer = UpSampling3D
         if len(upsample_size) != 3:
-            raise TypeError(f"For 3D up-sampling, the pool size must be a tuple or list with 3 integers. Received shape: {np.shape(upsample_size)}")
+            raise TypeError(
+                f"For 3D up-sampling, the pool size must be a tuple or list with 3 integers. Received shape: {np.shape(upsample_size)}"
+            )
     else:
-        raise TypeError(f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions")
+        raise TypeError(
+            f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions"
+        )
 
-    tensor = upsample_layer(**upsample_kwargs)(tensor)  # Pass the tensor through the UpSample2D/UpSample3D layer
+    tensor = upsample_layer(**upsample_kwargs)(
+        tensor
+    )  # Pass the tensor through the UpSample2D/UpSample3D layer
 
-    tensor = convolution_module(tensor, **module_kwargs)  # Pass input tensor through convolution module
+    tensor = convolution_module(
+        tensor, **module_kwargs
+    )  # Pass input tensor through convolution module
 
     return tensor
 
@@ -311,19 +416,20 @@ def full_scale_skip_connection(
     level1: int,
     level2: int,
     pool_size: tuple[int],
-    padding: str = 'same',
+    padding: str = "same",
     use_bias: bool = False,
     batch_normalization: bool = True,
-    activation: str = 'relu',
-    kernel_initializer = 'glorot_uniform',
-    bias_initializer = 'zeros',
-    kernel_regularizer = None,
-    bias_regularizer = None,
-    activity_regularizer = None,
-    kernel_constraint = None,
-    bias_constraint = None,
-    shared_axes = None,
-    name: str = None):
+    activation: str = "relu",
+    kernel_initializer="glorot_uniform",
+    bias_initializer="zeros",
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
+    shared_axes=None,
+    name: str = None,
+):
     """
     Connect two nodes in the U-Net 3+ with a full-scale skip connection (FSC).
 
@@ -380,34 +486,58 @@ def full_scale_skip_connection(
         Output tensor.
     """
 
-    tensor_dims = len(tensor.shape)  # Number of dims in the tensor (including the first 'None' dimension for batch size)
+    tensor_dims = len(
+        tensor.shape
+    )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
     if level1 >= level2:
-        raise ValueError("level2 must be greater than level1 in full-scale skip connections")
+        raise ValueError(
+            "level2 must be greater than level1 in full-scale skip connections"
+        )
 
     # Arguments for the convolution module.
     module_kwargs = dict({})
-    module_kwargs['num_modules'] = 1
-    for arg in ['filters', 'kernel_size', 'padding', 'use_bias', 'batch_normalization', 'activation', 'kernel_initializer',
-                'bias_initializer', 'kernel_regularizer', 'bias_regularizer', 'activity_regularizer', 'kernel_constraint',
-                'bias_constraint', 'shared_axes', 'name']:
+    module_kwargs["num_modules"] = 1
+    for arg in [
+        "filters",
+        "kernel_size",
+        "padding",
+        "use_bias",
+        "batch_normalization",
+        "activation",
+        "kernel_initializer",
+        "bias_initializer",
+        "kernel_regularizer",
+        "bias_regularizer",
+        "activity_regularizer",
+        "kernel_constraint",
+        "bias_constraint",
+        "shared_axes",
+        "name",
+    ]:
         module_kwargs[arg] = locals()[arg]
 
     # Keyword arguments for the MaxPooling2D/MaxPooling3D layer
     pool_kwargs = dict({})
-    pool_kwargs['name'] = f'{name}_MaxPool{tensor_dims - 2}D'
-    pool_kwargs['pool_size'] = np.power(pool_size, abs(level1 - level2))
+    pool_kwargs["name"] = f"{name}_MaxPool{tensor_dims - 2}D"
+    pool_kwargs["pool_size"] = np.power(pool_size, abs(level1 - level2))
 
     if tensor_dims == 4:  # If the image is 2D
         pool_layer = MaxPooling2D
     elif tensor_dims == 5:  # If the image is 3D
         pool_layer = MaxPooling3D
     else:
-        raise TypeError(f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions")
+        raise TypeError(
+            f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions"
+        )
 
-    tensor = pool_layer(**pool_kwargs)(tensor)  # Pass the tensor through the MaxPooling2D/MaxPooling3D layer
+    tensor = pool_layer(**pool_kwargs)(
+        tensor
+    )  # Pass the tensor through the MaxPooling2D/MaxPooling3D layer
 
-    tensor = convolution_module(tensor, **module_kwargs)  # Pass the tensor through the convolution module
+    tensor = convolution_module(
+        tensor, **module_kwargs
+    )  # Pass the tensor through the convolution module
 
     return tensor
 
@@ -416,19 +546,20 @@ def conventional_skip_connection(
     tensor: tf.Tensor,
     filters: int,
     kernel_size: int | tuple[int],
-    padding: str = 'same',
+    padding: str = "same",
     use_bias: bool = False,
     batch_normalization: bool = True,
-    activation: str = 'relu',
-    kernel_initializer = 'glorot_uniform',
-    bias_initializer = 'zeros',
-    kernel_regularizer = None,
-    bias_regularizer = None,
-    activity_regularizer = None,
-    kernel_constraint = None,
-    bias_constraint = None,
-    shared_axes = None,
-    name: str = None):
+    activation: str = "relu",
+    kernel_initializer="glorot_uniform",
+    bias_initializer="zeros",
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
+    shared_axes=None,
+    name: str = None,
+):
     """
     Connect two nodes in the U-Net 3+ with a conventional skip connection.
 
@@ -477,21 +608,34 @@ def conventional_skip_connection(
 
     # Arguments for the convolution module.
     module_kwargs = dict({})
-    module_kwargs['num_modules'] = 1
-    for arg in ['filters', 'kernel_size', 'padding', 'use_bias', 'batch_normalization', 'activation', 'kernel_initializer',
-                'bias_initializer', 'kernel_regularizer', 'bias_regularizer', 'activity_regularizer', 'kernel_constraint',
-                'bias_constraint', 'shared_axes', 'name']:
+    module_kwargs["num_modules"] = 1
+    for arg in [
+        "filters",
+        "kernel_size",
+        "padding",
+        "use_bias",
+        "batch_normalization",
+        "activation",
+        "kernel_initializer",
+        "bias_initializer",
+        "kernel_regularizer",
+        "bias_regularizer",
+        "activity_regularizer",
+        "kernel_constraint",
+        "bias_constraint",
+        "shared_axes",
+        "name",
+    ]:
         module_kwargs[arg] = locals()[arg]
 
-    tensor = convolution_module(tensor, **module_kwargs)  # Pass the tensor through the convolution module
+    tensor = convolution_module(
+        tensor, **module_kwargs
+    )  # Pass the tensor through the convolution module
 
     return tensor
 
 
-def max_pool(
-    tensor: tf.Tensor,
-    pool_size: tuple[int],
-    name: str = None):
+def max_pool(tensor: tf.Tensor, pool_size: tuple[int], name: str = None):
     """
     Connect two encoder nodes with a max-pooling operation.
 
@@ -511,26 +655,38 @@ def max_pool(
     """
 
     if type(pool_size) != tuple and type(pool_size) != list:
-        raise TypeError(f"pool_size can only be a tuple or list. Received type: {type(pool_size)}")
+        raise TypeError(
+            f"pool_size can only be a tuple or list. Received type: {type(pool_size)}"
+        )
 
-    tensor_dims = len(tensor.shape)  # Number of dims in the tensor (including the first 'None' dimension for batch size)
+    tensor_dims = len(
+        tensor.shape
+    )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
     pool_kwargs = dict({})  # Keyword arguments in the MaxPooling layer
-    pool_kwargs['name'] = f'{name}_MaxPool{tensor_dims - 2}D'
-    pool_kwargs['pool_size'] = pool_size
+    pool_kwargs["name"] = f"{name}_MaxPool{tensor_dims - 2}D"
+    pool_kwargs["pool_size"] = pool_size
 
     if tensor_dims == 4:  # If the image is 2D
         pool_layer = MaxPooling2D
         if len(pool_size) != 2:
-            raise TypeError(f"For 2D max-pooling, the pool size must be a tuple or list with 2 integers. Received shape: {np.shape(pool_size)}")
+            raise TypeError(
+                f"For 2D max-pooling, the pool size must be a tuple or list with 2 integers. Received shape: {np.shape(pool_size)}"
+            )
     elif tensor_dims == 5:  # If the image is 3D
         pool_layer = MaxPooling3D
         if len(pool_size) != 3:
-            raise TypeError(f"For 3D max-pooling, the pool size must be a tuple or list with 3 integers. Received shape: {np.shape(pool_size)}")
+            raise TypeError(
+                f"For 3D max-pooling, the pool size must be a tuple or list with 3 integers. Received shape: {np.shape(pool_size)}"
+            )
     else:
-        raise TypeError(f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions")
+        raise TypeError(
+            f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions"
+        )
 
-    pool_tensor = pool_layer(**pool_kwargs)(tensor)  # Pass the tensor through the MaxPooling2D/MaxPooling3D layer
+    pool_tensor = pool_layer(**pool_kwargs)(
+        tensor
+    )  # Pass the tensor through the MaxPooling2D/MaxPooling3D layer
 
     return pool_tensor
 
@@ -540,19 +696,20 @@ def upsample(
     filters: int,
     kernel_size: int | tuple[int],
     upsample_size: tuple[int],
-    padding: str = 'same',
+    padding: str = "same",
     use_bias: bool = False,
     batch_normalization: bool = True,
-    activation: str = 'relu',
-    kernel_initializer='glorot_uniform',
-    bias_initializer='zeros',
-    kernel_regularizer = None,
-    bias_regularizer = None,
-    activity_regularizer = None,
-    kernel_constraint = None,
-    bias_constraint = None,
-    shared_axes = None,
-    name: str = None):
+    activation: str = "relu",
+    kernel_initializer="glorot_uniform",
+    bias_initializer="zeros",
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
+    shared_axes=None,
+    name: str = None,
+):
     """
     Connect decoder nodes with an up-sampling operation.
 
@@ -601,38 +758,66 @@ def upsample(
         Output tensor.
     """
 
-    tensor_dims = len(tensor.shape)  # Number of dims in the tensor (including the first 'None' dimension for batch size)
+    tensor_dims = len(
+        tensor.shape
+    )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
     if type(upsample_size) != tuple and type(upsample_size) != list:
-        raise TypeError(f"upsample_size can only be a tuple or list. Received type: {type(upsample_size)}")
+        raise TypeError(
+            f"upsample_size can only be a tuple or list. Received type: {type(upsample_size)}"
+        )
 
     # Arguments for the convolution module.
     module_kwargs = dict({})
-    module_kwargs['num_modules'] = 1
-    for arg in ['filters', 'kernel_size', 'padding', 'use_bias', 'batch_normalization', 'activation', 'kernel_initializer',
-                'bias_initializer', 'kernel_regularizer', 'bias_regularizer', 'activity_regularizer', 'kernel_constraint',
-                'bias_constraint', 'shared_axes', 'name']:
+    module_kwargs["num_modules"] = 1
+    for arg in [
+        "filters",
+        "kernel_size",
+        "padding",
+        "use_bias",
+        "batch_normalization",
+        "activation",
+        "kernel_initializer",
+        "bias_initializer",
+        "kernel_regularizer",
+        "bias_regularizer",
+        "activity_regularizer",
+        "kernel_constraint",
+        "bias_constraint",
+        "shared_axes",
+        "name",
+    ]:
         module_kwargs[arg] = locals()[arg]
 
     # Keyword arguments in the UpSampling layer
     upsample_kwargs = dict({})
-    upsample_kwargs['name'] = f'{name}_UpSampling{tensor_dims - 2}D'
-    upsample_kwargs['size'] = upsample_size
+    upsample_kwargs["name"] = f"{name}_UpSampling{tensor_dims - 2}D"
+    upsample_kwargs["size"] = upsample_size
 
     if tensor_dims == 4:  # If the image is 2D
         upsample_layer = UpSampling2D
         if len(upsample_size) != 2:
-            raise TypeError(f"For 2D up-sampling, the pool size must be a tuple or list with 2 integers. Received shape: {np.shape(upsample_size)}")
+            raise TypeError(
+                f"For 2D up-sampling, the pool size must be a tuple or list with 2 integers. Received shape: {np.shape(upsample_size)}"
+            )
     elif tensor_dims == 5:  # If the image is 3D
         upsample_layer = UpSampling3D
         if len(upsample_size) != 3:
-            raise TypeError(f"For 3D up-sampling, the pool size must be a tuple or list with 3 integers. Received shape: {np.shape(upsample_size)}")
+            raise TypeError(
+                f"For 3D up-sampling, the pool size must be a tuple or list with 3 integers. Received shape: {np.shape(upsample_size)}"
+            )
     else:
-        raise TypeError(f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions")
+        raise TypeError(
+            f"Incompatible tensor shape: {tensor.shape}. The tensor must only have 4 or 5 dimensions"
+        )
 
-    upsample_tensor = upsample_layer(**upsample_kwargs)(tensor)  # Pass the tensor through the UpSampling2D/UpSampling3D layer
+    upsample_tensor = upsample_layer(**upsample_kwargs)(
+        tensor
+    )  # Pass the tensor through the UpSampling2D/UpSampling3D layer
 
-    tensor = convolution_module(upsample_tensor, **module_kwargs)  # Pass the up-sampled tensor through a convolution module
+    tensor = convolution_module(
+        upsample_tensor, **module_kwargs
+    )  # Pass the up-sampled tensor through a convolution module
 
     return tensor
 
@@ -654,49 +839,80 @@ def choose_activation_layer(activation: str):
 
     activation = activation.lower()
 
-    available_activations = ['elliott', 'elu', 'exponential', 'gaussian', 'gcu', 'gelu', 'hard_sigmoid', 'hexpo', 'isigmoid', 'leaky_relu', 'linear',
-        'lisht', 'prelu', 'psigmoid', 'ptanh', 'ptelu', 'relu', 'resech', 'selu', 'sigmoid', 'smelu', 'snake', 'softmax', 'softplus', 'softsign',
-        'srs', 'stanh', 'swish', 'tanh', 'thresholded_relu']
+    available_activations = [
+        "elliott",
+        "elu",
+        "exponential",
+        "gaussian",
+        "gcu",
+        "gelu",
+        "hard_sigmoid",
+        "hexpo",
+        "isigmoid",
+        "leaky_relu",
+        "linear",
+        "lisht",
+        "prelu",
+        "psigmoid",
+        "ptanh",
+        "ptelu",
+        "relu",
+        "resech",
+        "selu",
+        "sigmoid",
+        "smelu",
+        "snake",
+        "softmax",
+        "softplus",
+        "softsign",
+        "srs",
+        "stanh",
+        "swish",
+        "tanh",
+        "thresholded_relu",
+    ]
 
     # Choose the activation layer
-    if activation == 'elliott':
+    if activation == "elliott":
         activation_layer = custom_activations.Elliott
-    elif activation == 'gaussian':
+    elif activation == "gaussian":
         activation_layer = custom_activations.Gaussian
-    elif activation == 'gcu':
+    elif activation == "gcu":
         activation_layer = custom_activations.GCU
-    elif activation == 'hexpo':
+    elif activation == "hexpo":
         activation_layer = custom_activations.Hexpo
-    elif activation == 'isigmoid':
+    elif activation == "isigmoid":
         activation_layer = custom_activations.ISigmoid
-    elif activation == 'leaky_relu':
-        activation_layer = getattr(layers, 'LeakyReLU')
-    elif activation == 'lisht':
+    elif activation == "leaky_relu":
+        activation_layer = getattr(layers, "LeakyReLU")
+    elif activation == "lisht":
         activation_layer = custom_activations.LiSHT
-    elif activation == 'prelu':
-        activation_layer = getattr(layers, 'PReLU')
-    elif activation == 'psigmoid':
+    elif activation == "prelu":
+        activation_layer = getattr(layers, "PReLU")
+    elif activation == "psigmoid":
         activation_layer = custom_activations.PSigmoid
-    elif activation == 'ptanh':
+    elif activation == "ptanh":
         activation_layer = custom_activations.PTanh
-    elif activation == 'ptelu':
+    elif activation == "ptelu":
         activation_layer = custom_activations.PTELU
-    elif activation == 'resech':
+    elif activation == "resech":
         activation_layer = custom_activations.ReSech
-    elif activation == 'smelu':
+    elif activation == "smelu":
         activation_layer = custom_activations.SmeLU
-    elif activation == 'snake':
+    elif activation == "snake":
         activation_layer = custom_activations.Snake
-    elif activation == 'srs':
+    elif activation == "srs":
         activation_layer = custom_activations.SRS
-    elif activation == 'stanh':
+    elif activation == "stanh":
         activation_layer = custom_activations.STanh
-    elif activation == 'thresholded_relu':
-        activation_layer = getattr(layers, 'ThresholdedReLU')
+    elif activation == "thresholded_relu":
+        activation_layer = getattr(layers, "ThresholdedReLU")
     elif activation in available_activations:
-        activation_layer = getattr(layers, 'Activation')
+        activation_layer = getattr(layers, "Activation")
     else:
-        raise TypeError(f"'{activation}' is not a valid loss function and/or is not available, options are: {', '.join(sorted(list(available_activations)))}")
+        raise TypeError(
+            f"'{activation}' is not a valid loss function and/or is not available, options are: {', '.join(sorted(list(available_activations)))}"
+        )
 
     return activation_layer
 
@@ -707,18 +923,19 @@ def deep_supervision_side_output(
     kernel_size: int | tuple[int],
     output_level: int,
     upsample_size: tuple[int],
-    activation: str = 'softmax',
-    padding: str = 'same',
+    activation: str = "softmax",
+    padding: str = "same",
     use_bias: bool = False,
-    kernel_initializer='glorot_uniform',
-    bias_initializer='zeros',
-    kernel_regularizer = None,
-    bias_regularizer = None,
-    activity_regularizer = None,
-    kernel_constraint = None,
-    bias_constraint = None,
+    kernel_initializer="glorot_uniform",
+    bias_initializer="zeros",
+    kernel_regularizer=None,
+    bias_regularizer=None,
+    activity_regularizer=None,
+    kernel_constraint=None,
+    bias_constraint=None,
     squeeze_axes: int | tuple[int] = None,
-    name: str = None):
+    name: str = None,
+):
     """
     Deep supervision output. This is usually used on a decoder node in the U-Net 3+ or the final decoder node of a standard
     U-Net.
@@ -768,7 +985,9 @@ def deep_supervision_side_output(
         Output tensor.
     """
 
-    tensor_dims = len(tensor.shape)  # Number of dims in the tensor (including the first 'None' dimension for batch size)
+    tensor_dims = len(
+        tensor.shape
+    )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
     activation_layer = choose_activation_layer(activation)
 
@@ -799,42 +1018,73 @@ def deep_supervision_side_output(
             upsample_size_2 = None
 
     else:
-        raise TypeError(f"Incompatible tensor shape: {tensor.shape}. The tensor can only have 4 or 5 dimensions")
+        raise TypeError(
+            f"Incompatible tensor shape: {tensor.shape}. The tensor can only have 4 or 5 dimensions"
+        )
 
     # Arguments for the Conv2D/Conv3D layer.
     conv_kwargs = dict({})
-    conv_kwargs['name'] = f'{name}_Conv{tensor_dims - 2}D'
-    for arg in ['use_bias', 'kernel_size', 'padding', 'kernel_initializer', 'bias_initializer', 'kernel_regularizer', 'bias_regularizer',
-                'activity_regularizer', 'kernel_constraint', 'bias_constraint']:
+    conv_kwargs["name"] = f"{name}_Conv{tensor_dims - 2}D"
+    for arg in [
+        "use_bias",
+        "kernel_size",
+        "padding",
+        "kernel_initializer",
+        "bias_initializer",
+        "kernel_regularizer",
+        "bias_regularizer",
+        "activity_regularizer",
+        "kernel_constraint",
+        "bias_constraint",
+    ]:
         conv_kwargs[arg] = locals()[arg]
 
     if upsample_size_1 is not None:
-        tensor = upsample_layer(size=upsample_size_1, name=f'{name}_UpSampling{tensor_dims - 2}D_1')(tensor)  # Pass the tensor through the UpSampling2D/UpSampling3D layer
+        tensor = upsample_layer(
+            size=upsample_size_1, name=f"{name}_UpSampling{tensor_dims - 2}D_1"
+        )(tensor)  # Pass the tensor through the UpSampling2D/UpSampling3D layer
 
-    tensor = conv_layer(filters=num_classes, **conv_kwargs)(tensor)  # This convolution layer contains num_classes filters, one for each class
+    tensor = conv_layer(filters=num_classes, **conv_kwargs)(
+        tensor
+    )  # This convolution layer contains num_classes filters, one for each class
 
     if upsample_size_2 is not None:
-        tensor = upsample_layer(size=upsample_size_2, name=f'{name}_UpSampling{tensor_dims - 2}D_2')(tensor)  # Pass the tensor through the UpSampling2D/UpSampling3D layer
+        tensor = upsample_layer(
+            size=upsample_size_2, name=f"{name}_UpSampling{tensor_dims - 2}D_2"
+        )(tensor)  # Pass the tensor through the UpSampling2D/UpSampling3D layer
 
     ### Squeeze the given dimensions/axes ###
     if squeeze_axes is not None:
-
-        conv_kwargs['kernel_size'] = [1 for _ in range(tensor_dims - 2)]
+        conv_kwargs["kernel_size"] = [1 for _ in range(tensor_dims - 2)]
 
         if type(squeeze_axes) == int:
-            squeeze_axes = [squeeze_axes, ]  # Turn integer into a list of length 1 to make indexing easier
+            squeeze_axes = [
+                squeeze_axes,
+            ]  # Turn integer into a list of length 1 to make indexing easier
 
-        squeeze_axes_sizes = [tensor.shape[ax_to_squeeze] for ax_to_squeeze in squeeze_axes]
+        squeeze_axes_sizes = [
+            tensor.shape[ax_to_squeeze] for ax_to_squeeze in squeeze_axes
+        ]
 
         for ax, size in enumerate(squeeze_axes_sizes):
-            conv_kwargs['kernel_size'][squeeze_axes[ax] - 1] = size  # Kernel size of dimension to squeeze is equal to the size of the dimension because we want the final size to be 1 so it can be squeezed
+            conv_kwargs["kernel_size"][squeeze_axes[ax] - 1] = (
+                size  # Kernel size of dimension to squeeze is equal to the size of the dimension because we want the final size to be 1 so it can be squeezed
+            )
 
-        conv_kwargs['padding'] = 'valid'  # Padding cannot be 'same' since we want to modify the size of the dimension to be squeezed
-        conv_kwargs['name'] = f'{name}_Conv{tensor_dims - 2}D_collapse'
+        conv_kwargs["padding"] = (
+            "valid"  # Padding cannot be 'same' since we want to modify the size of the dimension to be squeezed
+        )
+        conv_kwargs["name"] = f"{name}_Conv{tensor_dims - 2}D_collapse"
 
-        tensor = conv_layer(filters=num_classes, **conv_kwargs)(tensor)  # This convolution layer contains num_classes filters, one for each class
-        tensor = tf.squeeze(tensor, axis=squeeze_axes)  # Squeeze the tensor and remove the dimension
+        tensor = conv_layer(filters=num_classes, **conv_kwargs)(
+            tensor
+        )  # This convolution layer contains num_classes filters, one for each class
+        tensor = tf.squeeze(
+            tensor, axis=squeeze_axes
+        )  # Squeeze the tensor and remove the dimension
 
-    sup_output = activation_layer(name=f'{name}_{activation}', activation=activation)(tensor)  # Final softmax output
+    sup_output = activation_layer(name=f"{name}_{activation}", activation=activation)(
+        tensor
+    )  # Final softmax output
 
     return sup_output

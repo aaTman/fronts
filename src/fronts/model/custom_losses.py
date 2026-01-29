@@ -8,12 +8,15 @@ Custom loss functions for U-Net models.
 Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2025.3.5
 """
+
 import tensorflow as tf
 
 
-def brier_skill_score(alpha: int | float = 1.0,
-                      beta: int | float = 0.5,
-                      class_weights: list[int | float, ...] = None):
+def brier_skill_score(
+    alpha: int | float = 1.0,
+    beta: int | float = 0.5,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Brier skill score (BSS) loss function.
 
@@ -54,9 +57,11 @@ def brier_skill_score(alpha: int | float = 1.0,
     return bss_loss
 
 
-def critical_success_index(alpha: int | float = 1.0,
-                           beta: int | float = 0.5,
-                           class_weights: list[int | float, ...] = None):
+def critical_success_index(
+    alpha: int | float = 1.0,
+    beta: int | float = 0.5,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Critical Success Index (CSI) loss function.
 
@@ -89,7 +94,9 @@ def critical_success_index(alpha: int | float = 1.0,
         y_pred_neg = 1 - y_pred
         y_true_neg = 1 - y_true
 
-        sum_over_axes = tf.range(tf.rank(y_pred) - 1)  # Indices for axes to sum over. Excludes the final (class) dimension.
+        sum_over_axes = tf.range(
+            tf.rank(y_pred) - 1
+        )  # Indices for axes to sum over. Excludes the final (class) dimension.
 
         true_positives = tf.math.reduce_sum(y_pred * y_true, axis=sum_over_axes)
         false_negatives = tf.math.reduce_sum(y_pred_neg * y_true, axis=sum_over_axes)
@@ -100,18 +107,24 @@ def critical_success_index(alpha: int | float = 1.0,
             false_positives *= class_weights
             false_negatives *= class_weights
 
-        csi = tf.math.divide(tf.math.reduce_sum(true_positives),
-            tf.math.reduce_sum(true_positives) + tf.math.reduce_sum(false_positives) + tf.math.reduce_sum(false_negatives))
+        csi = tf.math.divide(
+            tf.math.reduce_sum(true_positives),
+            tf.math.reduce_sum(true_positives)
+            + tf.math.reduce_sum(false_positives)
+            + tf.math.reduce_sum(false_negatives),
+        )
 
         return 1 - csi
 
     return csi_loss
 
 
-def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3),
-                          alpha: int | float = 1.0,
-                          beta: int | float = 0.5,
-                          class_weights: list[int | float, ...] = None):
+def fractions_skill_score(
+    mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3),
+    alpha: int | float = 1.0,
+    beta: int | float = 0.5,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Fractions skill score loss function.
 
@@ -144,14 +157,17 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
 
     # if mask_size is an int, convert to a tuple. This allows us to check the length of the tuple and pull the correct AveragePooling layer
     if isinstance(mask_size, int):
-        mask_size = (mask_size, )
+        mask_size = (mask_size,)
 
     # if mask_size is an list, convert to a tuple
     elif isinstance(mask_size, list):
         mask_size = tuple(mask_size)
 
     # make sure the mask size is between 1 and 3
-    assert 1 <= len(mask_size) <= 3, "mask_size must have length between 1 and 3, received length %d" % len(mask_size)
+    assert 1 <= len(mask_size) <= 3, (
+        "mask_size must have length between 1 and 3, received length %d"
+        % len(mask_size)
+    )
 
     # get the pooling layer based off the length of the mask_size tuple
     pool = getattr(tf.keras.layers, "AveragePooling%dD" % len(mask_size))(**pool_args)
@@ -179,8 +195,12 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
         O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
         M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
 
-        MSE_n = tf.keras.metrics.mean_squared_error(O_n, M_n)  # MSE for model forecast fractions (Eq. 5 in RL2008)
-        MSE_ref = tf.reduce_mean(tf.square(O_n)) + tf.reduce_mean(tf.square(M_n))  # reference forecast (Eq. 7 in RL2008)
+        MSE_n = tf.keras.metrics.mean_squared_error(
+            O_n, M_n
+        )  # MSE for model forecast fractions (Eq. 5 in RL2008)
+        MSE_ref = tf.reduce_mean(tf.square(O_n)) + tf.reduce_mean(
+            tf.square(M_n)
+        )  # reference forecast (Eq. 7 in RL2008)
 
         FSS = 1 - MSE_n / (MSE_ref + 1e-10)  # fractions skill score (Eq. 6 in RL2008)
 
@@ -210,16 +230,25 @@ def probability_of_detection(class_weights: list[int | float, ...] = None):
 
         y_pred_neg = 1 - y_pred
 
-        sum_over_axes = tf.range(tf.rank(y_pred) - 1)  # Indices for axes to sum over. Excludes the final (class) dimension.
+        sum_over_axes = tf.range(
+            tf.rank(y_pred) - 1
+        )  # Indices for axes to sum over. Excludes the final (class) dimension.
 
         true_positives = tf.math.reduce_sum(y_pred * y_true, axis=sum_over_axes)
         false_negatives = tf.math.reduce_sum(y_pred_neg * y_true, axis=sum_over_axes)
 
         if class_weights is not None:
-            relative_class_weights = tf.cast(class_weights / tf.math.reduce_sum(class_weights), tf.float32)
-            pod = tf.math.reduce_sum(tf.math.divide_no_nan(true_positives, true_positives + false_negatives) * relative_class_weights)
+            relative_class_weights = tf.cast(
+                class_weights / tf.math.reduce_sum(class_weights), tf.float32
+            )
+            pod = tf.math.reduce_sum(
+                tf.math.divide_no_nan(true_positives, true_positives + false_negatives)
+                * relative_class_weights
+            )
         else:
-            pod = tf.math.reduce_sum(tf.math.divide_no_nan(true_positives, true_positives + false_negatives))
+            pod = tf.math.reduce_sum(
+                tf.math.divide_no_nan(true_positives, true_positives + false_negatives)
+            )
 
         return 1 - pod
 

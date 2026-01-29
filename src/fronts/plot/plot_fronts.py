@@ -18,82 +18,158 @@ import datetime as dt
 import numpy as np
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--netcdf_indir', type=str, required=True, help='Input directory for the netCDF files containing fronts.')
-    parser.add_argument('--plot_outdir', type=str, required=True, help='Output directory for the front plots.')
-    parser.add_argument('--front_types', type=str, nargs='+', help='Front types to plot.')
-    parser.add_argument('--domain', type=str, default='full', help='Domain of the fronts.')
-    parser.add_argument('--init_time', type=str, required=True, help='Initialization time for the fronts. YYYY-MM-DD-HH')
-    parser.add_argument('--forecast_hour', type=int, help='Forecast hour for the fronts. Must be passed if plotting TWC fronts.')
+    parser.add_argument(
+        "--netcdf_indir",
+        type=str,
+        required=True,
+        help="Input directory for the netCDF files containing fronts.",
+    )
+    parser.add_argument(
+        "--plot_outdir",
+        type=str,
+        required=True,
+        help="Output directory for the front plots.",
+    )
+    parser.add_argument(
+        "--front_types", type=str, nargs="+", help="Front types to plot."
+    )
+    parser.add_argument(
+        "--domain", type=str, default="full", help="Domain of the fronts."
+    )
+    parser.add_argument(
+        "--init_time",
+        type=str,
+        required=True,
+        help="Initialization time for the fronts. YYYY-MM-DD-HH",
+    )
+    parser.add_argument(
+        "--forecast_hour",
+        type=int,
+        help="Forecast hour for the fronts. Must be passed if plotting TWC fronts.",
+    )
     args = vars(parser.parse_args())
-    
+
     # check for valid data source
-    domain = args['domain'].lower()
-    assert domain in ['full', 'global', 'hrrr', 'nam-12km'], f"Invalid domain: {domain}"
-    
+    domain = args["domain"].lower()
+    assert domain in ["full", "global", "hrrr", "nam-12km"], f"Invalid domain: {domain}"
+
     # define initialization time and forecast hour
-    init_time = pd.to_datetime(args['init_time'])
+    init_time = pd.to_datetime(args["init_time"])
     yr, mo, dy, hr = init_time.year, init_time.month, init_time.day, init_time.hour
-    fhr = args['forecast_hour']
-    
+    fhr = args["forecast_hour"]
+
     # folder the given month that will be searched for the netCDF files
     folder = f"{args['netcdf_indir']}/{yr:02d}{mo:02d}"
-    
-    if domain in ['global', 'hrrr', 'nam-12km']:
-        assert fhr is not None, "Forecast hour must be declared when plotting fronts globally or from an NWP model."
-        file = folder + f"/FrontObjects_{yr:d}{mo:02d}{dy:02d}{hr:02d}_f{fhr:03d}_{domain}.nc"
-        valid_front_types = ['CF', 'WF', 'SF', 'OF', 'TROF', 'DL']
+
+    if domain in ["global", "hrrr", "nam-12km"]:
+        assert fhr is not None, (
+            "Forecast hour must be declared when plotting fronts globally or from an NWP model."
+        )
+        file = (
+            folder
+            + f"/FrontObjects_{yr:d}{mo:02d}{dy:02d}{hr:02d}_f{fhr:03d}_{domain}.nc"
+        )
+        valid_front_types = ["CF", "WF", "SF", "OF", "TROF", "DL"]
         valid_time = init_time + dt.timedelta(hours=fhr)
-        valid_yr, valid_mo, valid_dy, valid_hr = valid_time.year, valid_time.month, valid_time.day, valid_time.hour
-        plot_title = (f"TWC fronts initialized at {yr:d}-{mo:02d}-{dy:02d}-{hr:02d} valid for "
-                      f"{valid_yr:d}-{valid_mo:02d}-{valid_dy:02d}-{valid_hr:02d} (forecast hour {fhr})")
+        valid_yr, valid_mo, valid_dy, valid_hr = (
+            valid_time.year,
+            valid_time.month,
+            valid_time.day,
+            valid_time.hour,
+        )
+        plot_title = (
+            f"TWC fronts initialized at {yr:d}-{mo:02d}-{dy:02d}-{hr:02d} valid for "
+            f"{valid_yr:d}-{valid_mo:02d}-{valid_dy:02d}-{valid_hr:02d} (forecast hour {fhr})"
+        )
         plot_filename = f"fronts-twc_{yr:d}{mo:02d}{dy:02d}{hr:02d}_f{fhr:03d}.png"
     else:
-        assert fhr is None, "Forecast hour cannot be declared when plotting NOAA fronts."
+        assert fhr is None, (
+            "Forecast hour cannot be declared when plotting NOAA fronts."
+        )
         file = folder + f"/FrontObjects_{yr:d}{mo:02d}{dy:02d}{hr:02d}_full.nc"
-        valid_front_types = ['CF', 'WF', 'SF', 'OF',
-                             'CF-F', 'WF-F', 'SF-F', 'OF-F',
-                             'CF-D', 'WF-D', 'SF-D', 'OF-D',
-                             'INST', 'TROF', 'TT', 'DL']
+        valid_front_types = [
+            "CF",
+            "WF",
+            "SF",
+            "OF",
+            "CF-F",
+            "WF-F",
+            "SF-F",
+            "OF-F",
+            "CF-D",
+            "WF-D",
+            "SF-D",
+            "OF-D",
+            "INST",
+            "TROF",
+            "TT",
+            "DL",
+        ]
         plot_title = f"NOAA/WPC/OPC fronts valid for {yr:d}-{mo:02d}-{dy:02d}-{hr:02d}"
         plot_filename = f"fronts-noaa_{yr:d}{mo:02d}{dy:02d}{hr:02d}.png"
 
-    if args['front_types'] is None:
+    if args["front_types"] is None:
         front_types = valid_front_types
     else:
-        assert all([front_type in valid_front_types for front_type in args['front_types']]), \
+        assert all(
+            [front_type in valid_front_types for front_type in args["front_types"]]
+        ), (
             "One or more front types passed do not exist or are not valid for the specified data source."
-        front_types = args['front_types']
-    
-    fronts = xr.open_dataset(file, engine='netcdf4')
+        )
+        front_types = args["front_types"]
+
+    fronts = xr.open_dataset(file, engine="netcdf4")
     fronts = data_utils.reformat_fronts(fronts, front_types=front_types)
     fronts = data_utils.expand_fronts(fronts, iterations=1)
-    fronts = xr.where(fronts == 0, float("NaN"), fronts)  # turn 0s into NaNs so they do not show up in the plot
-    
-    fig, ax = plt.subplots(figsize=(22, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+    fronts = xr.where(
+        fronts == 0, float("NaN"), fronts
+    )  # turn 0s into NaNs so they do not show up in the plot
+
+    fig, ax = plt.subplots(
+        figsize=(22, 8), subplot_kw={"projection": ccrs.PlateCarree()}
+    )
     plot_background(extent=[-180, 179.99, -90, 90], ax=ax, linewidth=0.25)
-    
-    front_colors_by_type = [data_utils.FRONT_COLORS[front_type] for front_type in front_types]
-    front_names_by_type = [data_utils.FRONT_NAMES[front_type] for front_type in front_types]
-    
-    cmap_front = mcolors.ListedColormap(front_colors_by_type, name='from_list', N=len(front_colors_by_type))
+
+    front_colors_by_type = [
+        data_utils.FRONT_COLORS[front_type] for front_type in front_types
+    ]
+    front_names_by_type = [
+        data_utils.FRONT_NAMES[front_type] for front_type in front_types
+    ]
+
+    cmap_front = mcolors.ListedColormap(
+        front_colors_by_type, name="from_list", N=len(front_colors_by_type)
+    )
     norm_front = mcolors.Normalize(vmin=1, vmax=len(front_colors_by_type) + 1)
-    
-    fronts['identifier'].plot(ax=ax, x='longitude', y='latitude', cmap=cmap_front, norm=norm_front, transform=ccrs.PlateCarree(), add_colorbar=False)
-    
+
+    fronts["identifier"].plot(
+        ax=ax,
+        x="longitude",
+        y="latitude",
+        cmap=cmap_front,
+        norm=norm_front,
+        transform=ccrs.PlateCarree(),
+        add_colorbar=False,
+    )
+
     # redefining the colorbar with the order of the colors reversed so it looks more presentable
-    cmap_front = mcolors.ListedColormap(front_colors_by_type[::-1], name='from_list', N=len(front_colors_by_type))
-    
+    cmap_front = mcolors.ListedColormap(
+        front_colors_by_type[::-1], name="from_list", N=len(front_colors_by_type)
+    )
+
     # when plotting the colorbar, flip the ticks and labels so they match up with the inverted colorbar
-    cbar_front = plt.colorbar(cm.ScalarMappable(norm=norm_front, cmap=cmap_front), ax=ax, alpha=0.85, pad=0)
+    cbar_front = plt.colorbar(
+        cm.ScalarMappable(norm=norm_front, cmap=cmap_front), ax=ax, alpha=0.85, pad=0
+    )
     cbar_front.set_ticks(np.arange(len(front_names_by_type)) + 1.5)
     cbar_front.set_ticklabels(front_names_by_type)
     cbar_front.set_ticks(cbar_front.get_ticks()[::-1])
     cbar_front.set_ticklabels(cbar_front.ax.get_yticklabels()[::-1])
-    cbar_front.set_label(r'$\bf{Front}$ $\bf{type}$')
-    
+    cbar_front.set_label(r"$\bf{Front}$ $\bf{type}$")
+
     ax.set_title(plot_title)
-    
-    plt.savefig(f"{args['plot_outdir']}/{plot_filename}", bbox_inches='tight', dpi=500)
+
+    plt.savefig(f"{args['plot_outdir']}/{plot_filename}", bbox_inches="tight", dpi=500)
     plt.close()

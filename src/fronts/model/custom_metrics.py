@@ -8,6 +8,7 @@ Custom metrics for U-Net models.
 Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2025.3.5
 """
+
 import tensorflow as tf
 
 
@@ -31,7 +32,9 @@ def brier_skill_score(class_weights: list[int | float, ...] = None):
         squared_errors = tf.math.square(tf.subtract(y_true, y_pred))
 
         if class_weights is not None:
-            relative_class_weights = tf.cast(class_weights / tf.math.reduce_sum(class_weights), tf.float32)
+            relative_class_weights = tf.cast(
+                class_weights / tf.math.reduce_sum(class_weights), tf.float32
+            )
             squared_errors *= relative_class_weights
 
         bss = 1 - tf.math.reduce_sum(squared_errors) / tf.size(squared_errors)
@@ -41,9 +44,11 @@ def brier_skill_score(class_weights: list[int | float, ...] = None):
     return bss
 
 
-def critical_success_index(threshold: float = None,
-                           window_size: tuple[int, ...] | list[int, ...] = None,
-                           class_weights: list[int | float, ...] = None):
+def critical_success_index(
+    threshold: float = None,
+    window_size: tuple[int, ...] | list[int, ...] = None,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Critical success index (CSI).
 
@@ -69,36 +74,56 @@ def critical_success_index(threshold: float = None,
         """
 
         if window_size is not None:
-            y_pred = tf.nn.max_pool(y_pred, ksize=window_size, strides=1, padding="VALID")
-            y_true = tf.nn.max_pool(y_true, ksize=window_size, strides=1, padding="VALID")
+            y_pred = tf.nn.max_pool(
+                y_pred, ksize=window_size, strides=1, padding="VALID"
+            )
+            y_true = tf.nn.max_pool(
+                y_true, ksize=window_size, strides=1, padding="VALID"
+            )
 
         if threshold is not None:
-            y_pred = tf.where(y_pred >= threshold, 1., 0.)
+            y_pred = tf.where(y_pred >= threshold, 1.0, 0.0)
 
         y_pred_neg = 1 - y_pred
         y_true_neg = 1 - y_true
 
-        sum_over_axes = tf.range(tf.rank(y_pred) - 1)  # Indices for axes to sum over. Excludes the final (class) dimension.
+        sum_over_axes = tf.range(
+            tf.rank(y_pred) - 1
+        )  # Indices for axes to sum over. Excludes the final (class) dimension.
 
         true_positives = tf.math.reduce_sum(y_pred * y_true, axis=sum_over_axes)
         false_negatives = tf.math.reduce_sum(y_pred_neg * y_true, axis=sum_over_axes)
         false_positives = tf.math.reduce_sum(y_pred * y_true_neg, axis=sum_over_axes)
 
         if class_weights is not None:
-            relative_class_weights = tf.cast(class_weights / tf.math.reduce_sum(class_weights), tf.float32)
-            csi = tf.math.reduce_sum(tf.math.divide_no_nan(true_positives, true_positives + false_positives + false_negatives) * relative_class_weights)
+            relative_class_weights = tf.cast(
+                class_weights / tf.math.reduce_sum(class_weights), tf.float32
+            )
+            csi = tf.math.reduce_sum(
+                tf.math.divide_no_nan(
+                    true_positives, true_positives + false_positives + false_negatives
+                )
+                * relative_class_weights
+            )
         else:
-            csi = tf.math.divide(tf.math.reduce_sum(true_positives), tf.math.reduce_sum(true_positives) + tf.math.reduce_sum(false_negatives) + tf.math.reduce_sum(false_positives))
+            csi = tf.math.divide(
+                tf.math.reduce_sum(true_positives),
+                tf.math.reduce_sum(true_positives)
+                + tf.math.reduce_sum(false_negatives)
+                + tf.math.reduce_sum(false_positives),
+            )
 
         return csi
 
     return csi
 
 
-def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3),
-                          alpha: int | float = 1.0,
-                          beta: int | float = 0.5,
-                          class_weights: list[int | float, ...] = None):
+def fractions_skill_score(
+    mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3),
+    alpha: int | float = 1.0,
+    beta: int | float = 0.5,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Fractions skill score metric.
 
@@ -130,14 +155,17 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
 
     # if mask_size is an int, convert to a tuple. This allows us to check the length of the tuple and pull the correct AveragePooling layer
     if isinstance(mask_size, int):
-        mask_size = (mask_size, )
+        mask_size = (mask_size,)
 
     # if mask_size is an list, convert to a tuple
     elif isinstance(mask_size, list):
         mask_size = tuple(mask_size)
 
     # make sure the mask size is between 1 and 3
-    assert 1 <= len(mask_size) <= 3, "mask_size must have length between 1 and 3, received length %d" % len(mask_size)
+    assert 1 <= len(mask_size) <= 3, (
+        "mask_size must have length between 1 and 3, received length %d"
+        % len(mask_size)
+    )
 
     # get the pooling layer based off the length of the mask_size tuple
     pool = getattr(tf.keras.layers, "AveragePooling%dD" % len(mask_size))(**pool_args)
@@ -165,8 +193,12 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
         O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
         M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
 
-        MSE_n = tf.keras.metrics.mean_squared_error(O_n * class_weights, M_n * class_weights)  # MSE for model forecast fractions (Eq. 5 in RL2008)
-        MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(tf.square(M_n * class_weights))  # reference forecast (Eq. 7 in RL2008)
+        MSE_n = tf.keras.metrics.mean_squared_error(
+            O_n * class_weights, M_n * class_weights
+        )  # MSE for model forecast fractions (Eq. 5 in RL2008)
+        MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(
+            tf.square(M_n * class_weights)
+        )  # reference forecast (Eq. 7 in RL2008)
 
         FSS = 1 - MSE_n / (MSE_ref + 1e-10)  # fractions skill score (Eq. 6 in RL2008)
 
@@ -175,9 +207,11 @@ def fractions_skill_score(mask_size: int | tuple[int, ...] | list[int, ...] = (3
     return fss
 
 
-def heidke_skill_score(threshold: float = None,
-                       window_size: tuple[int, ...] | list[int, ...] = None,
-                       class_weights: list[int | float, ...] = None):
+def heidke_skill_score(
+    threshold: float = None,
+    window_size: tuple[int, ...] | list[int, ...] = None,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Heidke Skill Score (HSS).
 
@@ -203,21 +237,31 @@ def heidke_skill_score(threshold: float = None,
         """
 
         if window_size is not None:
-            y_pred = tf.nn.max_pool(y_pred, ksize=window_size, strides=1, padding="VALID")
-            y_true = tf.nn.max_pool(y_true, ksize=window_size, strides=1, padding="VALID")
+            y_pred = tf.nn.max_pool(
+                y_pred, ksize=window_size, strides=1, padding="VALID"
+            )
+            y_true = tf.nn.max_pool(
+                y_true, ksize=window_size, strides=1, padding="VALID"
+            )
 
         if threshold is not None:
-            y_pred = tf.where(y_pred >= threshold, 1., 0.)
+            y_pred = tf.where(y_pred >= threshold, 1.0, 0.0)
 
-        sum_over_axes = tf.range(tf.rank(y_pred) - 1)  # Indices for axes to sum over. Excludes the final (class) dimension.
+        sum_over_axes = tf.range(
+            tf.rank(y_pred) - 1
+        )  # Indices for axes to sum over. Excludes the final (class) dimension.
 
         true_positives = tf.math.reduce_sum(y_true * y_pred, axis=sum_over_axes)
         false_positives = tf.math.reduce_sum((1 - y_true) * y_pred, axis=sum_over_axes)
         false_negatives = tf.math.reduce_sum(y_true * (1 - y_pred), axis=sum_over_axes)
-        true_negatives = tf.math.reduce_sum((1 - y_true) * (1 - y_pred), axis=sum_over_axes)
+        true_negatives = tf.math.reduce_sum(
+            (1 - y_true) * (1 - y_pred), axis=sum_over_axes
+        )
 
         if class_weights is not None:
-            relative_class_weights = tf.cast(class_weights / tf.math.reduce_sum(class_weights), tf.float32)
+            relative_class_weights = tf.cast(
+                class_weights / tf.math.reduce_sum(class_weights), tf.float32
+            )
             true_positives *= relative_class_weights
             true_negatives *= relative_class_weights
             false_positives *= relative_class_weights
@@ -228,16 +272,20 @@ def heidke_skill_score(threshold: float = None,
         c = tf.math.reduce_sum(false_negatives)
         d = tf.math.reduce_sum(true_negatives)
 
-        hss = 2 * tf.math.divide((a * d) - (b * c), ((a + c) * (c + d)) + ((a + b) * (b + d)))
+        hss = 2 * tf.math.divide(
+            (a * d) - (b * c), ((a + c) * (c + d)) + ((a + b) * (b + d))
+        )
 
         return hss
 
     return hss
 
 
-def probability_of_detection(threshold: float = None,
-                             window_size: tuple[int, ...] | list[int, ...] = None,
-                             class_weights: list[int | float, ...] = None):
+def probability_of_detection(
+    threshold: float = None,
+    window_size: tuple[int, ...] | list[int, ...] = None,
+    class_weights: list[int | float, ...] = None,
+):
     """
     Probability of Detection (POD).
 
@@ -263,22 +311,37 @@ def probability_of_detection(threshold: float = None,
         """
 
         if window_size is not None:
-            y_pred = tf.nn.max_pool(y_pred, ksize=window_size, strides=1, padding="VALID")
-            y_true = tf.nn.max_pool(y_true, ksize=window_size, strides=1, padding="VALID")
+            y_pred = tf.nn.max_pool(
+                y_pred, ksize=window_size, strides=1, padding="VALID"
+            )
+            y_true = tf.nn.max_pool(
+                y_true, ksize=window_size, strides=1, padding="VALID"
+            )
 
-        y_pred = tf.where(y_pred >= threshold, 1., 0.) if threshold is not None else y_pred
+        y_pred = (
+            tf.where(y_pred >= threshold, 1.0, 0.0) if threshold is not None else y_pred
+        )
         y_pred_neg = 1 - y_pred
 
-        sum_over_axes = tf.range(tf.rank(y_pred) - 1)  # Indices for axes to sum over. Excludes the final (class) dimension.
+        sum_over_axes = tf.range(
+            tf.rank(y_pred) - 1
+        )  # Indices for axes to sum over. Excludes the final (class) dimension.
 
         true_positives = tf.math.reduce_sum(y_pred * y_true, axis=sum_over_axes)
         false_negatives = tf.math.reduce_sum(y_pred_neg * y_true, axis=sum_over_axes)
 
         if class_weights is not None:
-            relative_class_weights = tf.cast(class_weights / tf.math.reduce_sum(class_weights), tf.float32)
-            pod = tf.math.reduce_sum(tf.math.divide_no_nan(true_positives, true_positives + false_negatives) * relative_class_weights)
+            relative_class_weights = tf.cast(
+                class_weights / tf.math.reduce_sum(class_weights), tf.float32
+            )
+            pod = tf.math.reduce_sum(
+                tf.math.divide_no_nan(true_positives, true_positives + false_negatives)
+                * relative_class_weights
+            )
         else:
-            pod = tf.math.reduce_sum(tf.math.divide_no_nan(true_positives, true_positives + false_negatives))
+            pod = tf.math.reduce_sum(
+                tf.math.divide_no_nan(true_positives, true_positives + false_negatives)
+            )
 
         return pod
 
