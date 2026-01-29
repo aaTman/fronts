@@ -13,7 +13,9 @@ from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 
 
-def plot_background(extent=None, ax=None, linewidth: float | int = 0.5, crs = ccrs.PlateCarree()):
+def plot_background(
+    extent=None, ax=None, linewidth: float | int = 0.5, crs=ccrs.PlateCarree()
+):
     """
     Returns new background for the plot.
 
@@ -38,7 +40,7 @@ def plot_background(extent=None, ax=None, linewidth: float | int = 0.5, crs = cc
     if ax is None:
         ax = plt.axes(crs=crs)
     else:
-        ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=linewidth)
+        ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=linewidth)
         ax.add_feature(cfeature.BORDERS, linewidth=linewidth)
         ax.add_feature(cfeature.STATES, linewidth=linewidth)
         if extent is not None:
@@ -46,7 +48,7 @@ def plot_background(extent=None, ax=None, linewidth: float | int = 0.5, crs = cc
     return ax
 
 
-def segmented_gradient_colormap(levels, colors: list[str], ns, extend='neither'):
+def segmented_gradient_colormap(levels, colors: list[str], ns, extend="neither"):
     """
     Make a segmented colormap with linear gradients between specified levels.
 
@@ -66,26 +68,45 @@ def segmented_gradient_colormap(levels, colors: list[str], ns, extend='neither')
 
     assert len_levels > 1, "Must specify at least two levels."
     assert len_colors > 1, "Must specify at least two colors."
-    assert len_levels == len_colors, "The number of levels and colors must be equal. Received %d levels and %d colors." % (len_levels, len_colors)
-    assert len_ns == len_levels - 1, "The length of 'ns' must be equal to the number of levels minus one. Received 'ns' length of %d and %d levels." % (len_ns, len_levels)
+    assert len_levels == len_colors, (
+        "The number of levels and colors must be equal. Received %d levels and %d colors."
+        % (len_levels, len_colors)
+    )
+    assert len_ns == len_levels - 1, (
+        "The length of 'ns' must be equal to the number of levels minus one. Received 'ns' length of %d and %d levels."
+        % (len_ns, len_levels)
+    )
 
-    all_levels = np.concatenate([np.linspace(levels[i], levels[i + 1], ns[i]) for i in range(len_levels - 1)])
-    all_colors = np.vstack([LinearSegmentedColormap.from_list("", colors[i:i+2])(np.linspace(0, 1, ns[i])) for i in range(len_levels - 1)])
+    all_levels = np.concatenate(
+        [np.linspace(levels[i], levels[i + 1], ns[i]) for i in range(len_levels - 1)]
+    )
+    all_colors = np.vstack(
+        [
+            LinearSegmentedColormap.from_list("", colors[i : i + 2])(
+                np.linspace(0, 1, ns[i])
+            )
+            for i in range(len_levels - 1)
+        ]
+    )
 
     # matplotlib's extend function has some funky behavior, so we need to modify the colorbar to avoid errors
-    if extend == 'both':
+    if extend == "both":
         all_colors = np.insert(all_colors, -1, all_colors[-1], axis=0)
-    elif extend == 'neither':
+    elif extend == "neither":
         all_colors = np.delete(all_colors, 0, axis=0)
     else:
         pass
 
-    cmap, norm = mpl.colors.from_levels_and_colors(all_levels, all_colors, extend=extend)
+    cmap, norm = mpl.colors.from_levels_and_colors(
+        all_levels, all_colors, extend=extend
+    )
 
     return cmap, norm
 
 
-def truncated_colormap(cmap: str, minval: float = 0.0, maxval: float = 1.0, n: int = 256):
+def truncated_colormap(
+    cmap: str, minval: float = 0.0, maxval: float = 1.0, n: int = 256
+):
     """
     Get an instance of a truncated matplotlib.colors.Colormap object.
 
@@ -107,6 +128,7 @@ def truncated_colormap(cmap: str, minval: float = 0.0, maxval: float = 1.0, n: i
     """
     cmap = plt.get_cmap(cmap)
     new_cmap = mpl.colors.LinearSegmentedColormap.from_list(
-        'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
-        cmap(np.linspace(minval, maxval, n)))
+        "trunc({n},{a:.2f},{b:.2f})".format(n=cmap.name, a=minval, b=maxval),
+        cmap(np.linspace(minval, maxval, n)),
+    )
     return new_cmap

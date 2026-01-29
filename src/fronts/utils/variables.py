@@ -9,6 +9,7 @@ References
 Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2025.5.3
 """
+
 import numpy as np
 from utils import data_utils
 import tensorflow as tf
@@ -36,7 +37,7 @@ def saturation_vapor_pressure(T):
     e: float or iterable object
         Vapor pressure expressed as Pascals (Pa).
     """
-    
+
     exp_func = tf.math.exp if tf.is_tensor(T) else np.exp
     T = T - 273.15  # K -> C
     e = e_knot * exp_func(17.67 * T / (T + 243.5))
@@ -67,7 +68,7 @@ def dewpoint_from_mixing_ratio(P, r):
     >>> Td
     297.87277930360676
 
-    >>> P = np.arange(800., 1001., 25) * 100  # Pa
+    >>> P = np.arange(800.0, 1001.0, 25) * 100  # Pa
     >>> P
     array([ 80000.,  82500.,  85000.,  87500.,  90000.,  92500.,  95000.,
             97500., 100000.])
@@ -81,13 +82,13 @@ def dewpoint_from_mixing_ratio(P, r):
            291.58260633, 294.44604583, 297.01785056, 299.36210297,
            301.52319595])
     """
-    
+
     log_func = tf.math.log if tf.is_tensor(P) else np.log
 
     P /= 100  # Pa -> hPa
-    
+
     e = r * P / (epsilon + r)  # vapor pressure
-    
+
     Td = 243.5 * log_func(e / 6.112) / (17.67 - log_func(e / 6.112)) + 273.15  # C -> K
     return Td
 
@@ -117,11 +118,11 @@ def dewpoint_from_relative_humidity(T, RH):
     >>> Td
     296.2618676251417
 
-    >>> P = np.arange(800., 1001., 25) * 100  # Pa
+    >>> P = np.arange(800.0, 1001.0, 25) * 100  # Pa
     >>> P
     array([ 80000,  82500,  85000,  87500,  90000,  92500,  95000,  97500,
            100000])
-    >>> T = np.arange(270., 311., 5)  # K
+    >>> T = np.arange(270.0, 311.0, 5)  # K
     >>> T
     array([270, 275, 280, 285, 290, 295, 300, 305, 310])
     >>> RH = np.arange(0.5, 0.91, 0.05)
@@ -133,13 +134,15 @@ def dewpoint_from_relative_humidity(T, RH):
            284.499794  , 290.37429558, 296.26186763, 302.16570498,
            308.08850911])
     """
-    
+
     log_func = tf.math.log if tf.is_tensor(T) else np.log
-    
+
     # T is converted to C in saturation_vapor_pressure function
     e = saturation_vapor_pressure(T) * RH
-    
-    Td = 243.5 * log_func(e / e_knot) / (17.67 - log_func(e / e_knot)) + 273.15  # C -> K
+
+    Td = (
+        243.5 * log_func(e / e_knot) / (17.67 - log_func(e / e_knot)) + 273.15
+    )  # C -> K
     return Td
 
 
@@ -167,7 +170,7 @@ def dewpoint_from_specific_humidity(P, q):
     >>> Td
     298.20035572272803
 
-    >>> P = np.arange(800., 1001., 25) * 100  # Pa
+    >>> P = np.arange(800.0, 1001.0, 25) * 100  # Pa
     >>> P
     array([ 80000,  82500,  85000,  87500,  90000,  92500,  95000,  97500,
            100000])
@@ -187,7 +190,9 @@ def dewpoint_from_specific_humidity(P, q):
     r = q / (1 - q)  # mixing ratio
     e = r * P / (epsilon + r)  # vapor pressure
 
-    Td = 243.5 * log_func(e / e_knot) / (17.67 - log_func(e / e_knot)) + 273.15  # C -> K
+    Td = (
+        243.5 * log_func(e / e_knot) / (17.67 - log_func(e / e_knot)) + 273.15
+    )  # C -> K
     return Td
 
 
@@ -269,7 +274,11 @@ def potential_temperature(P, T):
            298.85311518, 301.63769299, 304.42424008, 307.21192283,
            310.        ])
     """
-    theta = T * tf.pow(1e5 / P, kd) if tf.is_tensor(T) and tf.is_tensor(P) else T * np.power(1e5 / P, kd)
+    theta = (
+        T * tf.pow(1e5 / P, kd)
+        if tf.is_tensor(T) and tf.is_tensor(P)
+        else T * np.power(1e5 / P, kd)
+    )
     return theta
 
 
@@ -291,16 +300,16 @@ def relative_humidity_from_dewpoint(T, Td):
 
     Examples
     --------
-    >>> T = 300.  # K
-    >>> Td = 290.  # K
+    >>> T = 300.0  # K
+    >>> Td = 290.0  # K
     >>> RH = relative_humidity_from_dewpoint(T, Td)
     >>> RH
     0.542647138543181
 
-    >>> T = np.arange(270., 311., 5)  # K
+    >>> T = np.arange(270.0, 311.0, 5)  # K
     >>> T
     array([270, 275, 280, 285, 290, 295, 300, 305, 310])
-    >>> Td = np.arange(260., 301., 5)  # K
+    >>> Td = np.arange(260.0, 301.0, 5)  # K
     >>> Td
     array([260, 265, 270, 275, 280, 285, 290, 295, 300])
     >>> RH = relative_humidity_from_dewpoint(T, Td)
@@ -410,8 +419,11 @@ def equivalent_potential_temperature(P, T, Td):
     RH = relative_humidity_from_dewpoint(T, Td)
     theta = potential_temperature(P, T)
     rv = mixing_ratio_from_dewpoint(P, Td)
-    theta_e = theta * tf.pow(RH, -rv * Rv / Cpd) * tf.exp(Lv * rv / (Cpd * T)) if all(tf.is_tensor(var) for var in [T, Td, P]) else \
-        theta * np.power(RH, -rv * Rv / Cpd) * np.exp(Lv * rv / (Cpd * T))
+    theta_e = (
+        theta * tf.pow(RH, -rv * Rv / Cpd) * tf.exp(Lv * rv / (Cpd * T))
+        if all(tf.is_tensor(var) for var in [T, Td, P])
+        else theta * np.power(RH, -rv * Rv / Cpd) * np.exp(Lv * rv / (Cpd * T))
+    )
     return theta_e
 
 
@@ -463,11 +475,11 @@ def wet_bulb_temperature(T, Td):
     if tf.is_tensor(T):
         Tw = (T - 273.15) * tf.atan(c1 * tf.sqrt(RH + c2))
         Tw += tf.atan(T - 273.15 + RH) - tf.atan(RH - c3)
-        Tw += (c4 * tf.pow(RH, 1.5) * tf.atan(c5 * RH))
+        Tw += c4 * tf.pow(RH, 1.5) * tf.atan(c5 * RH)
     else:
         Tw = (T - 273.15) * np.arctan(c1 * np.sqrt(RH + c2))
         Tw += np.arctan(T - 273.15 + RH) - np.arctan(RH - c3)
-        Tw += (c4 * np.power(RH, 1.5) * np.arctan(c5 * RH))
+        Tw += c4 * np.power(RH, 1.5) * np.arctan(c5 * RH)
     Tw += 273.15 - c6
 
     return Tw
@@ -535,13 +547,39 @@ def wet_bulb_potential_temperature(P, T, Td):
     # Wet-bulb potential temperature approximation (Davies-Jones 2008, Eq. 3.8).
     if all(tf.is_tensor(var) for var in [P, T, Td]):
         theta_wc = theta_e - tf.exp(
-            (a0 + (a1 * X) + (a2 * tf.pow(X, 2)) + (a3 * tf.pow(X, 3)) + (a4 * tf.pow(X, 4))) /
-            (1 + (b1 * X) + (b2 * tf.pow(X, 2)) + (b3 * tf.pow(X, 3)) + (b4 * tf.pow(X, 4))))
+            (
+                a0
+                + (a1 * X)
+                + (a2 * tf.pow(X, 2))
+                + (a3 * tf.pow(X, 3))
+                + (a4 * tf.pow(X, 4))
+            )
+            / (
+                1
+                + (b1 * X)
+                + (b2 * tf.pow(X, 2))
+                + (b3 * tf.pow(X, 3))
+                + (b4 * tf.pow(X, 4))
+            )
+        )
         theta_w = tf.where(theta_e > 173.15, theta_wc, theta_e)
     else:
         theta_wc = theta_e - np.exp(
-            (a0 + (a1 * X) + (a2 * np.power(X, 2)) + (a3 * np.power(X, 3)) + (a4 * np.power(X, 4))) /
-            (1 + (b1 * X) + (b2 * np.power(X, 2)) + (b3 * np.power(X, 3)) + (b4 * np.power(X, 4))))
+            (
+                a0
+                + (a1 * X)
+                + (a2 * np.power(X, 2))
+                + (a3 * np.power(X, 3))
+                + (a4 * np.power(X, 4))
+            )
+            / (
+                1
+                + (b1 * X)
+                + (b2 * np.power(X, 2))
+                + (b3 * np.power(X, 3))
+                + (b4 * np.power(X, 4))
+            )
+        )
         theta_w = np.where(theta_e > 173.15, theta_wc, theta_e)
 
     return theta_w
@@ -596,8 +634,7 @@ def virtual_potential_temperature(P, T, Td):
     return theta_v
 
 
-def virtual_temperature_from_mixing_ratio(T,
-                                          r):
+def virtual_temperature_from_mixing_ratio(T, r):
     """
     Calculates virtual temperature from temperature and mixing ratio.
 
@@ -715,6 +752,8 @@ def advection(field, u, v, lons, lats):
     dfield_dx = np.diff(field, axis=0) / np.diff(x, axis=0)
     dfield_dy = np.diff(field, axis=1) / np.diff(y, axis=1)
 
-    advect[:-1, :-1] = - (u[:-1, :-1] * dfield_dx[:, :-1]) - (v[:-1, :-1] * dfield_dy[:-1, :])
+    advect[:-1, :-1] = -(u[:-1, :-1] * dfield_dx[:, :-1]) - (
+        v[:-1, :-1] * dfield_dy[:-1, :]
+    )
 
     return advect

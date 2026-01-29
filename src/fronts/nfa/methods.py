@@ -9,9 +9,13 @@ References
 Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2023.10.6
 """
+
 import os
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))  # this line allows us to import scripts outside the current directory
+
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+)  # this line allows us to import scripts outside the current directory
 import numpy as np
 from utils import data_utils
 
@@ -38,7 +42,9 @@ def thermal_front_parameter(field, lats, lons):
     Examples
     --------
     >>> np.random.seed(120)
-    >>> field = np.random.uniform(low=0, high=40, size=(5, 5))  # random temperatures between 0 and 40 degrees Celsius
+    >>> field = np.random.uniform(
+    ...     low=0, high=40, size=(5, 5)
+    ... )  # random temperatures between 0 and 40 degrees Celsius
     >>> field
     array([[27.11822193, 20.51835209, 24.94822847, 19.0856986 , 18.41039256],
            [38.03459464, 39.38302396, 34.17690184, 23.6436138 ,  8.12785491],
@@ -69,7 +75,9 @@ def thermal_front_parameter(field, lats, lons):
     dFdy = np.diff(field, axis=-2, append=0) / np.diff(y, axis=-2, append=0)
     dF = np.array([dFdx, dFdy])
 
-    dFmag = np.sqrt(np.sum(np.square(dF), axis=0))  # magnitude of the gradient vector of the thermodynamic field
+    dFmag = np.sqrt(
+        np.sum(np.square(dF), axis=0)
+    )  # magnitude of the gradient vector of the thermodynamic field
     dF_unit_vector = dF / dFmag  # unit vector in the direction of the gradient vector
 
     # gradient vector of the magnitude of the gradient vector of the thermodynamic field
@@ -78,7 +86,7 @@ def thermal_front_parameter(field, lats, lons):
     ddFmag = np.array([ddFmagdx, ddFmagdy])
 
     # calculate thermal front parameter and change units from degC/(km^2) to degC/(100km)^2
-    TFP = np.sum(- ddFmag * dF_unit_vector, axis=0) * 1e4
+    TFP = np.sum(-ddFmag * dF_unit_vector, axis=0) * 1e4
 
     return TFP
 
@@ -105,7 +113,9 @@ def thermal_front_locator(field, lats, lons):
     Examples
     --------
     >>> np.random.seed(120)
-    >>> field = np.random.uniform(low=0, high=40, size=(5, 5))  # random temperatures between 0 and 40 degrees Celsius
+    >>> field = np.random.uniform(
+    ...     low=0, high=40, size=(5, 5)
+    ... )  # random temperatures between 0 and 40 degrees Celsius
     >>> field
     array([[27.11822193, 20.51835209, 24.94822847, 19.0856986 , 18.41039256],
            [38.03459464, 39.38302396, 34.17690184, 23.6436138 ,  8.12785491],
@@ -141,7 +151,9 @@ def thermal_front_locator(field, lats, lons):
     dFdy = np.diff(field, axis=-2, append=0) / np.diff(y, axis=-2, append=0)
     dF = np.array([dFdx, dFdy])
 
-    dFmag = np.sqrt(np.sum(np.square(dF), axis=0))  # magnitude of the gradient vector of the thermodynamic field
+    dFmag = np.sqrt(
+        np.sum(np.square(dF), axis=0)
+    )  # magnitude of the gradient vector of the thermodynamic field
     dF_unit_vector = dF / dFmag  # unit vector in the direction of the gradient vector
 
     # thermal front parameter expressed as degC/(100km)^2
@@ -180,7 +192,9 @@ def minimum_maximum_locator(field, lats, lons):
     Examples
     --------
     >>> np.random.seed(120)
-    >>> field = np.random.uniform(low=0, high=40, size=(5, 5))  # random temperatures between 0 and 40 degrees Celsius
+    >>> field = np.random.uniform(
+    ...     low=0, high=40, size=(5, 5)
+    ... )  # random temperatures between 0 and 40 degrees Celsius
     >>> field
     array([[27.11822193, 20.51835209, 24.94822847, 19.0856986 , 18.41039256],
            [38.03459464, 39.38302396, 34.17690184, 23.6436138 ,  8.12785491],
@@ -219,8 +233,12 @@ def minimum_maximum_locator(field, lats, lons):
     dTFPy = np.diff(TFP, axis=-2, append=0) / np.diff(y, axis=-2, append=0)
     dTFP = np.array([dTFPx, dTFPy]) * 100  # units: degC/(100km)^3
 
-    dTFPmag = np.sqrt(np.sum(np.square(dTFP), axis=0))  # magnitude of the gradient vector of the TFP
-    dTFP_unit_vector = dTFP / dTFPmag  # unit vector in the direction of the gradient vector
+    dTFPmag = np.sqrt(
+        np.sum(np.square(dTFP), axis=0)
+    )  # magnitude of the gradient vector of the TFP
+    dTFP_unit_vector = (
+        dTFP / dTFPmag
+    )  # unit vector in the direction of the gradient vector
 
     # minimum-maximum locator expressed as degC/(100km)^4
     MML = np.sum(dF * dTFP_unit_vector, axis=0) * 100
