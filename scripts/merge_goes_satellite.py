@@ -12,7 +12,7 @@ import numpy as np
 import os
 import pandas as pd
 import scipy
-from utils.satellite import calculate_lat_lon_from_dataset
+from fronts.utils.satellite import calculate_lat_lon_from_dataset
 import xarray as xr
 
 

@@ -10,8 +10,8 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import cartopy.crs as ccrs
-import utils.misc
-from utils.plotting import plot_background
+from fronts.utils import misc
+from fronts.utils.plotting import plot_background
 
 
 if __name__ == "__main__":
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     )
     plot_background(ax=ax)
 
-    plot_kwargs = utils.misc.string_arg_to_dict(args["plot_kwargs"])
+    plot_kwargs = misc.string_arg_to_dict(args["plot_kwargs"])
     ds.plot(
         ax=ax, x="longitude", y="latitude", transform=ccrs.PlateCarree(), **plot_kwargs
     )

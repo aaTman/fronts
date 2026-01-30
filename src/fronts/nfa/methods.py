@@ -10,14 +10,8 @@ Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2023.10.6
 """
 
-import os
-import sys
-
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-)  # this line allows us to import scripts outside the current directory
 import numpy as np
-from utils import data_utils
+from fronts.utils import data_utils
 
 
 def thermal_front_parameter(field, lats, lons):

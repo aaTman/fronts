@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from matplotlib import cm
-from utils import data_utils
-from utils.plotting import plot_background
+from fronts.utils import data_utils
+from fronts.utils.plotting import plot_background
 
 
 if __name__ == "__main__":

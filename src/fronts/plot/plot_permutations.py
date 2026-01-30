@@ -10,7 +10,7 @@ import matplotlib as mpl
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from utils.data_utils import FRONT_COLORS, FRONT_NAMES, VARIABLE_NAMES, VERTICAL_LEVELS
+from fronts.utils import constants
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -90,10 +90,10 @@ if __name__ == "__main__":
 
         # Horizontal bars for the single-pass data
         sp_barh_vars = ax1.barh(
-            y_pos_vars, sp_sorted_data[0], color=FRONT_COLORS[front_type]
+            y_pos_vars, sp_sorted_data[0], color=constants.FRONT_COLORS[front_type]
         )
         sp_barh_lvls = ax2.barh(
-            y_pos_lvls, sp_sorted_data[1], color=FRONT_COLORS[front_type]
+            y_pos_lvls, sp_sorted_data[1], color=constants.FRONT_COLORS[front_type]
         )
 
         # setting subplot titles, ticks, and ticklabels
@@ -104,10 +104,10 @@ if __name__ == "__main__":
 
         if args["show_names"]:
             ax1.set_yticklabels(
-                [VARIABLE_NAMES[var] for var in sp_sorted_vars_and_lvls[0]]
+                [constants.VARIABLE_NAMES[var] for var in sp_sorted_vars_and_lvls[0]]
             )
             ax2.set_yticklabels(
-                [VERTICAL_LEVELS[lvl] for lvl in sp_sorted_vars_and_lvls[1]]
+                [constants.VERTICAL_LEVELS[lvl] for lvl in sp_sorted_vars_and_lvls[1]]
             )
         else:
             ax1.set_yticklabels(sp_sorted_vars_and_lvls[0])
@@ -180,12 +180,12 @@ if __name__ == "__main__":
         ax3.axis("off")
 
         rowLabels = (
-            [VARIABLE_NAMES[var] for var in variables]
+            [constants.VARIABLE_NAMES[var] for var in variables]
             if args["show_names"]
             else variables
         )
         colLabels = (
-            [VERTICAL_LEVELS[lvl] for lvl in pressure_levels]
+            [constants.VERTICAL_LEVELS[lvl] for lvl in pressure_levels]
             if args["show_names"]
             else pressure_levels
         )
@@ -214,7 +214,7 @@ if __name__ == "__main__":
 
         plt.suptitle(
             "%s permutations: %s"
-            % (FRONT_NAMES[front_type], domain_text[args["domain"]]),
+            % (constants.FRONT_NAMES[front_type], domain_text[args["domain"]]),
             fontsize=18,
             y=1.02,
         )

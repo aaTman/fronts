@@ -7,10 +7,10 @@ Script version: 2024.10.10
 
 import argparse
 import os
-from utils import data_utils
+from fronts.utils import data_utils
 import numpy as np
 import pandas as pd
-import file_manager as fm
+from fronts.utils import file_manager as fm
 import xarray as xr
 import tensorflow as tf
 

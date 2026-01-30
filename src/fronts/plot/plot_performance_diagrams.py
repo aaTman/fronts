@@ -16,7 +16,7 @@ import pandas as pd
 import pickle
 import xarray as xr
 import random
-from utils import data_utils, plotting
+from fronts.utils import data_utils, plotting
 from glob import glob
 
 

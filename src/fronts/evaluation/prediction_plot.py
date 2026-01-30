@@ -17,13 +17,8 @@ from matplotlib import (
     colors,
 )  # Here we explicitly import the cm and color modules to suppress a PyCharm bug
 import os
-import sys
-
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-)  # this line allows us to import scripts outside the current directory
-from utils import data_utils
-from utils.plotting import plot_background
+from fronts.utils import data_utils
+from fronts.utils.plotting import plot_background
 from skimage.morphology import skeletonize
 
 
