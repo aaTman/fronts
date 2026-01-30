@@ -7,7 +7,7 @@ Script version: 2024.8.25
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from utils.plotting import segmented_gradient_colormap, truncated_colormap
+from fronts.utils import plotting
 
 
 def calculate_lat_lon_from_dataset(ds):
@@ -91,7 +91,7 @@ def get_satellite_colormap(band: int | str):
 
     if band in [1, 2, 3, 4, 5, 6, "ch1"]:
         # greyscale colormap normalized from 0 to 1 (reflectance factor)
-        return truncated_colormap("Greys_r", minval=0.2), mpl.colors.Normalize(
+        return plotting.truncated_colormap("Greys_r", minval=0.2), mpl.colors.Normalize(
             vmin=0, vmax=1
         )
 
@@ -99,13 +99,13 @@ def get_satellite_colormap(band: int | str):
         # multiple combined colormaps, only -65 to -25 celsius (208 to 248 K) is colored
         n1, n2, n3 = 36, 80, 304
 
-        cmap_1 = truncated_colormap("Greys", minval=0.4, maxval=0.7)(
+        cmap_1 = plotting.truncated_colormap("Greys", minval=0.4, maxval=0.7)(
             np.linspace(0, 1, n1)
         )
-        cmap_2 = truncated_colormap("jet", minval=0.1, maxval=1.0)(
+        cmap_2 = plotting.truncated_colormap("jet", minval=0.1, maxval=1.0)(
             np.linspace(0, 1, n2)
         )[::-1]
-        cmap_3 = truncated_colormap("Greys", minval=0.4, maxval=0.8)(
+        cmap_3 = plotting.truncated_colormap("Greys", minval=0.4, maxval=0.8)(
             np.linspace(0, 1, n3)
         )
 
@@ -180,6 +180,6 @@ def get_satellite_colormap(band: int | str):
     else:
         raise ValueError("Unrecognized band:", band)
 
-    cmap, norm = segmented_gradient_colormap(levels, colors, ns, extend)
+    cmap, norm = plotting.segmented_gradient_colormap(levels, colors, ns, extend)
 
     return cmap, norm

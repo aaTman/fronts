@@ -8,18 +8,15 @@ Script version: 2025.2.13
 """
 
 import argparse
-import sys
 import os
 import numpy as np
 
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-)  # this line allows us to import scripts outside the current directory
-import file_manager as fm
-from utils.data_utils import *
-from utils.misc import initialize_gpus
+from fronts.utils import file_manager as fm
+from fronts.utils import constants
+from fronts.utils.misc import initialize_gpus
 import xarray as xr
 import tensorflow as tf
+import pandas as pd
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -145,10 +142,14 @@ if __name__ == "__main__":
             lons = np.arange(extent[0], extent[1] + 0.25, 0.25)
         else:
             lats = np.arange(
-                DOMAIN_EXTENTS[domain][2], DOMAIN_EXTENTS[domain][3] + 0.25, 0.25
+                constants.DOMAIN_EXTENTS[domain][2],
+                constants.DOMAIN_EXTENTS[domain][3] + 0.25,
+                0.25,
             )[::-1]
             lons = np.arange(
-                DOMAIN_EXTENTS[domain][0], DOMAIN_EXTENTS[domain][1] + 0.25, 0.25
+                constants.DOMAIN_EXTENTS[domain][0],
+                constants.DOMAIN_EXTENTS[domain][1] + 0.25,
+                0.25,
             )
     elif args["data_source"] == "hrrr":
         hrrr_coords = xr.open_dataset("%s/coordinates/hrrr.nc" % os.getcwd())

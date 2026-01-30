@@ -10,14 +10,9 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 import os
-import sys
 import tensorflow as tf
-
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-)  # this line allows us to import scripts outside the current directory
-from utils import data_utils
-import file_manager as fm
+from fronts.utils import data_utils
+from fronts.utils import file_manager as fm
 import scipy
 
 

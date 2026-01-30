@@ -11,11 +11,11 @@ from tensorflow.keras.callbacks import EarlyStopping, CSVLogger
 import tensorflow as tf
 import pickle
 import numpy as np
-import file_manager as fm
+from fronts.utils import file_manager
 import os
-from models import unets, custom_metrics, custom_losses
+from fronts.model import unets, custom_metrics, custom_losses
 import datetime
-from utils import misc, data_utils
+from fronts.utils import misc, data_utils
 from glob import glob
 import wandb
 
@@ -908,7 +908,7 @@ if __name__ == "__main__":
                 metric_function.function_spec._name
             )
         else:
-            model = fm.load_model(args["model_number"], args["model_dir"])
+            model = file_manager.load_model(args["model_number"], args["model_dir"])
 
     model.summary()
 

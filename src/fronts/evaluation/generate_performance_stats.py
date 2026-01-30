@@ -11,8 +11,8 @@ import pandas as pd
 import tensorflow as tf
 import xarray as xr
 import os
-from utils import data_utils
-from utils.data_utils import DOMAIN_EXTENTS
+from fronts.utils import data_utils
+from fronts.utils.data_utils import DOMAIN_EXTENTS
 
 
 if __name__ == "__main__":

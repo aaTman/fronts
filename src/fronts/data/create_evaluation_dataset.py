@@ -12,8 +12,8 @@ import os
 import pandas as pd
 import pickle
 import tensorflow as tf
-import file_manager as fm
-from utils import data_utils, misc
+from fronts.utils import file_manager as fm
+from fronts.utils import data_utils, misc
 from datetime import datetime
 import xarray as xr
 

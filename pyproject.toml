@@ -30,6 +30,7 @@ readme = "README.md"
 
 [tool.pixi.pypi-dependencies]
 tensorflow = { extras = ["and-cuda"] }
+obstore = "*"
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -46,6 +47,7 @@ dask = ">=2023.3.0,<2024"
 distributed = ">=2023.3.0,<2024"
 xarray = ">=2024.3.0,<2025"
 dacite = ">=1.9.2,<2"
+scikit-image = ">=0.22.0"
 
 [tool.pixi.system-requirements]
 libc = "2.17"
@@ -71,6 +73,9 @@ dev = [
     "types-tqdm>=4.67.0.20250809",
     "twine>=5.1.1",
 ]
+
+#TODO: swap wget with requests in code
+data = ["cdsapi", "wget"]
 
 [build-system]
 requires = ["hatchling >= 1.26"]

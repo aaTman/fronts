@@ -11,7 +11,7 @@ import os
 import numpy as np
 import xarray as xr
 import argparse
-from utils import variables
+from fronts.utils import variables
 import pandas as pd
 
 if __name__ == "__main__":

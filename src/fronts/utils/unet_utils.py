@@ -24,7 +24,7 @@ from tensorflow.keras.layers import (
 )
 from tensorflow.keras import layers
 import tensorflow as tf
-from . import custom_activations
+from fronts.model import custom_activations
 
 
 def attention_gate(

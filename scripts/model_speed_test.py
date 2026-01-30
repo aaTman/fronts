@@ -6,7 +6,7 @@ Script version: 2024.11.15
 """
 
 import argparse
-import file_manager as fm
+from fronts.utils import file_manager as fm
 import numpy as np
 import pandas as pd
 import tensorflow as tf

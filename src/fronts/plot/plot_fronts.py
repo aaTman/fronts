@@ -12,8 +12,8 @@ import matplotlib.colors as mcolors
 from matplotlib import cm
 import pandas as pd
 import cartopy.crs as ccrs
-from utils import data_utils
-from utils.plotting import plot_background
+from fronts.utils import data_utils
+from fronts.utils.plotting import plot_background
 import datetime as dt
 import numpy as np
 

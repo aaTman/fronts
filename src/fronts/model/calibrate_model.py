@@ -7,7 +7,7 @@ Script version: 2025.2.2
 
 import argparse
 import pandas as pd
-from utils.data_utils import FRONT_NAMES
+from fronts.utils.data_utils import FRONT_NAMES
 import matplotlib.pyplot as plt
 import pickle
 import xarray as xr

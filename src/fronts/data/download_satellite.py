@@ -9,9 +9,13 @@ import argparse
 import os
 import pandas as pd
 import requests
+
+# TODO: replace with obstore
 import s3fs
 import sys
 import urllib.error
+
+# TODO: replace with requests
 import wget
 
 

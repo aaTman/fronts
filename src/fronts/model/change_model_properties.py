@@ -9,7 +9,7 @@ Script version: 2024.10.11
 import argparse
 import pandas as pd
 import pickle
-from utils.misc import string_arg_to_dict
+from fronts.utils.misc import string_arg_to_dict
 
 
 if __name__ == "__main__":

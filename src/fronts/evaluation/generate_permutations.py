@@ -11,9 +11,9 @@ TODO:
 import itertools
 import os
 import pandas as pd
-from models import custom_losses
-from utils.data_utils import combine_datasets
-import file_manager as fm
+from fronts.model import custom_losses
+from fronts.utils.data_utils import combine_datasets
+from fronts.utils import file_manager as fm
 import tensorflow as tf
 import numpy as np
 import argparse

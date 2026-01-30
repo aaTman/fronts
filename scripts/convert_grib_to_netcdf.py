@@ -8,7 +8,7 @@ Script version: 2025.5.3
 import argparse
 import time
 import xarray as xr
-from utils import variables
+from fronts.utils import variables
 import glob
 import numpy as np
 import os

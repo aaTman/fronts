@@ -10,6 +10,8 @@ import os
 import pandas as pd
 import requests
 import urllib.error
+
+# TODO: replace with requests
 import wget
 import sys
 import datetime
