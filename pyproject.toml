@@ -27,7 +27,9 @@ classifiers = [
 ]
 license = { file = "LICENSE" }
 readme = "README.md"
-dependencies = ["tensorflow[and-cuda]"]
+
+[tool.pixi.pypi-dependencies]
+tensorflow = { extras = ["and-cuda"] }
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -69,6 +71,17 @@ dev = [
     "types-tqdm>=4.67.0.20250809",
     "twine>=5.1.1",
 ]
+
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fronts"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/fronts/**/*"]
+
 [tool.ruff]
 line-length = 88
 indent-width = 4
