@@ -402,17 +402,17 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Open the training configuration yaml
+    # Build the training configuration
     train_config = open_config_yaml_as_dataclass(
         path=args.train_config, config_class=TrainConfig
     )
 
-    # WandB configuration is not required
+    # Maybe build the WandB configuration
     wandb_config = open_config_yaml_as_dataclass(
         path=args.wandb_config, config_class=WandBConfig
     )
 
-    # Callbacks configuration also not required
+    # Maybe build the callback configuration
     callbacks_config = open_config_yaml_as_dataclass(
         path=args.callbacks_config, config_class=CallbacksConfig
     )
