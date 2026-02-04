@@ -1,6 +1,7 @@
 """Train a FrontFinder model with optional Weights and Biases tracking."""
 
 import tensorflow as tf
+import tensorflow.keras  # ty: ignore[unresolved-import]
 import os
 import wandb
 from wandb.integration import keras as wandb_keras
@@ -70,7 +71,7 @@ class WandBConfig:
 
     def build_keras_modelcheckpoint_callback(
         self,
-    ) -> tf.keras.callbacks.ModelCheckpoint:
+    ) -> tensorflow.keras.callbacks.ModelCheckpoint:
         """Return a list of MetricLogger and ModelCheckpoint WandB callbacks.
 
         Returns the logger and model checkpoint callbacks in a list.
@@ -106,7 +107,7 @@ class ModelDataConfig:
 class Trainer:
     def __init__(
         self,
-        model: tf.keras.Model,
+        model: tensorflow.keras.Model,
         data: ModelDataConfig,
         epochs: int,
         validation_frequency: int,
@@ -139,7 +140,7 @@ class Trainer:
         """
 
         # Set the seed for fitting the model
-        tf.keras.utils.set_random_seed(self.seed)
+        tensorflow.keras.utils.set_random_seed(self.seed)
 
         # If indefinite repeat is enabled, instantiate the bound method
         if self.repeat:
@@ -217,7 +218,7 @@ class TrainConfig:
 
     def build(
         self,
-        model: tf.keras.Model,
+        model: tensorflow.keras.Model,
         data: ModelDataConfig,
         wandb_config: Optional[WandBConfig] = None,
         callbacks: list = [],
@@ -309,7 +310,7 @@ if __name__ == "__main__":
         test_data=tf.data.Dataset.range(10),
     )
 
-    # Load the tf.keras.Model type
+    # Load the tensorflow.keras.Model type
     # TODO: build out model builder
     model = None
 
