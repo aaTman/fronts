@@ -6,7 +6,7 @@ import os
 import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
-from typing import Literal, Any, Optional
+from typing import Literal, Any, Optional, Union
 import argparse
 import dacite
 import yaml
@@ -86,6 +86,67 @@ class WandBConfig:
             self.build_keras_modelcheckpoint_callback(),
             self.build_keras_metriclogger_callback(),
         ]
+
+
+@dataclasses.dataclass
+class CallbacksConfig:
+    """A configuration for non-Weights and Biases callbacks.
+
+    Certain attributes are shared amongst callbacks, including monitor and verbose.
+    Attributes:
+
+    monitor: the metric to monitor.
+    verbose: integer determining the amount of logs returned from the callbacks.
+    save_best_only: if True, will only save if the model checkpoint has the best metrics
+        so far.
+    save_weights_only: will only save weights if set to True.
+    save_freq: how frequently to save the model checkpoint. If int n, will save after n
+        batches.
+    model_checkpoint_path: the path where the model will be saved. Defaults to None. If
+        None, does not initialize ModelCheckpoint callback.
+    csv_logger_path: the path where the csv logger will be saved. Defaults to None. If
+        None, does not initialize CSVLogger callback.
+    patience: the number of epochs to run with no improvement before stopping early.
+        Defaults to None. If None, does not initialize EarlyStopping callback.
+    """
+
+    monitor: str
+    verbose: int
+    save_best_only: bool
+    save_weights_only: bool
+    save_freq: Union[Literal["epoch"], int]
+    model_checkpoint_path: Optional[str] = None
+    csv_logger_path: Optional[str] = None
+    patience: Optional[int] = None
+
+    def build(self) -> list[tensorflow.keras.callbacks.Callback]:
+        # Initialize list
+        callback_list = []
+
+        # Only append the list with the callback if the conditions are met, i.e. the
+        # key attributes are not None. It is possible to return an empty list
+        if self.model_checkpoint_path:
+            checkpoint_callback = tensorflow.keras.callbacks.ModelCheckpoint(
+                filepath=self.model_checkpoint_path,
+                monitor=self.monitor,
+                verbose=self.verbose,
+                save_best_only=self.save_best_only,
+                save_weights_only=self.save_weights_only,
+                save_freq=self.save_freq,
+            )
+            callback_list.append(checkpoint_callback)
+        if self.csv_logger_path:
+            history_logger_callback = tensorflow.keras.callbacks.CSVLogger(
+                filepath=self.csv_logger_path, append=True
+            )
+            callback_list.append(history_logger_callback)
+        if self.patience:
+            early_stopping_callback = tensorflow.keras.callbacks.EarlyStopping(
+                monitor=self.monitor, patience=self.patience, verbose=self.verbose
+            )
+            callback_list.append(early_stopping_callback)
+
+        return callback_list
 
 
 @dataclasses.dataclass
@@ -251,20 +312,14 @@ class TrainConfig:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    epochs: int
-    training_steps_per_epoch: int
-    validation_steps_per_epoch: int
-    validation_frequency: int
-    callbacks: list = []
-    verbose: Literal["auto", 0, 1, 2] = "auto"
-    repeat: bool = True
+
     parser.add_argument(
         "-tc",
         "--train_config",
         type=str,
         required=True,
         help=(
-            "Path to the training configuration.This config must include epochs, "
+            "Path to the training configuration yaml. This config must include epochs, "
             "training_steps_per_epoch, validation_steps_per_epoch, "
             "validation_frequency, and optionally verbose and repeat. See TrainConfig "
             "for more information on each of these attributes."
@@ -276,14 +331,28 @@ if __name__ == "__main__":
         type=str,
         required=False,
         help=(
-            "Path to the Weights and Biases configuration. This config must include "
-            "project_name and model_run_name, optionally log_frequency, "
+            "Path to the Weights and Biases configuration yaml. This config must "
+            "include project_name and model_run_name, optionally log_frequency, "
             "upload_checkpoints, api_key, and wandb_filepath. See WandBConfig for more "
             "information on each of these attributes."
         ),
     )
+    parser.add_argument(
+        "-cc",
+        "--callbacks_config",
+        type=str,
+        required=False,
+        help=(
+            "Path to the callbacks config yaml. This config must include monitor, "
+            "verbose, save_best_only, save_weights_only, and save_freq, optionally "
+            "model_checkpoint_path, csv_logger_path, and patience. The optional "
+            "attributes determine which callbacks will be used. See CallbacksConfig "
+            "for more information on each of these attributes."
+        ),
+    )
     args = parser.parse_args()
 
+    # Open the training configuration yaml
     with open(file=args.train_config) as f:
         train_config = yaml.safe_load(f)
 
@@ -297,6 +366,18 @@ if __name__ == "__main__":
     # Set wandb_config to None if not included in args
     else:
         wandb_config = None
+
+    # Callback configuration also not required.
+    if args.callbacks_config:
+        with open(file=args.callbacks_config) as f:
+            callbacks_config = yaml.safe_load(f)
+        callbacks_config: CallbacksConfig = dacite.from_dict(
+            data_class=CallbacksConfig, data=args.callbacks_config
+        )
+        callbacks = callbacks_config.build()
+    # Set callbacks to empty list if callbacks_config not included in args
+    else:
+        callbacks = []
 
     train_config: TrainConfig = dacite.from_dict(
         data_class=TrainConfig, data=args.train_config
