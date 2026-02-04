@@ -49,6 +49,7 @@ distributed = ">=2023.3.0,<2024"
 xarray = ">=2024.3.0,<2025"
 dacite = ">=1.9.2,<2"
 scikit-image = ">=0.22.0"
+h5py = ">=3.11.0"
 
 [tool.pixi.system-requirements]
 libc = "2.17"
