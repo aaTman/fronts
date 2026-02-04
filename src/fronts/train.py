@@ -6,10 +6,12 @@ import os
 import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
-from typing import Literal, Any, Optional, Union
+from typing import Literal, Any, Optional, Union, TypeVar, Type
 import argparse
 import dacite
 import yaml
+
+T = TypeVar("T")
 
 
 @dataclasses.dataclass
@@ -20,13 +22,13 @@ class WandBConfig:
     which defaults to the WANDB_KEY environment variable.
 
     Attributes:
-
-    project_name: the WandB project where model training data will be stored.
-    model_run_name: the name of the model run.
-    log_frequency: the rate in epochs of log storage. Defaults to each epoch.
-    upload_checkpoints: whether or not to upload the model checkpoints. Defaults to
-        False.
-    api_key: the API key for a WandB account. Defaults to the WANDB_KEY environment var.
+        project_name: the WandB project where model training data will be stored.
+        model_run_name: the name of the model run.
+        log_frequency: the rate in epochs of log storage. Defaults to each epoch.
+        upload_checkpoints: whether or not to upload the model checkpoints. Defaults to
+            False.
+        api_key: the API key for a WandB account. Defaults to the WANDB_KEY environment
+            var.
     """
 
     project_name: str
@@ -47,9 +49,8 @@ class WandBConfig:
         """Builds the keyword arguments to apply to wandb.init.
 
         Args:
-
-        init_config: the dictionary of all model properties to pass into the WandB run
-            instance.
+            init_config: the dictionary of all model properties to pass into the WandB
+                run instance.
 
         Returns a dictionary of project, config, and name, arguments for wandb.init.
         """
@@ -63,18 +64,16 @@ class WandBConfig:
     def build_keras_metriclogger_callback(
         self,
     ) -> wandb_keras.WandbMetricsLogger:
-        """Returns an instance of a MetricsLogger callback.
-
-        Returns the WandbMetricsLogger callback using the log_frequency attribute.
+        """Returns an instance of a MetricsLogger callback using the log_frequency
+        attribute.
         """
         return wandb_keras.WandbMetricsLogger(log_freq=self.log_frequency)
 
     def build_keras_modelcheckpoint_callback(
         self,
     ) -> tensorflow.keras.callbacks.ModelCheckpoint:
-        """Return a list of MetricLogger and ModelCheckpoint WandB callbacks.
-
-        Returns the logger and model checkpoint callbacks in a list.
+        """Return the ModelCheckpoint WandB callback using the wandb_filepath
+        attribute.
         """
 
         return wandb_keras.WandbModelCheckpoint(self.wandb_filepath)
@@ -93,21 +92,21 @@ class CallbacksConfig:
     """A configuration for non-Weights and Biases callbacks.
 
     Certain attributes are shared amongst callbacks, including monitor and verbose.
-    Attributes:
 
-    monitor: the metric to monitor.
-    verbose: integer determining the amount of logs returned from the callbacks.
-    save_best_only: if True, will only save if the model checkpoint has the best metrics
-        so far.
-    save_weights_only: will only save weights if set to True.
-    save_freq: how frequently to save the model checkpoint. If int n, will save after n
-        batches.
-    model_checkpoint_path: the path where the model will be saved. Defaults to None. If
-        None, does not initialize ModelCheckpoint callback.
-    csv_logger_path: the path where the csv logger will be saved. Defaults to None. If
-        None, does not initialize CSVLogger callback.
-    patience: the number of epochs to run with no improvement before stopping early.
-        Defaults to None. If None, does not initialize EarlyStopping callback.
+    Attributes:
+        monitor: the metric to monitor.
+        verbose: integer determining the amount of logs returned from the callbacks.
+        save_best_only: if True, will only save if the model checkpoint has the best
+            metrics so far.
+        save_weights_only: will only save weights if set to True.
+        save_freq: how frequently to save the model checkpoint. If int n, will save
+            after n batches.
+        model_checkpoint_path: the path where the model will be saved. Defaults to None.
+            If None, does not initialize ModelCheckpoint callback.
+        csv_logger_path: the path where the csv logger will be saved. Defaults to None.
+            If None, does not initialize CSVLogger callback.
+        patience: the number of epochs to run with no improvement before stopping early.
+            Defaults to None. If None, does not initialize EarlyStopping callback.
     """
 
     monitor: str
@@ -154,10 +153,9 @@ class ModelDataConfig:
     """A configuration holding the resulting cleaned and prepared data for training.
 
     Attributes:
-
-    train_data: data including the inputs and targets for training.
-    validation_data: data including the inputs and targets for validation.
-    test_data: data including the inputs and targets for testing.
+        train_data: data including the inputs and targets for training.
+        validation_data: data including the inputs and targets for validation.
+        test_data: data including the inputs and targets for testing.
     """
 
     train_data: tf.data.Dataset
@@ -166,6 +164,8 @@ class ModelDataConfig:
 
 
 class Trainer:
+    """Main class to build and trigger model training for FrontFinder."""
+
     def __init__(
         self,
         model: tensorflow.keras.Model,
@@ -180,6 +180,35 @@ class Trainer:
         repeat: bool = True,
         seed: int = 42,
     ) -> None:
+        """Initialize the Trainer class and maybe build callbacks.
+
+        Arguments:
+            model: the model to use for training.
+            data: the ModelDataConfig which holds the prepared train, valid, and test
+                data.
+            epochs: number of epochs to run to train the model.
+            validation_frequency: specifies how many training epochs to run before a new
+                validation run is performed, e.g. validation_freq=2 runs validation
+                every 2 epochs.
+            training_steps_per_epoch: total number of batches of samples to run per
+                epoch.
+            validation_steps_per_epoch: total number of batches of samples for
+                validation. If validation_steps is specified and only part of the
+                dataset will be consumed, the evaluation will start from the beginning
+                of the dataset at each epoch.
+            callbacks: optional list of callbacks (not including WandB callbacks) to use
+                when training the model.
+            verbose: "auto", 0, 1, or 2. Verbosity mode. 0 = silent, 1 = progress bar,
+                2 = one line per epoch. "auto" ~= 1. Defaults to "auto".
+            wandb_config: the Weights and Biases configuration object to use, if exists.
+            repeat: whether or not the training dataset will repeat indefinitely.
+                Defaults to True. If True, training_steps_per_epoch will determine how
+                many batches will run per epoch.
+            seed: the seed to use for for all of the backend seeds to allow for
+                determinism. Defaults to 42.
+
+
+        """
         self.model = model
         self.wandb_config = wandb_config
         self.data = data
@@ -196,8 +225,7 @@ class Trainer:
         """Triggers a keras training run using model.fit().
 
         Args:
-
-        model_config: the complete metadata of configuration of the model
+            model_config: the complete metadata of configuration of the model
         """
 
         # Set the seed for fitting the model
@@ -235,8 +263,7 @@ class Trainer:
         provided when initializing the Trainer.
 
         Args:
-
-        callbacks: a list of 0 or more callbacks to include when training the model.
+            callbacks: a list of 0 or more callbacks to include when training the model.
 
         Returns a list of 0 or more callbacks.
         """
@@ -254,19 +281,23 @@ class TrainConfig:
     https://www.tensorflow.org/api_docs/python/tf/keras/Model.
 
     Attributes:
-
-    epochs: number of epochs to run to train the model.
-    training_steps_per_epoch: total number of batches of samples to run per epoch.
-    validation_steps_per_epoch: total number of batches of samples for validation.
-        If validation_steps is specified and only part of the dataset will be consumed,
-        the evaluation will start from the beginning of the dataset at each epoch.
-    callbacks: CallbackObject specifying which callbacks to include with training.
-    validation_freq: specifies how many training epochs to run before a new validation
-        run is performed, e.g. validation_freq=2 runs validation every 2 epochs.
-    verbose: "auto", 0, 1, or 2. Verbosity mode. 0 = silent, 1 = progress bar, 2 = one
-        line per epoch. "auto" ~= 1. Defaults to "auto".
-    seed: the seed to use for for all of the backend seeds to allow for determinism.
-        Defaults to 42.
+        epochs: number of epochs to run to train the model.
+        training_steps_per_epoch: total number of batches of samples to run per epoch.
+        validation_steps_per_epoch: total number of batches of samples for validation.
+            If validation_steps is specified and only part of the dataset will be
+            consumed, the evaluation will start from the beginning of the dataset at
+            each epoch.
+        callbacks: CallbackObject specifying which callbacks to include with training.
+        validation_freq: specifies how many training epochs to run before a new
+            validation run is performed, e.g. validation_freq=2 runs validation every 2
+            epochs.
+        verbose: "auto", 0, 1, or 2. Verbosity mode. 0 = silent, 1 = progress bar,
+            2 = one line per epoch. "auto" ~= 1. Defaults to "auto".
+        repeat: whether or not the training dataset will repeat indefinitely. Defaults
+            to True. If True, training_steps_per_epoch will determine how many batches
+            will run per epoch.
+        seed: the seed to use for for all of the backend seeds to allow for determinism.
+            Defaults to 42.
     """
 
     epochs: int
@@ -284,15 +315,17 @@ class TrainConfig:
         wandb_config: Optional[WandBConfig] = None,
         callbacks: list = [],
     ) -> Trainer:
-        """Builds the Trainer to later train the model with.
+        """Builds the Trainer object which can be used to train the model.
 
         Args:
+            model: the model to use for training.
+            data: the ModelDataConfig which holds the prepared train, valid, and test
+                data.
+            wandb_config: the Weights and Biases configuration object to use, if exists.
+            callbacks: optional list of callbacks (not including WandB callbacks) to use
+                when training the model.
 
-        model: the model to use for training
-        data: the ModelDataConfig which holds the prepared train, valid, and test data.
-        wandb_config: the Weights and Biases configuration object to use, if exists.
-        callbacks: optional list of callbacks (not including WandB callbacks) to use
-            when training the model.
+        Returns a Trainer object that can be used to instantiate a training run.
         """
         trainer = Trainer(
             model=model,
@@ -310,12 +343,29 @@ class TrainConfig:
         return trainer
 
 
+def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> Optional[T]:
+    """Opens a configuration yaml if exists and returns it as the relevant dataclass.
+
+    Args:
+        path: the absolute path to the configuration file.
+        config_class: the configuration dataclass that the incoming yaml will be
+            converted to via dacite.
+
+    Returns either None or the dataclass if path is provided.
+    """
+    if path:
+        with open(file=path) as f:
+            config_yaml = yaml.safe_load(f)
+        _class_instance = dacite.from_dict(data_class=config_class, data=config_yaml)
+        return _class_instance
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "-tc",
-        "--train_config",
+        "--train_config_path",
         type=str,
         required=True,
         help=(
@@ -327,7 +377,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-wc",
-        "--wandb_config",
+        "--wandb_config_path",
         type=str,
         required=False,
         help=(
@@ -339,7 +389,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-cc",
-        "--callbacks_config",
+        "--callbacks_config_path",
         type=str,
         required=False,
         help=(
@@ -353,35 +403,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Open the training configuration yaml
-    with open(file=args.train_config) as f:
-        train_config = yaml.safe_load(f)
+    train_config = open_config_yaml_as_dataclass(
+        path=args.train_config, config_class=TrainConfig
+    )
 
     # WandB configuration is not required
-    if args.wandb_config:
-        with open(file=args.wandb_config) as f:
-            wandb_config = yaml.safe_load(f)
-        wandb_config: WandBConfig = dacite.from_dict(
-            data_class=WandBConfig, data=args.wandb_config
-        )
-    # Set wandb_config to None if not included in args
-    else:
-        wandb_config = None
-
-    # Callback configuration also not required.
-    if args.callbacks_config:
-        with open(file=args.callbacks_config) as f:
-            callbacks_config = yaml.safe_load(f)
-        callbacks_config: CallbacksConfig = dacite.from_dict(
-            data_class=CallbacksConfig, data=args.callbacks_config
-        )
-        callbacks = callbacks_config.build()
-    # Set callbacks to empty list if callbacks_config not included in args
-    else:
-        callbacks = []
-
-    train_config: TrainConfig = dacite.from_dict(
-        data_class=TrainConfig, data=args.train_config
+    wandb_config = open_config_yaml_as_dataclass(
+        path=args.wandb_config, config_class=WandBConfig
     )
+
+    # Callbacks configuration also not required
+    callbacks_config = open_config_yaml_as_dataclass(
+        path=args.callbacks_config, config_class=CallbacksConfig
+    )
+    if callbacks_config:
+        callbacks = callbacks_config.build()
 
     # Load the data
     # TODO: build out training data builder
