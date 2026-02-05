@@ -148,28 +148,13 @@ class CallbacksConfig:
         return callback_list
 
 
-@dataclasses.dataclass
-class ModelDataConfig:
-    """A configuration holding the resulting cleaned and prepared data for training.
-
-    Attributes:
-        train_data: data including the inputs and targets for training.
-        validation_data: data including the inputs and targets for validation.
-        test_data: data including the inputs and targets for testing.
-    """
-
-    train_data: tf.data.Dataset
-    validation_data: tf.data.Dataset
-    test_data: tf.data.Dataset
-
-
 class Trainer:
     """Main class to build and trigger model training for FrontFinder."""
 
     def __init__(
         self,
-        model: tensorflow.keras.Model,
-        data: ModelDataConfig,
+        model,
+        data,
         epochs: int,
         validation_frequency: int,
         training_steps_per_epoch: int,
@@ -248,11 +233,12 @@ class Trainer:
             "verbose": self.verbose,
             "callbacks": self.callbacks,
         }
+
+        # Use WandB if exists
         if self.wandb_config:
             wandb_init_config = self.wandb_config.build_init_config(model_config)
-            with wandb.init(**wandb_init_config) as _:
+            with wandb.init(**wandb_init_config) as _:  # ty: ignore[invalid-context-manager]
                 self.model.fit(**fit_args)
-
         else:
             self.model.fit(**fit_args)
 
@@ -281,6 +267,7 @@ class TrainConfig:
     https://www.tensorflow.org/api_docs/python/tf/keras/Model.
 
     Attributes:
+
         epochs: number of epochs to run to train the model.
         training_steps_per_epoch: total number of batches of samples to run per epoch.
         validation_steps_per_epoch: total number of batches of samples for validation.
@@ -300,6 +287,10 @@ class TrainConfig:
             Defaults to 42.
     """
 
+    # model: ModelConfig
+    # data: DataConfig,
+    wandb_config: WandBConfig
+    callbacks_config: CallbacksConfig
     epochs: int
     training_steps_per_epoch: int
     validation_steps_per_epoch: int
@@ -310,10 +301,6 @@ class TrainConfig:
 
     def build(
         self,
-        model: tensorflow.keras.Model,
-        data: ModelDataConfig,
-        wandb_config: Optional[WandBConfig] = None,
-        callbacks: list = [],
     ) -> Trainer:
         """Builds the Trainer object which can be used to train the model.
 
@@ -327,9 +314,11 @@ class TrainConfig:
 
         Returns a Trainer object that can be used to instantiate a training run.
         """
+        callbacks = self.callbacks_config.build()
         trainer = Trainer(
-            model=model,
-            data=data,
+            # TODO: add + build model and data code to TrainConfig
+            model="",
+            data="",
             epochs=self.epochs,
             validation_frequency=self.validation_frequency,
             training_steps_per_epoch=self.training_steps_per_epoch,
@@ -343,21 +332,27 @@ class TrainConfig:
         return trainer
 
 
-def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> Optional[T]:
+def open_config_yaml_as_dataclass(
+    path: str, config_class: Type[T], require: bool = False
+) -> Optional[T]:
     """Opens a configuration yaml if exists and returns it as the relevant dataclass.
 
     Args:
         path: the absolute path to the configuration file.
         config_class: the configuration dataclass that the incoming yaml will be
             converted to via dacite.
+        require: If True, code will throw an error if the path is not provided.
+            Defaults to False.
 
     Returns either None or the dataclass if path is provided.
     """
-    if path:
+    if path and not require:
         with open(file=path) as f:
             config_yaml = yaml.safe_load(f)
         _class_instance = dacite.from_dict(data_class=config_class, data=config_yaml)
         return _class_instance
+    elif require:
+        raise ValueError("Path must be included when require is True.")
 
 
 if __name__ == "__main__":
@@ -375,36 +370,12 @@ if __name__ == "__main__":
             "for more information on each of these attributes."
         ),
     )
-    parser.add_argument(
-        "-wc",
-        "--wandb_config_path",
-        type=str,
-        required=False,
-        help=(
-            "Path to the Weights and Biases configuration yaml. This config must "
-            "include project_name and model_run_name, optionally log_frequency, "
-            "upload_checkpoints, api_key, and wandb_filepath. See WandBConfig for more "
-            "information on each of these attributes."
-        ),
-    )
-    parser.add_argument(
-        "-cc",
-        "--callbacks_config_path",
-        type=str,
-        required=False,
-        help=(
-            "Path to the callbacks config yaml. This config must include monitor, "
-            "verbose, save_best_only, save_weights_only, and save_freq, optionally "
-            "model_checkpoint_path, csv_logger_path, and patience. The optional "
-            "attributes determine which callbacks will be used. See CallbacksConfig "
-            "for more information on each of these attributes."
-        ),
-    )
+
     args = parser.parse_args()
 
     # Build the training configuration
     train_config = open_config_yaml_as_dataclass(
-        path=args.train_config, config_class=TrainConfig
+        path=args.train_config, config_class=TrainConfig, require=True
     )
 
     # Maybe build the WandB configuration
@@ -416,16 +387,10 @@ if __name__ == "__main__":
     callbacks_config = open_config_yaml_as_dataclass(
         path=args.callbacks_config, config_class=CallbacksConfig
     )
-    if callbacks_config:
-        callbacks = callbacks_config.build()
 
     # Load the data
     # TODO: build out training data builder
-    data = ModelDataConfig(
-        train_data=tf.data.Dataset.range(10),
-        validation_data=tf.data.Dataset.range(10),
-        test_data=tf.data.Dataset.range(10),
-    )
+    data = ""
 
     # Load the tensorflow.keras.Model type
     # TODO: build out model builder
@@ -436,9 +401,7 @@ if __name__ == "__main__":
     model_config = {}
 
     # Build trainer
-    trainer = train_config.build(
-        model=model, data=data, wandb_config=wandb_config, callbacks=callbacks
-    )
+    trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
 
     # Trigger training run
     trainer.train(model_config=model_config)
