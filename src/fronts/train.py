@@ -1,6 +1,5 @@
 """Train a FrontFinder model with optional Weights and Biases tracking."""
 
-import tensorflow as tf
 import tensorflow.keras  # ty: ignore[unresolved-import]
 import os
 import wandb
