@@ -3,6 +3,9 @@ Script that trains a new U-Net model.
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2025.5.3
+
+Update: this module is now deprecated and is only used as a reference
+while module is organized into other modules and directories.
 """
 
 import argparse
