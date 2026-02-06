@@ -516,9 +516,7 @@ def load_model(model_number: int, model_dir: str):
     ####################################################################################################################
 
     from tensorflow.keras.models import load_model as lm
-    from models import custom_activations
-    from models import custom_losses
-    from models import custom_metrics
+    from fronts.model import custom_activations, custom_losses, custom_metrics
 
     model_path = f"{model_dir}/model_{model_number}/model_{model_number}.h5"
     model_properties = pd.read_pickle(
