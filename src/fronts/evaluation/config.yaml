@@ -1,0 +1,7 @@
+variable_netcdf_dir: '/ourdisk/hpc/ai2es/fronts/raw_front_data/era5-netcdf/'
+domain: 'full'
+model_dir: "/ourdisk/hpc/ai2es/tman/models/"
+model_number: 28268214
+data_source: 'era5'
+time_range: '2024-01-01-00,2024-01-14-00'
+gpu_device: 0

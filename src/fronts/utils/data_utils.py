@@ -18,7 +18,7 @@ import numpy as np
 import xarray as xr
 import tensorflow as tf
 import regionmask
-
+from fronts.utils import constants
 
 def expand_fronts(
     fronts: np.ndarray | tf.Tensor | xr.Dataset | xr.DataArray, iterations: int = 1
@@ -643,7 +643,7 @@ def reformat_fronts(fronts, front_types):
 
 
 def normalize_dataset(
-    ds, method="standard", normalization_parameters=NORMALIZATION_PARAMS
+    ds, method="standard", normalization_parameters=constants.NORMALIZATION_PARAMS
 ) -> xr.Dataset:
     """
     Normalizes variables in an xarray dataset. This function can also accept xarray datasets for GOES satellite data.
