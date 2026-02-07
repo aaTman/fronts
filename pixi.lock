@@ -1947,7 +1947,7 @@ packages:
   timestamp: 1734014884486
 - conda: .
   name: fronts
-  version: 0.1.0
+  version: 0.2.0
   build: pyh4616a5c_0
   subdir: noarch
   depends:
@@ -1955,7 +1955,7 @@ packages:
   - python *
   license: CC0-1.0
   input:
-    hash: 6b2d01e69f3ef6924171421418001c38d8c1b45a8fa48a3699f3d232c6164b15
+    hash: a6b425f93993e9657c95718c5523178add35b98f811d43ca79a7eb5443af7a88
     globs:
     - pyproject.toml
 - pypi: https://files.pythonhosted.org/packages/5d/ed/c7895fd2fde7f3ee70d248175f9b6cdf792fb741ab92dc59cd9ef3bd241b/frozenlist-1.8.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl
