@@ -34,6 +34,7 @@ readme = "README.md"
 tensorflow = { extras = ["and-cuda"] }
 obstore = "*"
 s3fs = ">=2024.6.0"
+tf-keras = "*"
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]

@@ -515,7 +515,8 @@ def load_model(model_number: int, model_dir: str):
         raise TypeError(f"model_dir must be a string, received {type(model_dir)}")
     ####################################################################################################################
 
-    from tensorflow.keras.models import load_model as lm
+    import tensorflow.keras  # ty: ignore[unresolved-import]
+
     from fronts.model import custom_activations, custom_losses, custom_metrics
 
     model_path = f"{model_dir}/model_{model_number}/model_{model_number}.h5"
@@ -588,8 +589,16 @@ def load_model(model_number: int, model_dir: str):
         else:  # activation_string == "stanh"
             activation = custom_activations.STanh()
         custom_objects[activation.__class__.__name__] = activation
+    try:
+        return tensorflow.keras.models.load_model(
+            model_path, custom_objects=custom_objects
+        )
+    # If ValueError, layer incompabitility due to new Keras 3/TF 2.20 changes. Load
+    # tf_keras
+    except ValueError:
+        import tf_keras
 
-    return lm(model_path, custom_objects=custom_objects)
+        return tf_keras.models.load_model(model_path, custom_objects=custom_objects)
 
 
 if __name__ == "__main__":
