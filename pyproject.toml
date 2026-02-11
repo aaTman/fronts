@@ -54,6 +54,9 @@ xarray = ">=2024.3.0,<2025"
 dacite = ">=1.9.2,<2"
 scikit-image = ">=0.22.0"
 h5py = ">=3.11.0"
+xbatcher = ">=0.4.0,<0.5"
+zarr = ">=2.18.3,<3"
+gcsfs = ">=2026.2.0,<2027"
 
 [tool.pixi.system-requirements]
 libc = "2.17"
