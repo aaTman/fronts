@@ -13,6 +13,8 @@ Script version: 2025.5.3
 import numpy as np
 from fronts.utils import data_utils
 import tensorflow as tf
+import xarray as xr
+from typing import Callable
 
 Rd = 287.04  # Gas constant for dry air (J/kg/K)
 Rv = 461.5  # Gas constant for water vapor (J/kg/K)
