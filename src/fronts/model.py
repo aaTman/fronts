@@ -1,19 +1,42 @@
 import dataclasses
 from typing import Literal, Any
 from fronts.models import unets
-from fronts.models.losses import LossConfig
-from fronts.models.metrics import MetricsConfig
+from fronts.models.keras_builders import (
+    ConvRegularizerConfig,
+    BiasVectorConfig,
+    KernelConfig,
+    OptimizerConfig,
+)
 
 
 @dataclasses.dataclass
 class CoreUNetConfig:
-    activation: list[str]
-    batch_normalization: bool
-    num_filters: int
-    kernel_size: list[int]
-    depth: int
     loss: LossConfig
     metric: MetricConfig
+    optimizer: OptimizerConfig
+    convolution_activity_regularizer: ConvRegularizerConfig
+    bias_vector: BiasVectorConfig
+    kernel_matrix: KernelConfig
+    activation: list[str]
+    batch_normalization: bool
+    num_filters: list[int]
+    kernel_size: list[int]
+    depth: int
+    modules_per_node: int
+    padding: Literal["same", "valid"]
+    pool_size: tuple[int]
+    upsample_size: tuple[int]
+    bias: bool
+
+    def __post_init__(self):
+        if len(self.num_filters) != self.depth:
+            raise ValueError(
+                f"Length of num_filters ({len(self.num_filters)}) must match depth "
+                f"({self.depth})"
+            )
+        # TODO: modify pool size if needed to match len of dims
+        # TODO: match kernel size to depth as well
+        # TODO: match upsample_size as well
 
 
 @dataclasses.dataclass
@@ -23,32 +46,31 @@ class UNetEnsembleConfig(CoreUNetConfig):
 
 @dataclasses.dataclass
 class UNetPlusConfig(CoreUNetConfig):
-    activation: list[str]
-    batch_normalization: bool
     deep_supervision: bool
-    num_filters: int
 
 
 @dataclasses.dataclass
 class UNet2PlusConfig:
-    activation: list[str]
-    batch_normalization: bool
     deep_supervision: bool
-    num_filters: int
 
 
 @dataclasses.dataclass
 class UNet3PlusConfig(CoreUNetConfig):
+    deep_supervision: bool
     num_aggregate_filters: int
     full_scale_skip_connection_filters: int
+    first_encoder_connections: bool
 
 
 @dataclasses.dataclass
 class AttentionUNetConfig:
-    activation: list[str]
-    batch_normalization: bool
     deep_supervision: bool
-    num_filters: int
+
+    def __post_init__(self):
+        if len(self.upsample_size) > 0:
+            raise ValueError(
+                "AttentionUNet does not support upsample_size, use empty tuple."
+            )
 
 
 @dataclasses.dataclass

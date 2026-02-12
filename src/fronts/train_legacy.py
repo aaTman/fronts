@@ -168,57 +168,57 @@ if __name__ == "__main__":
 
     ### U-Net arguments ###
     parser.add_argument(
-        "--model_type",
+        "--model_type",  # registry
         type=str,
         help="Model type. Options are: unet, unet_ensemble, unet_plus, unet_2plus, unet_3plus, attention_unet.",
     )
     parser.add_argument(
-        "--activation",
+        "--activation",  # core
         type=str,
         help="Activation function to use in the model. Refer to utils.unet_utils.choose_activation_layer to see all available "
         "activation functions.",
     )
     parser.add_argument(
-        "--batch_normalization",
+        "--batch_normalization",  # core
         action="store_true",
         help="Use batch normalization in the model. This will place batch normalization layers after each convolution layer.",
     )
     parser.add_argument(
-        "--deep_supervision",
+        "--deep_supervision",  # plus, 2plus, 3plus
         action="store_true",
         help="Use deep supervision in the model. Deep supervision creates side outputs from the bottom encoder node and each decoder node.",
     )
     parser.add_argument(
-        "--filter_num",
+        "--filter_num",  # core
         type=int,
         nargs="+",
         help="Number of filters in each level of the U-Net. The number of arguments passed to --filter_num must be equal to the "
         "value passed to --levels.",
     )
     parser.add_argument(
-        "--filter_num_aggregate",
+        "--filter_num_aggregate",  # 3plus (as num_aggregate_filters)
         type=int,
         help="Number of filters in aggregated feature maps. This argument is only used in the U-Net 3+.",
     )
     parser.add_argument(
-        "--filter_num_skip",
+        "--filter_num_skip",  # 3plus (as full_scale_skip_connection_filters)
         type=int,
         help="Number of filters in full-scale skip connections in the U-Net 3+.",
     )
     parser.add_argument(
-        "--first_encoder_connections",
+        "--first_encoder_connections",  # 3plus
         action="store_true",
         help="Enable first encoder connections in the U-Net 3+.",
     )
     parser.add_argument(
-        "--kernel_size",
+        "--kernel_size",  # core
         type=int,
         nargs="+",
         help="Size of the convolution kernels. One integer can be passed to make the kernel dimensions have equal length (e.g. "
         "passing 3 has the same effect as passing 3 3 3 for 3-dimensional kernels.)",
     )
     parser.add_argument(
-        "--levels",
+        "--levels",  # core (as depth)
         type=int,
         help="Number of levels in the model, also known as the 'depth' of the model.",
     )
