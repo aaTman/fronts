@@ -16,7 +16,7 @@ import pickle
 import numpy as np
 from fronts.utils import file_manager
 import os
-from fronts.model import unets, custom_metrics, custom_losses
+from fronts.model import unets, metrics, losses
 import datetime
 from fronts.utils import misc, data_utils
 from glob import glob
@@ -895,8 +895,8 @@ if __name__ == "__main__":
     with tf.distribute.MirroredStrategy().scope():
         if not args["retrain"]:
             model = unet_model(input_shape, num_classes, **unet_kwargs)
-            loss_function = getattr(custom_losses, args["loss"][0])(**loss_args)
-            metric_function = getattr(custom_metrics, args["metric"][0])(**metric_args)
+            loss_function = getattr(losses, args["loss"][0])(**loss_args)
+            metric_function = getattr(metrics, args["metric"][0])(**metric_args)
             optimizer = getattr(tf.keras.optimizers, args["optimizer"][0])(
                 **optimizer_args
             )

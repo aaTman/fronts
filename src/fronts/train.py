@@ -160,7 +160,7 @@ class Trainer:
         validation_steps_per_epoch: int,
         callbacks: list = [],
         verbose: Literal["auto", 0, 1, 2] = "auto",
-        wandb_config: Optional[WandBConfig] = None,
+        wandb: Optional[WandBConfig] = None,
         repeat: bool = True,
         seed: int = 42,
     ) -> None:
@@ -184,7 +184,7 @@ class Trainer:
                 when training the model.
             verbose: "auto", 0, 1, or 2. Verbosity mode. 0 = silent, 1 = progress bar,
                 2 = one line per epoch. "auto" ~= 1. Defaults to "auto".
-            wandb_config: the Weights and Biases configuration object to use, if exists.
+            wandb: the Weights and Biases configuration object to use, if exists.
             repeat: whether or not the training dataset will repeat indefinitely.
                 Defaults to True. If True, training_steps_per_epoch will determine how
                 many batches will run per epoch.
@@ -194,7 +194,7 @@ class Trainer:
 
         """
         self.model = model
-        self.wandb_config = wandb_config
+        self.wandb = wandb
         self.data = data
         self.epochs = epochs
         self.validation_frequency = validation_frequency
@@ -205,11 +205,11 @@ class Trainer:
         self.callbacks = self.build_callbacks(callbacks)
         self.seed = seed
 
-    def train(self, model_config: dict) -> None:
+    def train(self, model: dict) -> None:
         """Triggers a keras training run using model.fit().
 
         Args:
-            model_config: the complete metadata of configuration of the model
+            model: the complete metadata of configuration of the model
         """
 
         # Set the seed for fitting the model
@@ -234,9 +234,9 @@ class Trainer:
         }
 
         # Use WandB if exists
-        if self.wandb_config:
-            wandb_init_config = self.wandb_config.build_init_config(model_config)
-            with wandb.init(**wandb_init_config) as _:  # ty: ignore[invalid-context-manager]
+        if self.wandb:
+            wandb_init = self.wandb.build_init(model)
+            with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
                 self.model.fit(**fit_args)
         else:
             self.model.fit(**fit_args)
@@ -253,8 +253,8 @@ class Trainer:
         Returns a list of 0 or more callbacks.
         """
         # If WandB is being used, add the callbacks in the dataclass.
-        if self.wandb_config:
-            callbacks.extend(self.wandb_config.build_all_callbacks())
+        if self.wandb:
+            callbacks.extend(self.wandb.build_all_callbacks())
         return callbacks
 
 
@@ -286,10 +286,10 @@ class TrainConfig:
             Defaults to 42.
     """
 
-    # model: ModelConfig
-    # data: DataConfig,
-    wandb_config: WandBConfig
-    callbacks_config: CallbacksConfig
+    model: ModelConfig
+    data: DataConfig
+    wandb: WandBConfig
+    callbacks: CallbacksConfig
     epochs: int
     training_steps_per_epoch: int
     validation_steps_per_epoch: int
@@ -307,13 +307,13 @@ class TrainConfig:
             model: the model to use for training.
             data: the ModelDataConfig which holds the prepared train, valid, and test
                 data.
-            wandb_config: the Weights and Biases configuration object to use, if exists.
+            wandb: the Weights and Biases configuration object to use, if exists.
             callbacks: optional list of callbacks (not including WandB callbacks) to use
                 when training the model.
 
         Returns a Trainer object that can be used to instantiate a training run.
         """
-        callbacks = self.callbacks_config.build()
+        callbacks = self.callbacks.build()
         trainer = Trainer(
             # TODO: add + build model and data code to TrainConfig
             model="",
@@ -324,7 +324,7 @@ class TrainConfig:
             validation_steps_per_epoch=self.validation_steps_per_epoch,
             callbacks=callbacks,
             verbose=self.verbose,
-            wandb_config=wandb_config,
+            wandb=wandb,
             repeat=self.repeat,
             seed=self.seed,
         )
@@ -403,4 +403,4 @@ if __name__ == "__main__":
     trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
 
     # Trigger training run
-    trainer.train(model_config=model_config)
+    trainer.train(model=model)

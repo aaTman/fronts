@@ -10,6 +10,8 @@ Script version: 2025.3.5
 """
 
 import tensorflow as tf
+import dataclasses
+from typing import Literal, Any
 
 
 def brier_skill_score(
@@ -253,3 +255,32 @@ def probability_of_detection(class_weights: list[int | float, ...] = None):
         return 1 - pod
 
     return pod_loss
+
+
+@dataclasses.dataclass
+class LossConfig:
+    loss: Literal[
+        "brier_skill_score", "critical_success_index", "fractions_skill_score"
+    ]
+    alpha: float
+    beta: float
+    class_weights: list[float]
+    config: dict[str, Any]
+
+    def build(self):
+        match self.loss:
+            case "brier_skill_score":
+                return brier_skill_score(
+                    alpha=self.alpha, beta=self.beta, class_weights=self.class_weights
+                )
+            case "critical_success_index":
+                return critical_success_index(
+                    alpha=self.alpha, beta=self.beta, class_weights=self.class_weights
+                )
+            case "fractions_skill_score":
+                return fractions_skill_score(
+                    mask_size=self.config["mask_size"],
+                    alpha=self.alpha,
+                    beta=self.beta,
+                    class_weights=self.class_weights,
+                )
