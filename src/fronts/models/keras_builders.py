@@ -21,7 +21,7 @@ class BaseConfig(Generic[T]):
     config: dict[str, Any]
 
     # Subclasses must define this
-    _registry: dict[str, type] = dataclasses.field(
+    registry: dict[str, type] = dataclasses.field(
         default_factory=dict, init=False, repr=False
     )
 
@@ -34,31 +34,75 @@ class BaseConfig(Generic[T]):
         Raises:
             ValueError: If the name is not in the registry.
         """
-        if self.name not in self._registry:
+        if self.name not in self.registry:
             raise ValueError(
                 f"Unsupported {self.__class__.__name__}: {self.name}. "
-                f"Valid options are: {list(self._registry.keys())}"
+                f"Valid options are: {list(self.registry.keys())}"
             )
 
-        cls = self._registry[self.name]
+        cls = self.registry[self.name]
         return cls(**self.config)
 
 
 @dataclasses.dataclass
-class ConvRegularizerConfig(BaseConfig[tf.keras.regularizers.Regularizer]):
-    """Regularizer configuration for training a model.
+class ConstraintConfig(BaseConfig[tf.keras.constraints.Constraint]):
+    """Generic constraint configuration for training a model.
+
+    Attributes:
+        name: the string name of the constraint to use.
+        config: a dictionary of keyword arguments to pass to the constraint constructor.
+        registry: a dictionary mapping string names to constraint classes.
+    """
+
+    registry = {
+        "max_norm": tf.keras.constraints.MaxNorm,
+        "min_max_norm": tf.keras.constraints.MinMaxNorm,
+        "non_neg": tf.keras.constraints.NonNeg,
+        "unit_norm": tf.keras.constraints.UnitNorm,
+    }
+
+
+@dataclasses.dataclass
+class InitializerConfig(BaseConfig[tf.keras.initializers.Initializer]):
+    """Initializer configuration for training a model.
+
+    Attributes:
+        name: the string name of the initializer to use.
+        config: a dictionary of keyword arguments to pass to the initializer constructor.
+    """
+
+    registry = {
+        "glorot_normal": tf.keras.initializers.GlorotNormal,
+        "glorot_uniform": tf.keras.initializers.GlorotUniform,
+        "he_normal": tf.keras.initializers.HeNormal,
+        "he_uniform": tf.keras.initializers.HeUniform,
+        "identity": tf.keras.initializers.Identity,
+        "lecun_normal": tf.keras.initializers.LecunNormal,
+        "lecun_uniform": tf.keras.initializers.LecunUniform,
+        "ones": tf.keras.initializers.Ones,
+        "orthogonal": tf.keras.initializers.Orthogonal,
+        "random_normal": tf.keras.initializers.RandomNormal,
+        "random_uniform": tf.keras.initializers.RandomUniform,
+        "truncated_normal": tf.keras.initializers.TruncatedNormal,
+        "variance_scaling": tf.keras.initializers.VarianceScaling,
+        "zeros": tf.keras.initializers.Zeros,
+    }
+
+
+@dataclasses.dataclass
+class RegularizerConfig(BaseConfig[tf.keras.regularizers.Regularizer]):
+    """Generic regularizer configuration for training a model.
 
     Attributes:
         name: the string name of the regularizer to use.
         config: a dictionary of keyword arguments to pass to the regularizer constructor.
     """
 
-    name: Literal["L1", "L2", "L1_L2"]
-
-    _registry = {
-        "L1": tf.keras.regularizers.L1,
-        "L2": tf.keras.regularizers.L2,
-        "L1_L2": tf.keras.regularizers.L1L2,
+    registry = {
+        "l1": tf.keras.regularizers.L1,
+        "l2": tf.keras.regularizers.L2,
+        "l1_l2": tf.keras.regularizers.L1L2,
+        "orthogonal_regularizer": tf.keras.regularizers.OrthogonalRegularizer,
     }
 
 
@@ -73,24 +117,8 @@ class OptimizerConfig(BaseConfig[tf.keras.optimizers.Optimizer]):
 
     name: Literal["Adam"]
 
-    _registry = {
+    registry = {
         "Adam": tf.keras.optimizers.Adam,
-    }
-
-
-@dataclasses.dataclass
-class BiasVectorConfig(BaseConfig[tf.keras.constraints]):
-    """Constraint configuration for bias vectors in a model.
-
-    Attributes:
-        name: the string name of the constraint to use.
-        config: a dictionary of keyword arguments to pass to the constraint constructor.
-    """
-
-    name: Literal["NonNeg"]
-
-    _registry = {
-        "NonNeg": tf.keras.constraints.NonNeg,
     }
 
 
@@ -136,7 +164,7 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
         "thresholded_relu",
     ]
 
-    _registry = {
+    registry = {
         "elliott": activations.Elliott,
         "elu": tf.keras.activations.elu,
         "exponential": tf.keras.activations.exponential,
@@ -168,3 +196,88 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
         "tanh": tf.keras.activations.tanh,
         "thresholded_relu": tf.keras.activations.thresholded_relu,
     }
+
+
+@dataclasses.dataclass
+class ConvOutputConfig:
+    """Convolution output config for training a model.
+
+    Attributes:
+        regularizer: a RegularizerConfig to apply to convolutional layer outputs.
+    """
+
+    regularizer: RegularizerConfig
+
+    def build(self):
+        """Builds the convolution output configuration.
+
+        Returns:
+            A dictionary of keyword arguments to pass to convolutional layer constructors.
+        """
+
+        regularizer_object = self.regularizer.build()
+        return regularizer_object
+
+
+@dataclasses.dataclass
+class BiasVectorConfig:
+    """Constraint configuration for bias vectors in a model.
+
+    Attributes:
+        constraint: a ConstraintConfig to apply to bias vectors.
+        initializer: an InitializerConfig to use for bias vectors.
+        regularizer: a RegularizerConfig to apply to bias vectors.
+    """
+
+    constraint: ConstraintConfig
+    initializer: InitializerConfig
+    regularizer: RegularizerConfig
+
+    def build(self):
+        """Builds the bias vector configuration.
+
+        Returns:
+            A dictionary of keyword arguments to pass to layer constructors for bias vectors.
+        """
+
+        constraint_object = self.constraint.build()
+        initializer_object = self.initializer.build()
+        regularizer_object = self.regularizer.build()
+
+        return {
+            "bias_constraint": constraint_object,
+            "bias_initializer": initializer_object,
+            "bias_regularizer": regularizer_object,
+        }
+
+
+@dataclasses.dataclass
+class KernelMatrixConfig:
+    """Constraint configuration for kernel matrices in a model.
+
+    Attributes:
+        constraint: a ConstraintConfig to apply to kernel matrices.
+        initializer: an InitializerConfig to use for kernel matrices.
+        regularizer: a RegularizerConfig to apply to kernel matrices.
+    """
+
+    constraint: ConstraintConfig
+    initializer: InitializerConfig
+    regularizer: RegularizerConfig
+
+    def build(self):
+        """Builds the kernel matrix configuration.
+
+        Returns:
+            A dictionary of keyword arguments to pass to layer constructors for kernel matrices.
+        """
+
+        constraint_object = self.constraint.build()
+        initializer_object = self.initializer.build()
+        regularizer_object = self.regularizer.build()
+
+        return {
+            "kernel_constraint": constraint_object,
+            "kernel_initializer": initializer_object,
+            "kernel_regularizer": regularizer_object,
+        }
