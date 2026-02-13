@@ -33,7 +33,7 @@ class ArgumentParser(argparse.ArgumentParser):
 
 if __name__ == "__main__":
     parser = ArgumentParser(fromfile_prefix_chars="@")
-
+    """
     ### WandB ###
     parser.add_argument(
         "--project",
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         "--name",
         type=str,
         help="WandB name for the current model run. If no name is specified, it will default to the model number (e.g. model_129482).",
-    )
+    )"""
 
     ### General arguments ###
     parser.add_argument(
@@ -69,7 +69,10 @@ if __name__ == "__main__":
         help="Number that the model will be assigned. If no argument is passed, a number will be automatically assigned based "
         "on the current date and time.",
     )
-    parser.add_argument(
+
+    # --------------------- will be created via era5/batch.py
+
+    """    parser.add_argument(
         "--tf_indirs",
         type=str,
         required=True,
@@ -77,8 +80,10 @@ if __name__ == "__main__":
         help="Directories for the TensorFlow datasets. One or two paths can be passed. If only one path is passed, then the "
         "training and validation datasets will be pulled from this path. If two paths are passed, the training dataset "
         "will be pulled from the first path and the validation dataset from the second.",
-    )
-    parser.add_argument(
+    )"""
+    # --------------------- handled in train.py or yaml config
+
+    """    parser.add_argument(
         "--epochs",
         type=int,
         required=True,
@@ -103,7 +108,7 @@ if __name__ == "__main__":
         default=np.random.randint(0, 2**31 - 1),
         help="Seed for the random number generators. If a model is being retrained with the --retrain flag, this argument "
         "will be overriden by the previous seed used to train that model.",
-    )
+    )"""
 
     ### GPU and hardware arguments ###
     parser.add_argument("--gpu_device", type=int, nargs="+", help="GPU device numbers.")
@@ -398,7 +403,8 @@ if __name__ == "__main__":
     )
 
     args = vars(parser.parse_args())
-
+    # --------------------- Seed in train.py
+    """ 
     # Set the random seed. After a model is trained, the same seed will be used in subsequent retraining sessions for the same model.
     seed = (
         pd.read_pickle(
@@ -409,29 +415,35 @@ if __name__ == "__main__":
         else args["seed"]
     )
     tf.keras.utils.set_random_seed(seed)
-
+    """
+    # --------------------- paths handled by data modules
+    """ 
     assert len(args["tf_indirs"]) < 3, (
         "Only 1 or 2 paths can be passed into --tf_indirs, received %d paths"
         % len(args["tf_indirs"])
     )
-
     if len(args["tf_indirs"]) == 1:
         args["tf_indirs"].append(args["tf_indirs"][0])
-
+    """
+    # --------------------- dataset properties handled dynamically with config
+    """
     train_dataset_properties = pd.read_pickle(
         "%s/dataset_properties.pkl" % args["tf_indirs"][0]
     )
     valid_dataset_properties = pd.read_pickle(
         "%s/dataset_properties.pkl" % args["tf_indirs"][1]
     )
+    """
 
-    if args["shuffle"] != "lazy" and args["shuffle"] != "full":
+    # --------------------- shuffle always happens regardless of arg
+    """    if args["shuffle"] != "lazy" and args["shuffle"] != "full":
         raise ValueError(
             "Unrecognized shuffling method: %s. Valid methods are 'lazy' or 'full'"
             % args["shuffle"]
-        )
+        )"""
 
-    # Check arguments that can only have a maximum length of 2
+    # --------------------- check irrelevant
+    """    # Check arguments that can only have a maximum length of 2   
     for arg in [
         "loss",
         "metric",
@@ -447,9 +459,11 @@ if __name__ == "__main__":
         if args[arg] is None:  # need this line in here because 'steps' can be None
             continue
         elif len(args[arg]) > 2:
-            raise ValueError("--%s can only take up to 2 arguments" % arg)
+            raise ValueError("--%s can only take up to 2 arguments" % arg)"""
 
-    ### Dictionary containing arguments that cannot be used for specific model types ###
+    # --------------------- applied within model building functions
+
+    """    ### Dictionary containing arguments that cannot be used for specific model types ###
     incompatible_args = {
         "unet": dict(deep_supervision=False, first_encoder_connections=False),
         "unet_ensemble": dict(deep_supervision=False, first_encoder_connections=False),
@@ -468,8 +482,11 @@ if __name__ == "__main__":
             raise ValueError(
                 f"--{arg} must be '{incompatible_args_for_model[arg]}' when the model type is {args['model_type']}"
             )
+    """
 
+    # --------------------- everything here should be dataclasses steered by yaml
     ### Convert keyword argument strings to dictionaries ###
+    """
     loss_args = (
         misc.string_arg_to_dict(args["loss"][1]) if len(args["loss"]) > 1 else dict()
     )
@@ -508,6 +525,7 @@ if __name__ == "__main__":
         if len(args["kernel_regularizer"]) > 1
         else dict()
     )
+    """
 
     # learning rate is part of the optimizer
     if args["learning_rate"] is not None:
