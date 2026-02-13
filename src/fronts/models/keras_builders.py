@@ -5,7 +5,7 @@ import tf.keras.optimizers
 import tf.keras.constraints
 import tf.keras.initializers
 import tf.keras.activations
-from fronts.models import activations
+from fronts.models import activations, losses, metrics
 
 T = TypeVar("T")
 
@@ -45,8 +45,8 @@ class BaseConfig(Generic[T]):
                 f"Valid options are: {list(self.registry.keys())}"
             )
 
-        cls = self.registry[self.name]
-        return cls(**self.config)
+        method = self.registry[self.name]
+        return method(**self.config)
 
 
 @dataclasses.dataclass
@@ -210,6 +210,63 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
             "swish": tf.keras.activations.swish,
             "tanh": tf.keras.activations.tanh,
             "thresholded_relu": tf.keras.activations.thresholded_relu,
+        }
+
+
+@dataclasses.dataclass
+class LossConfig(BaseConfig[tf.keras.losses.Loss]):
+    """Loss configuration for training a model.
+
+    Attributes:
+        name: the string name of the loss function to use.
+        config: a dictionary of keyword arguments to pass to the loss constructor.
+    """
+
+    name: Literal[
+        "brier_skill_score",
+        "critical_success_index",
+        "fractions_skill_score",
+        "probability_of_detection",
+    ]
+
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "brier_skill_score": losses.brier_skill_score,
+            "critical_success_index": losses.critical_success_index,
+            "fractions_skill_score": losses.fractions_skill_score,
+            "probability_of_detection": losses.probability_of_detection,
+        }
+
+
+@dataclasses.dataclass
+class MetricConfig(BaseConfig[tf.keras.metrics.Metric]):
+    """Metric configuration for training a model.
+
+    Attributes:
+        name: the string name of the metric to use.
+        config: a dictionary of keyword arguments to pass to the metric constructor.
+    """
+
+    name: Literal[
+        "accuracy",
+        "binary_accuracy",
+        "categorical_accuracy",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "mean_absolute_percentage_error",
+        "mean_squared_logarithmic_error",
+        "sparse_categorical_accuracy",
+    ]
+
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "brier_skill_score": metrics.brier_skill_score,
+            "critical_success_index": metrics.critical_success_index,
+            "fractions_skill_score": metrics.fractions_skill_score,
+            "heidke_skill_score": metrics.heidke_skill_score,
+            "probability_of_detection": metrics.probability_of_detection,
         }
 
 
