@@ -223,7 +223,7 @@ if __name__ == "__main__":
         help="Number of levels in the model, also known as the 'depth' of the model.",
     )
     parser.add_argument(
-        "--loss",
+        "--loss",  # core
         type=str,
         nargs="+",
         help="Loss function for the U-Net (arg 1), with keyword arguments (arg 2). Keyword arguments must be passed as a "
@@ -231,7 +231,7 @@ if __name__ == "__main__":
         "more than 2 arguments are passed.",
     )
     parser.add_argument(
-        "--metric",
+        "--metric",  # core
         type=str,
         nargs="+",
         help="Metric for evaluating the U-Net during training (arg 1), with keyword arguments (arg 2). Keyword arguments "
@@ -239,14 +239,14 @@ if __name__ == "__main__":
         "a ValueError if more than 2 arguments are passed.",
     )
     parser.add_argument(
-        "--modules_per_node",
+        "--modules_per_node",  # core
         type=int,
         default=5,
         help="Number of convolution modules in each node. A convolution module consists of a convolution layer followed by "
         "an optional batch normalization layer and an activation layer. (e.g. Conv3D -> BatchNormalization -> PReLU; Conv3D -> PReLU)",
     )
     parser.add_argument(
-        "--optimizer",
+        "--optimizer",  # core (OptimizerConfig)
         type=str,
         nargs="+",
         default=[
@@ -257,35 +257,35 @@ if __name__ == "__main__":
         "a ValueError if more than 2 arguments are passed.",
     )
     parser.add_argument(
-        "--padding",
+        "--padding",  # core
         type=str,
         default="same",
         help="Padding to use in the convolution layers. If 'same', then zero-padding will be added to the inputs such that the outputs "
         "of the layers will be the same shape as the inputs. If 'valid', no padding will be applied to the layers' inputs.",
     )
     parser.add_argument(
-        "--pool_size",
+        "--pool_size",  # core
         type=int,
         nargs="+",
         help="Pool size for the max pooling layers. One integer can be passed to make the pooling dimensions have equal length "
         "(e.g. passing 2 has the same effect as passing 2 2 2 for 3-dimensional max pooling.)",
     )
     parser.add_argument(
-        "--upsample_size",
+        "--upsample_size",  # core (excluded from attention_unet via excpetion)
         type=int,
         nargs="+",
         help="Upsampling factors for the up-sampling layers. One integer can be passed to make the factors have equal size "
         "(e.g. passing 2 has the same effect as passing 2 2 2 for 3-dimensional up-sampling.)",
     )
     parser.add_argument(
-        "--use_bias",
+        "--use_bias",  # core
         action="store_true",
         help="Use bias parameters in the convolution layers.",
     )
 
     ### Constraints, initializers, and regularizers ###
     parser.add_argument(
-        "--activity_regularizer",
+        "--activity_regularizer",  # ConvOutputConfig
         type=str,
         nargs="+",
         default=[
@@ -295,7 +295,7 @@ if __name__ == "__main__":
         "containing keyword arguments for the regularizer.",
     )
     parser.add_argument(
-        "--bias_constraint",
+        "--bias_constraint",  # BiasVectorConfig
         type=str,
         nargs="+",
         default=[
@@ -305,13 +305,13 @@ if __name__ == "__main__":
         "passed containing keyword arguments for the constraint.",
     )
     parser.add_argument(
-        "--bias_initializer",
+        "--bias_initializer",  # BiasVectorConfig
         type=str,
         default="zeros",
         help="Initializer for the bias vector in the Conv2D/Conv3D layers.",
     )
     parser.add_argument(
-        "--bias_regularizer",
+        "--bias_regularizer",  # BiasVectorConfig
         type=str,
         nargs="+",
         default=[
@@ -321,7 +321,7 @@ if __name__ == "__main__":
         "be passed containing keyword arguments for the regularizer.",
     )
     parser.add_argument(
-        "--kernel_constraint",
+        "--kernel_constraint",  # KernelMatrixConfig
         type=str,
         nargs="+",
         default=[
@@ -331,13 +331,13 @@ if __name__ == "__main__":
         "be passed containing keyword arguments for the constraint.",
     )
     parser.add_argument(
-        "--kernel_initializer",
+        "--kernel_initializer",  # KernelMatrixConfig
         type=str,
         default="glorot_uniform",
         help="Initializer for the kernel weights matrix in the Conv2D/Conv3D layers.",
     )
     parser.add_argument(
-        "--kernel_regularizer",
+        "--kernel_regularizer",  # KernelMatrixConfig
         type=str,
         nargs="+",
         default=[
