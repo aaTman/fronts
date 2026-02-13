@@ -21,9 +21,14 @@ class BaseConfig(Generic[T]):
     config: dict[str, Any]
 
     # Subclasses must define this
-    registry: dict[str, type] = dataclasses.field(
-        default_factory=dict, init=False, repr=False
-    )
+    @property
+    def registry(self) -> dict[str, type]:
+        """The registry mapping string names to classes.
+
+        Returns:
+            A dictionary mapping string names to classes that can be built by this config.
+        """
+        raise NotImplementedError("Subclasses must define a registry property.")
 
     def build(self) -> T:
         """Builds the object from the configuration.
@@ -54,12 +59,14 @@ class ConstraintConfig(BaseConfig[tf.keras.constraints.Constraint]):
         registry: a dictionary mapping string names to constraint classes.
     """
 
-    registry = {
-        "max_norm": tf.keras.constraints.MaxNorm,
-        "min_max_norm": tf.keras.constraints.MinMaxNorm,
-        "non_neg": tf.keras.constraints.NonNeg,
-        "unit_norm": tf.keras.constraints.UnitNorm,
-    }
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "max_norm": tf.keras.constraints.MaxNorm,
+            "min_max_norm": tf.keras.constraints.MinMaxNorm,
+            "non_neg": tf.keras.constraints.NonNeg,
+            "unit_norm": tf.keras.constraints.UnitNorm,
+        }
 
 
 @dataclasses.dataclass
@@ -71,22 +78,24 @@ class InitializerConfig(BaseConfig[tf.keras.initializers.Initializer]):
         config: a dictionary of keyword arguments to pass to the initializer constructor.
     """
 
-    registry = {
-        "glorot_normal": tf.keras.initializers.GlorotNormal,
-        "glorot_uniform": tf.keras.initializers.GlorotUniform,
-        "he_normal": tf.keras.initializers.HeNormal,
-        "he_uniform": tf.keras.initializers.HeUniform,
-        "identity": tf.keras.initializers.Identity,
-        "lecun_normal": tf.keras.initializers.LecunNormal,
-        "lecun_uniform": tf.keras.initializers.LecunUniform,
-        "ones": tf.keras.initializers.Ones,
-        "orthogonal": tf.keras.initializers.Orthogonal,
-        "random_normal": tf.keras.initializers.RandomNormal,
-        "random_uniform": tf.keras.initializers.RandomUniform,
-        "truncated_normal": tf.keras.initializers.TruncatedNormal,
-        "variance_scaling": tf.keras.initializers.VarianceScaling,
-        "zeros": tf.keras.initializers.Zeros,
-    }
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "glorot_normal": tf.keras.initializers.GlorotNormal,
+            "glorot_uniform": tf.keras.initializers.GlorotUniform,
+            "he_normal": tf.keras.initializers.HeNormal,
+            "he_uniform": tf.keras.initializers.HeUniform,
+            "identity": tf.keras.initializers.Identity,
+            "lecun_normal": tf.keras.initializers.LecunNormal,
+            "lecun_uniform": tf.keras.initializers.LecunUniform,
+            "ones": tf.keras.initializers.Ones,
+            "orthogonal": tf.keras.initializers.Orthogonal,
+            "random_normal": tf.keras.initializers.RandomNormal,
+            "random_uniform": tf.keras.initializers.RandomUniform,
+            "truncated_normal": tf.keras.initializers.TruncatedNormal,
+            "variance_scaling": tf.keras.initializers.VarianceScaling,
+            "zeros": tf.keras.initializers.Zeros,
+        }
 
 
 @dataclasses.dataclass
@@ -98,12 +107,14 @@ class RegularizerConfig(BaseConfig[tf.keras.regularizers.Regularizer]):
         config: a dictionary of keyword arguments to pass to the regularizer constructor.
     """
 
-    registry = {
-        "l1": tf.keras.regularizers.L1,
-        "l2": tf.keras.regularizers.L2,
-        "l1_l2": tf.keras.regularizers.L1L2,
-        "orthogonal_regularizer": tf.keras.regularizers.OrthogonalRegularizer,
-    }
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "l1": tf.keras.regularizers.L1,
+            "l2": tf.keras.regularizers.L2,
+            "l1_l2": tf.keras.regularizers.L1L2,
+            "orthogonal_regularizer": tf.keras.regularizers.OrthogonalRegularizer,
+        }
 
 
 @dataclasses.dataclass
@@ -117,9 +128,11 @@ class OptimizerConfig(BaseConfig[tf.keras.optimizers.Optimizer]):
 
     name: Literal["Adam"]
 
-    registry = {
-        "Adam": tf.keras.optimizers.Adam,
-    }
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "Adam": tf.keras.optimizers.Adam,
+        }
 
 
 @dataclasses.dataclass
@@ -164,38 +177,42 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
         "thresholded_relu",
     ]
 
-    registry = {
-        "elliott": activations.Elliott,
-        "elu": tf.keras.activations.elu,
-        "exponential": tf.keras.activations.exponential,
-        "gaussian": activations.Gaussian,
-        "gcu": activations.GCU,
-        "gelu": tf.keras.activations.gelu,
-        "hard_sigmoid": tf.keras.activations.hard_sigmoid,
-        "hexpo": activations.Hexpo,
-        "isigmoid": activations.ISigmoid,
-        "linear": tf.keras.activations.linear,
-        "lisht": activations.Lisht,
-        "prelu": tf.keras.layers.PReLU,
-        "psigmoid": activations.PSigmoid,
-        "ptanh": activations.PTanh,
-        "ptelu": activations.PTELU,
-        "relu": tf.keras.activations.relu,
-        "leaky_relu": tf.keras.layers.LeakyReLU,
-        "resech": activations.ReSech,
-        "selu": tf.keras.activations.selu,
-        "sigmoid": tf.keras.activations.sigmoid,
-        "smelu": activations.SmeLU,
-        "snake": activations.Snake,
-        "softmax": tf.keras.activations.softmax,
-        "softplus": tf.keras.activations.softplus,
-        "softsign": tf.keras.activations.softsign,
-        "srs": activations.SRS,
-        "stanh": activations.STanh,
-        "swish": tf.keras.activations.swish,
-        "tanh": tf.keras.activations.tanh,
-        "thresholded_relu": tf.keras.activations.thresholded_relu,
-    }
+    @property
+    def registry(self) -> dict[str, type]:
+        return dataclasses.field(
+            {
+                "elliott": activations.Elliott,
+                "elu": tf.keras.activations.elu,
+                "exponential": tf.keras.activations.exponential,
+                "gaussian": activations.Gaussian,
+                "gcu": activations.GCU,
+                "gelu": tf.keras.activations.gelu,
+                "hard_sigmoid": tf.keras.activations.hard_sigmoid,
+                "hexpo": activations.Hexpo,
+                "isigmoid": activations.ISigmoid,
+                "linear": tf.keras.activations.linear,
+                "lisht": activations.Lisht,
+                "prelu": tf.keras.layers.PReLU,
+                "psigmoid": activations.PSigmoid,
+                "ptanh": activations.PTanh,
+                "ptelu": activations.PTELU,
+                "relu": tf.keras.activations.relu,
+                "leaky_relu": tf.keras.layers.LeakyReLU,
+                "resech": activations.ReSech,
+                "selu": tf.keras.activations.selu,
+                "sigmoid": tf.keras.activations.sigmoid,
+                "smelu": activations.SmeLU,
+                "snake": activations.Snake,
+                "softmax": tf.keras.activations.softmax,
+                "softplus": tf.keras.activations.softplus,
+                "softsign": tf.keras.activations.softsign,
+                "srs": activations.SRS,
+                "stanh": activations.STanh,
+                "swish": tf.keras.activations.swish,
+                "tanh": tf.keras.activations.tanh,
+                "thresholded_relu": tf.keras.activations.thresholded_relu,
+            }
+        )
 
 
 @dataclasses.dataclass
