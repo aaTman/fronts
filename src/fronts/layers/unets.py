@@ -26,8 +26,11 @@ from tensorflow.keras.layers import (
     Concatenate,
     Input,
 )
-from fronts.models import keras_builders
+from fronts.utils import keras_builders
+from fronts import model
 import tensorflow as tf
+import dataclasses
+from typing import Literal
 
 
 def attention_gate(
@@ -2773,3 +2776,72 @@ def attention_unet(
     )
 
     return model
+
+
+@dataclasses.dataclass
+class UNet(model.ModelConfig):
+    pass
+
+
+@dataclasses.dataclass
+class UNetEnsemble:
+    num_models: int
+
+
+@dataclasses.dataclass
+class UNetPlus:
+    deep_supervision: bool
+
+
+@dataclasses.dataclass
+class UNet2Plus:
+    deep_supervision: bool
+
+
+@dataclasses.dataclass
+class UNet3Plus:
+    deep_supervision: bool
+    num_aggregate_filters: int
+    full_scale_skip_connection_filters: int
+    first_encoder_connections: bool
+
+
+@dataclasses.dataclass
+class AttentionUNet:
+    def __post_init__(self):
+        if len(self.upsample_size) > 0:
+            raise ValueError(
+                "AttentionUNet does not support upsample_size, use empty tuple."
+            )
+
+
+@dataclasses.dataclass
+class UNetRegistry(keras_builders.BaseConfig):
+    """Registry class for UNet models.
+
+    Attributes:
+        name: the string name of the UNet model to build. Must be one of "unet",
+        "unet_ensemble", "unet_plus", "unet_2plus", "unet_3plus", or "attention_unet".
+        config: a dictionary of keyword arguments to pass to the UNet.
+        registry: a dictionary mapping string names to UNet functions.
+    """
+
+    name: Literal[
+        "unet",
+        "unet_ensemble",
+        "unet_plus",
+        "unet_2plus",
+        "unet_3plus",
+        "attention_unet",
+    ]
+
+    @property
+    def registry(self) -> dict[str, type]:
+        return {
+            "unet": UNet,
+            "unet_ensemble": UNetEnsemble,
+            "unet_plus": UNetPlus,
+            "unet_2plus": UNet2Plus,
+            "unet_3plus": UNet3Plus,
+            "attention_unet": AttentionUNet,
+        }
