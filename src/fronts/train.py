@@ -9,6 +9,7 @@ from typing import Literal, Any, Optional, Union, TypeVar, Type
 import argparse
 import dacite
 import yaml
+from fronts.model import ModelConfig
 
 T = TypeVar("T")
 
@@ -287,16 +288,17 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    data: DataConfig
+    # need to build out data config module
+    # data: DataConfig
     wandb: WandBConfig
     callbacks: CallbacksConfig
     epochs: int
     training_steps_per_epoch: int
-    validation_steps_per_epoch: int
+    validation_steps_per_epoch: int | None
     validation_frequency: int
-    verbose: Literal["auto", 0, 1, 2] = "auto"
-    repeat: bool = True
-    seed: int = 42
+    verbose: Literal["auto", 0, 1, 2]
+    repeat: bool
+    seed: int
 
     def build(
         self,
@@ -375,16 +377,6 @@ if __name__ == "__main__":
     # Build the training configuration
     train_config = open_config_yaml_as_dataclass(
         path=args.train_config, config_class=TrainConfig, require=True
-    )
-
-    # Maybe build the WandB configuration
-    wandb_config = open_config_yaml_as_dataclass(
-        path=args.wandb_config, config_class=WandBConfig
-    )
-
-    # Maybe build the callback configuration
-    callbacks_config = open_config_yaml_as_dataclass(
-        path=args.callbacks_config, config_class=CallbacksConfig
     )
 
     # Load the data
