@@ -26,9 +26,8 @@ from tensorflow.keras.layers import (
     Concatenate,
     Input,
 )
-from tensorflow.keras import layers
+from fronts.models import keras_builders
 import tensorflow as tf
-from fronts.model import activations
 
 
 def attention_gate(
@@ -229,14 +228,8 @@ def convolution_module(
     ]:
         conv_kwargs[arg] = locals()[arg]
 
-    activation_layer = choose_activation_layer(
-        activation
-    )  # Choose activation layer for the convolution modules.
-
-    activation_kwargs = dict({})
-    if activation_layer == Activation:
-        activation_kwargs["activation"] = activation
-    elif activation in [
+    activation_kwargs = {}
+    if activation in [
         "prelu",
         "smelu",
         "snake",
@@ -253,17 +246,20 @@ def convolution_module(
             tensor
         )  # Perform convolution on the input tensor
 
+        activation_config = keras_builders.ActivationConfig(
+            name=activation, config=activation_kwargs
+        )
+        activation_layer = activation_config.build()
+
         if batch_normalization:
             batch_norm_tensor = BatchNormalization(
                 name=f"{name}_BatchNorm_{module + 1}"
             )(conv_tensor)  # Insert layer for batch normalization
-            activation_tensor = activation_layer(**activation_kwargs)(
+            activation_tensor = activation_layer(
                 batch_norm_tensor
             )  # Pass output tensor from BatchNormalization into the activation layer
         else:
             activation_tensor = activation_layer(
-                **activation_kwargs
-            )(
                 conv_tensor
             )  # Pass output tensor from the convolution layer into the activation layer.
 
@@ -898,8 +894,6 @@ def deep_supervision_side_output(
         tensor.shape
     )  # Number of dims in the tensor (including the first 'None' dimension for batch size)
 
-    activation_layer = choose_activation_layer(activation)
-
     if tensor_dims == 4:  # If the image is 2D
         conv_layer = Conv2D
         upsample_layer = UpSampling2D
@@ -992,9 +986,12 @@ def deep_supervision_side_output(
             tensor, axis=squeeze_axes
         )  # Squeeze the tensor and remove the dimension
 
-    sup_output = activation_layer(name=f"{name}_{activation}", activation=activation)(
-        tensor
-    )  # Final softmax output
+    activation_kwargs = {"name": f"{name}_{activation}"}
+    activation_config = keras_builders.ActivationConfig(
+        name=activation, config=activation_kwargs
+    )
+    activation_layer = activation_config.build()
+    sup_output = activation_layer(tensor)  # Final softmax output
 
     return sup_output
 
