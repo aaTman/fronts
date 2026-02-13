@@ -1,4 +1,87 @@
-wandb
+epochs: 5000
+training_steps_per_epoch: 30
+validation_steps_per_epoch:
+validation_frequency: 1
+verbose: 1
+repeat: true
+seed: 42
+
+model:
+  name: "unet_3plus"
+  batch_normalization: true
+  num_filters: 
+    - 16
+    - 32
+    - 64
+    - 128
+  kernel_size:
+    - 5
+    - 5
+    - 5
+  pool_size:
+    - 2
+    - 2
+    - 1
+  upsample_size:
+    - 2
+    - 2
+    - 1
+  depth: 4
+  modules_per_node: 2
+  padding: "same"
+  bias: true
+  loss:
+    name: "fractions_skill_score"
+    config:
+      mask_size:
+        - 3
+        - 3
+  metric:
+    name: "critical_success_index"
+    config:
+      class_weights:
+        - 0
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+  
+  optimizer:
+    name: "Adam"
+    config:
+      beta_1: 0.9
+      beta_2: 0.999
+
+  convolution_activity_regularizer:
+    regularizer:
+
+  bias_vector:
+    constraint:
+    initializer: 
+      name: "zeros"
+      config:
+    regularizer:
+  
+  kernel_matrix:
+    constraint:
+    initializer: 
+      name: "glorot_uniform"
+      config:
+    regularizer:
+  
+  activation:
+    name: "gelu"
+    config:
+  
+
+
+
+
+
+data:
+
+wandb:
   project_name: 'fronts'
   model_run_name: '1702_retrain'
   # -- Optional parameters -- 
@@ -7,7 +90,7 @@ wandb
   # api_key: 
   # wandb_filepath:
 
-train:
+callbacks:
   activation: gelu
   activity_regularizer: 
   batch_normalization: True
@@ -17,7 +100,4 @@ train:
   bias_regularizer:
   classes: 6
   learning_rate: 0.0001
-
-validation:
-  batch_size: 64
 
