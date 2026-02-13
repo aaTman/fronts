@@ -179,40 +179,38 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
 
     @property
     def registry(self) -> dict[str, type]:
-        return dataclasses.field(
-            {
-                "elliott": activations.Elliott,
-                "elu": tf.keras.activations.elu,
-                "exponential": tf.keras.activations.exponential,
-                "gaussian": activations.Gaussian,
-                "gcu": activations.GCU,
-                "gelu": tf.keras.activations.gelu,
-                "hard_sigmoid": tf.keras.activations.hard_sigmoid,
-                "hexpo": activations.Hexpo,
-                "isigmoid": activations.ISigmoid,
-                "linear": tf.keras.activations.linear,
-                "lisht": activations.Lisht,
-                "prelu": tf.keras.layers.PReLU,
-                "psigmoid": activations.PSigmoid,
-                "ptanh": activations.PTanh,
-                "ptelu": activations.PTELU,
-                "relu": tf.keras.activations.relu,
-                "leaky_relu": tf.keras.layers.LeakyReLU,
-                "resech": activations.ReSech,
-                "selu": tf.keras.activations.selu,
-                "sigmoid": tf.keras.activations.sigmoid,
-                "smelu": activations.SmeLU,
-                "snake": activations.Snake,
-                "softmax": tf.keras.activations.softmax,
-                "softplus": tf.keras.activations.softplus,
-                "softsign": tf.keras.activations.softsign,
-                "srs": activations.SRS,
-                "stanh": activations.STanh,
-                "swish": tf.keras.activations.swish,
-                "tanh": tf.keras.activations.tanh,
-                "thresholded_relu": tf.keras.activations.thresholded_relu,
-            }
-        )
+        return {
+            "elliott": activations.Elliott,
+            "elu": tf.keras.activations.elu,
+            "exponential": tf.keras.activations.exponential,
+            "gaussian": activations.Gaussian,
+            "gcu": activations.GCU,
+            "gelu": tf.keras.activations.gelu,
+            "hard_sigmoid": tf.keras.activations.hard_sigmoid,
+            "hexpo": activations.Hexpo,
+            "isigmoid": activations.ISigmoid,
+            "linear": tf.keras.activations.linear,
+            "lisht": activations.Lisht,
+            "prelu": tf.keras.layers.PReLU,
+            "psigmoid": activations.PSigmoid,
+            "ptanh": activations.PTanh,
+            "ptelu": activations.PTELU,
+            "relu": tf.keras.activations.relu,
+            "leaky_relu": tf.keras.layers.LeakyReLU,
+            "resech": activations.ReSech,
+            "selu": tf.keras.activations.selu,
+            "sigmoid": tf.keras.activations.sigmoid,
+            "smelu": activations.SmeLU,
+            "snake": activations.Snake,
+            "softmax": tf.keras.activations.softmax,
+            "softplus": tf.keras.activations.softplus,
+            "softsign": tf.keras.activations.softsign,
+            "srs": activations.SRS,
+            "stanh": activations.STanh,
+            "swish": tf.keras.activations.swish,
+            "tanh": tf.keras.activations.tanh,
+            "thresholded_relu": tf.keras.activations.thresholded_relu,
+        }
 
 
 @dataclasses.dataclass
@@ -298,3 +296,35 @@ class KernelMatrixConfig:
             "kernel_initializer": initializer_object,
             "kernel_regularizer": regularizer_object,
         }
+
+
+class ConvOutput:
+    def __init__(
+        self,
+        regularizer: tf.keras.regularizers.Regularizer,
+    ):
+        self.regularizer = regularizer
+
+
+class KernelMatrix:
+    def __init__(
+        self,
+        constraint: tf.keras.constraints.Constraint,
+        initializer: tf.keras.initializers.Initializer,
+        regularizer: tf.keras.regularizers.Regularizer,
+    ):
+        self.constraint = constraint
+        self.initializer = initializer
+        self.regularizer = regularizer
+
+
+class BiasVector:
+    def __init__(
+        self,
+        constraint: tf.keras.constraints.Constraint,
+        initializer: tf.keras.initializers.Initializer,
+        regularizer: tf.keras.regularizers.Regularizer,
+    ):
+        self.constraint = constraint
+        self.initializer = initializer
+        self.regularizer = regularizer
