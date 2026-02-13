@@ -231,7 +231,7 @@ class ConvOutputConfig:
         """
 
         regularizer_object = self.regularizer.build()
-        return regularizer_object
+        return ConvOutput(activity_regularizer=regularizer_object)
 
 
 @dataclasses.dataclass
@@ -244,9 +244,9 @@ class BiasVectorConfig:
         regularizer: a RegularizerConfig to apply to bias vectors.
     """
 
-    constraint: ConstraintConfig
+    constraint: ConstraintConfig | None
     initializer: InitializerConfig
-    regularizer: RegularizerConfig
+    regularizer: RegularizerConfig | None
 
     def build(self):
         """Builds the bias vector configuration.
@@ -255,15 +255,15 @@ class BiasVectorConfig:
             A dictionary of keyword arguments to pass to layer constructors for bias vectors.
         """
 
-        constraint_object = self.constraint.build()
+        constraint_object = self.constraint.build() if not None else None
         initializer_object = self.initializer.build()
-        regularizer_object = self.regularizer.build()
+        regularizer_object = self.regularizer.build() if not None else None
 
-        return {
-            "bias_constraint": constraint_object,
-            "bias_initializer": initializer_object,
-            "bias_regularizer": regularizer_object,
-        }
+        return BiasVector(
+            bias_constraint=constraint_object,
+            bias_initializer=initializer_object,
+            bias_regularizer=regularizer_object,
+        )
 
 
 @dataclasses.dataclass
@@ -276,9 +276,9 @@ class KernelMatrixConfig:
         regularizer: a RegularizerConfig to apply to kernel matrices.
     """
 
-    constraint: ConstraintConfig
+    constraint: ConstraintConfig | None
     initializer: InitializerConfig
-    regularizer: RegularizerConfig
+    regularizer: RegularizerConfig | None
 
     def build(self):
         """Builds the kernel matrix configuration.
@@ -287,44 +287,44 @@ class KernelMatrixConfig:
             A dictionary of keyword arguments to pass to layer constructors for kernel matrices.
         """
 
-        constraint_object = self.constraint.build()
+        constraint_object = self.constraint.build() if not None else None
         initializer_object = self.initializer.build()
-        regularizer_object = self.regularizer.build()
+        regularizer_object = self.regularizer.build() if not None else None
 
-        return {
-            "kernel_constraint": constraint_object,
-            "kernel_initializer": initializer_object,
-            "kernel_regularizer": regularizer_object,
-        }
+        return KernelMatrix(
+            kernel_constraint=constraint_object,
+            kernel_initializer=initializer_object,
+            kernel_regularizer=regularizer_object,
+        )
 
 
 class ConvOutput:
     def __init__(
         self,
-        regularizer: tf.keras.regularizers.Regularizer,
+        activity_regularizer: tf.keras.regularizers.Regularizer,
     ):
-        self.regularizer = regularizer
+        self.activity_regularizer = activity_regularizer
 
 
 class KernelMatrix:
     def __init__(
         self,
-        constraint: tf.keras.constraints.Constraint,
-        initializer: tf.keras.initializers.Initializer,
-        regularizer: tf.keras.regularizers.Regularizer,
+        kernel_constraint: tf.keras.constraints.Constraint | None,
+        kernel_initializer: tf.keras.initializers.Initializer,
+        kernel_regularizer: tf.keras.regularizers.Regularizer | None,
     ):
-        self.constraint = constraint
-        self.initializer = initializer
-        self.regularizer = regularizer
+        self.kernel_constraint = kernel_constraint
+        self.kernel_initializer = kernel_initializer
+        self.kernel_regularizer = kernel_regularizer
 
 
 class BiasVector:
     def __init__(
         self,
-        constraint: tf.keras.constraints.Constraint,
-        initializer: tf.keras.initializers.Initializer,
-        regularizer: tf.keras.regularizers.Regularizer,
+        bias_constraint: tf.keras.constraints.Constraint | None,
+        bias_initializer: tf.keras.initializers.Initializer,
+        bias_regularizer: tf.keras.regularizers.Regularizer | None,
     ):
-        self.constraint = constraint
-        self.initializer = initializer
-        self.regularizer = regularizer
+        self.bias_constraint = bias_constraint
+        self.bias_initializer = bias_initializer
+        self.bias_regularizer = bias_regularizer
