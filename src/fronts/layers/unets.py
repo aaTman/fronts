@@ -29,7 +29,6 @@ from fronts.layers import (
     attention_gate,
     aggregated_feature_map,
 )
-from fronts import model
 import dataclasses
 from typing import Literal
 
