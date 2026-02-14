@@ -1,7 +1,7 @@
 import dataclasses
 from typing import Literal
-from fronts.models.unets import UNetRegistry
-from fronts.models.keras_builders import (
+from fronts.layers.unets import UNetRegistry
+from fronts.utils.keras_builders import (
     ConvOutputConfig,
     BiasVectorConfig,
     KernelMatrixConfig,
@@ -80,6 +80,7 @@ class Model:
         bias_vector_config: BiasVectorConfig,
         kernel_matrix_config: KernelMatrixConfig,
         activation_config: ActivationConfig,
+        output_activation_config: ActivationConfig,
         batch_normalization: bool,
         num_filters: list[int],
         kernel_size: list[int],
@@ -100,6 +101,7 @@ class Model:
         self.bias_vector_config = bias_vector_config
         self.kernel_matrix_config = kernel_matrix_config
         self.activation_config = activation_config
+        self.output_activation_config = output_activation_config
         self.batch_normalization = batch_normalization
         self.num_filters = num_filters
         self.kernel_size = kernel_size

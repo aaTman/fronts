@@ -5,7 +5,7 @@ import tf.keras.optimizers
 import tf.keras.constraints
 import tf.keras.initializers
 import tf.keras.activations
-from fronts.models import activations, losses, metrics
+from fronts.layers import activations, losses, metrics
 
 T = TypeVar("T")
 
