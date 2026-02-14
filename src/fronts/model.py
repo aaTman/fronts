@@ -43,8 +43,7 @@ class ModelConfig:
 
     def build(self):
         """Builds the UNet model based on the configuration."""
-        self.model = UNetRegistry(name=self.name)
-        return self.model(
+        model = Model(
             name=self.name,
             convolution_activity_regularizer=self.convolution_activity_regularizer,
             bias_vector=self.bias_vector,
@@ -60,6 +59,7 @@ class ModelConfig:
             upsample_size=self.upsample_size,
             bias=self.bias,
         )
+        return model
 
 
 class Model:
@@ -125,33 +125,48 @@ class Model:
         self.bias_vector = self.bias_vector_config.build()
         self.kernel_matrix = self.kernel_matrix_config.build()
         self.activation = self.activation_config.build()
+        self.output_activation = self.output_activation_config.build()
         # TODO: input_shape and num_classes
         # TODO: modify pool size if needed to match len of dims
         # TODO: match kernel size to depth as well
         # TODO: match upsample_size as well
 
         # Build config to match arg names in the unet functions
-        def build_model(self):
+        def build(self):
+            self.squeeze_axes = determine_squeeze_axes()
+            self.shared_axes = determine_shared_axes()
             """Builds the model based on the configuration."""
-            return self.model.build(
-                input_shape=(
-                    None,
-                    None,
-                    None,
-                    1,
-                ),  # Placeholder, should be set properly
-                num_classes=1,  # Placeholder, should be set properly
-                num_filters=self.num_filters,
-                kernel_size=self.kernel_size,
-                depth=self.depth,
-                modules_per_node=self.modules_per_node,
-                padding=self.padding,
-                pool_size=self.pool_size,
-                upsample_size=self.upsample_size,
-                bias=self.bias,
-                activity_regularizer=self.activity_regularizer,
-                bias_vector=self.bias_vector,
-                kernel_matrix=self.kernel_matrix,
-                activation=self.activation,
-                batch_normalization=self.batch_normalization,
-            )
+            self.config = {
+                "input_shape": self.input_shape,
+                "num_classes": self.num_classes,
+                "pool_size": self.pool_size,
+                "upsample_size": self.upsample_size,
+                "levels": self.depth,
+                "filter_num": self.filter_num,
+                "kernel_size": self.kernel_size,
+                "squeeze_axes": self.squeeze_axes,
+                "shared_axes": self.shared_axes,
+                "modules_per_node": self.modules_per_node,
+                "batch_normalization": self.batch_normalization,
+                "activation": self.activation,
+                "output_activation": self.output_activation,
+                "padding": self.padding,
+                "use_bias": self.use_bias,
+                "kernel_initializer": self.kernel_matrix.kernel_initializer,
+                "bias_initializer": self.bias_vector.bias_initializer,
+                "kernel_regularizer": self.kernel_matrix.kernel_regularizer,
+                "bias_regularizer": self.bias_vector.bias_regularizer,
+                "activity_regularizer": self.activity_regularizer.activity_regularizer,
+                "kernel_constraint": self.kernel_matrix.kernel_constraint,
+                "bias_constraint": self.bias_vector.bias_constraint,
+            }
+            output_model = UNetRegistry(name=self.name, config=self.config).build()
+            return output_model
+
+
+def determine_squeeze_axes() -> int | None:
+    pass
+
+
+def determine_shared_axes() -> int | None:
+    pass
