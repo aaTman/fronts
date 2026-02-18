@@ -91,13 +91,12 @@ wandb:
   # wandb_filepath:
 
 callbacks:
-  activation: gelu
-  activity_regularizer: 
-  batch_normalization: True
-  batch_sizes: 64
-  bias_constraint:
-  bias_initializer: zeros
-  bias_regularizer:
-  classes: 6
-  learning_rate: 0.0001
+  monitor: "val_loss"
+  verbose: 1
+  save_best_only: true
+  save_weights_only: false
+  save_freq: "epoch"
+  # model_checkpoint_path:
+  # csv_logger_path:
+  # patience:
 

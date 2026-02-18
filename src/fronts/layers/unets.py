@@ -162,7 +162,7 @@ class UNet:
             "bias_constraint",
             "shared_axes",
         ]:
-            self.module_kwargs[arg] = locals()[arg]
+            self.module_kwargs[arg] = getattr(self, arg)
 
         # MaxPooling keyword arguments
         self.pool_kwargs = {"pool_size": self.pool_size}
@@ -185,7 +185,7 @@ class UNet:
             "upsample_size",
             "shared_axes",
         ]:
-            self.upsample_kwargs[arg] = locals()[arg]
+            self.upsample_kwargs[arg] = getattr(self, arg)
 
         # Keyword arguments for the deep supervision output in the final decoder node
         self.supervision_kwargs = dict({})
@@ -202,7 +202,7 @@ class UNet:
             "squeeze_axes",
             "num_classes",
         ]:
-            self.supervision_kwargs[arg] = locals()[arg]
+            self.supervision_kwargs[arg] = getattr(self, arg)
 
     def build(self):
         self.supervision_kwargs["activation"] = self.output_activation
@@ -1041,7 +1041,7 @@ class UNet3Plus(UNet):
             "bias_constraint",
             "shared_axes",
         ]:
-            module_kwargs[arg] = locals()[arg]
+            module_kwargs[arg] = getattr(self, arg)
         module_kwargs["num_modules"] = self.modules_per_node
 
         pool_kwargs = {"pool_size": self.pool_size}
@@ -1065,10 +1065,10 @@ class UNet3Plus(UNet):
             "bias_constraint",
             "shared_axes",
         ]:
-            upsample_kwargs[arg] = locals()[arg]
-            conventional_kwargs[arg] = locals()[arg]
-            full_scale_kwargs[arg] = locals()[arg]
-            aggregated_kwargs[arg] = locals()[arg]
+            upsample_kwargs[arg] = getattr(self, arg)
+            conventional_kwargs[arg] = getattr(self, arg)
+            full_scale_kwargs[arg] = getattr(self, arg)
+            aggregated_kwargs[arg] = getattr(self, arg)
 
         conventional_kwargs["filters"] = filter_num_skip
         upsample_kwargs["filters"] = filter_num_skip
@@ -1092,7 +1092,7 @@ class UNet3Plus(UNet):
             "bias_constraint",
             "upsample_size",
         ]:
-            supervision_kwargs[arg] = locals()[arg]
+            supervision_kwargs[arg] = getattr(self, arg)
         supervision_kwargs["activation"] = self.output_activation
         supervision_kwargs["use_bias"] = True
 

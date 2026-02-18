@@ -1,10 +1,6 @@
 import dataclasses
 from typing import Literal, Any, TypeVar, Generic
-import tf.keras.regularizers
-import tf.keras.optimizers
-import tf.keras.constraints
-import tf.keras.initializers
-import tf.keras.activations
+import tensorflow as tf
 from fronts.layers import activations, losses, metrics
 
 T = TypeVar("T")
@@ -249,14 +245,11 @@ class MetricConfig(BaseConfig[tf.keras.metrics.Metric]):
     """
 
     name: Literal[
-        "accuracy",
-        "binary_accuracy",
-        "categorical_accuracy",
-        "mean_squared_error",
-        "mean_absolute_error",
-        "mean_absolute_percentage_error",
-        "mean_squared_logarithmic_error",
-        "sparse_categorical_accuracy",
+        "brier_skill_score",
+        "critical_success_index",
+        "fractions_skill_score",
+        "heidke_skill_score",
+        "probability_of_detection",
     ]
 
     @property
@@ -278,7 +271,7 @@ class ConvOutputConfig:
         regularizer: a RegularizerConfig to apply to convolutional layer outputs.
     """
 
-    regularizer: RegularizerConfig
+    regularizer: RegularizerConfig | None
 
     def build(self):
         """Builds the convolution output configuration.
@@ -287,7 +280,7 @@ class ConvOutputConfig:
             A dictionary of keyword arguments to pass to convolutional layer constructors.
         """
 
-        regularizer_object = self.regularizer.build()
+        regularizer_object = self.regularizer.build() if self.regularizer is not None else None
         return ConvOutput(activity_regularizer=regularizer_object)
 
 
@@ -312,9 +305,9 @@ class BiasVectorConfig:
             A dictionary of keyword arguments to pass to layer constructors for bias vectors.
         """
 
-        constraint_object = self.constraint.build() if not None else None
+        constraint_object = self.constraint.build() if self.constraint is not None else None
         initializer_object = self.initializer.build()
-        regularizer_object = self.regularizer.build() if not None else None
+        regularizer_object = self.regularizer.build() if self.regularizer is not None else None
 
         return BiasVector(
             bias_constraint=constraint_object,
@@ -344,9 +337,9 @@ class KernelMatrixConfig:
             A dictionary of keyword arguments to pass to layer constructors for kernel matrices.
         """
 
-        constraint_object = self.constraint.build() if not None else None
+        constraint_object = self.constraint.build() if self.constraint is not None else None
         initializer_object = self.initializer.build()
-        regularizer_object = self.regularizer.build() if not None else None
+        regularizer_object = self.regularizer.build() if self.regularizer is not None else None
 
         return KernelMatrix(
             kernel_constraint=constraint_object,

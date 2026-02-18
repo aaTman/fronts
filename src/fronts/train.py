@@ -159,7 +159,7 @@ class Trainer:
         validation_frequency: int,
         training_steps_per_epoch: int,
         validation_steps_per_epoch: int,
-        callbacks: list = [],
+        callbacks: list = None,
         verbose: Literal["auto", 0, 1, 2] = "auto",
         wandb: Optional[WandBConfig] = None,
         repeat: bool = True,
@@ -203,7 +203,7 @@ class Trainer:
         self.validation_steps_per_epoch = validation_steps_per_epoch
         self.verbose = verbose
         self.repeat = repeat
-        self.callbacks = self.build_callbacks(callbacks)
+        self.callbacks = self.build_callbacks(callbacks or [])
         self.seed = seed
 
     def train(self, model: dict) -> None:
@@ -236,7 +236,7 @@ class Trainer:
 
         # Use WandB if exists
         if self.wandb:
-            wandb_init = self.wandb.build_init(model)
+            wandb_init = self.wandb.build_init_config(model)
             with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
                 self.model.fit(**fit_args)
         else:
@@ -326,7 +326,7 @@ class TrainConfig:
             validation_steps_per_epoch=self.validation_steps_per_epoch,
             callbacks=callbacks,
             verbose=self.verbose,
-            wandb=wandb,
+            wandb=self.wandb,
             repeat=self.repeat,
             seed=self.seed,
         )
@@ -347,7 +347,7 @@ def open_config_yaml_as_dataclass(
 
     Returns either None or the dataclass if path is provided.
     """
-    if path and not require:
+    if path:
         with open(file=path) as f:
             config_yaml = yaml.safe_load(f)
         _class_instance = dacite.from_dict(data_class=config_class, data=config_yaml)
@@ -376,7 +376,7 @@ if __name__ == "__main__":
 
     # Build the training configuration
     train_config = open_config_yaml_as_dataclass(
-        path=args.train_config, config_class=TrainConfig, require=True
+        path=args.train_config_path, config_class=TrainConfig, require=True
     )
 
     # Load the data
