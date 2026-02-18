@@ -9,23 +9,10 @@ seed: 42
 model:
   name: "unet_3plus"
   batch_normalization: true
-  num_filters: 
-    - 16
-    - 32
-    - 64
-    - 128
-  kernel_size:
-    - 5
-    - 5
-    - 5
-  pool_size:
-    - 2
-    - 2
-    - 1
-  upsample_size:
-    - 2
-    - 2
-    - 1
+  num_filters: [16, 32, 64, 128]
+  kernel_size: [5, 5, 5]
+  pool_size: [2, 2, 1]
+  upsample_size: [2, 2, 1]
   depth: 4
   modules_per_node: 2
   padding: "same"
@@ -33,19 +20,11 @@ model:
   loss:
     name: "fractions_skill_score"
     config:
-      mask_size:
-        - 3
-        - 3
+      mask_size: [3, 3]
   metric:
     name: "critical_success_index"
     config:
-      class_weights:
-        - 0
-        - 1
-        - 1
-        - 1
-        - 1
-        - 1
+      class_weights: [0, 1, 1, 1, 1, 1]
   
   optimizer:
     name: "Adam"
