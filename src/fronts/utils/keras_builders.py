@@ -186,7 +186,7 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
             "hexpo": activations.Hexpo,
             "isigmoid": activations.ISigmoid,
             "linear": tf.keras.activations.linear,
-            "lisht": activations.Lisht,
+            "lisht": activations.LiSHT,
             "prelu": tf.keras.layers.PReLU,
             "psigmoid": activations.PSigmoid,
             "ptanh": activations.PTanh,

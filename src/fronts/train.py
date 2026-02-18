@@ -35,7 +35,7 @@ class WandBConfig:
     model_run_name: str
     log_frequency: int = 1
     upload_checkpoints: bool = False
-    api_key: str = os.environ["WANDB_KEY"]
+    api_key: str = os.environ.get("WANDB_KEY", "")
     wandb_filepath: str = "models"
 
     def __post_init__(self):
@@ -350,7 +350,11 @@ def open_config_yaml_as_dataclass(
     if path:
         with open(file=path) as f:
             config_yaml = yaml.safe_load(f)
-        _class_instance = dacite.from_dict(data_class=config_class, data=config_yaml)
+        _class_instance = dacite.from_dict(
+            data_class=config_class,
+            data=config_yaml,
+            config=dacite.Config(cast=[tuple], check_types=False),
+        )
         return _class_instance
     elif require:
         raise ValueError("Path must be included when require is True.")
