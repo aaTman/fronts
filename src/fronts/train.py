@@ -5,11 +5,13 @@ import os
 import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
+import datetime
 from typing import Literal, Any, Optional, Union, TypeVar, Type
 import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
+from fronts.data.config import DataConfig
 
 T = TypeVar("T")
 
@@ -288,8 +290,6 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    # need to build out data config module
-    # data: DataConfig
     wandb: WandBConfig
     callbacks: CallbacksConfig
     epochs: int
@@ -299,6 +299,7 @@ class TrainConfig:
     verbose: Literal["auto", 0, 1, 2]
     repeat: bool
     seed: int
+    data: Optional[DataConfig] = None
 
     def build(
         self,
@@ -316,10 +317,11 @@ class TrainConfig:
         Returns a Trainer object that can be used to instantiate a training run.
         """
         callbacks = self.callbacks.build()
+        model_data = self.data.build() if self.data is not None else ""
         trainer = Trainer(
-            # TODO: add + build model and data code to TrainConfig
+            # TODO: build model from ModelConfig
             model="",
-            data="",
+            data=model_data,
             epochs=self.epochs,
             validation_frequency=self.validation_frequency,
             training_steps_per_epoch=self.training_steps_per_epoch,
@@ -353,7 +355,7 @@ def open_config_yaml_as_dataclass(
         _class_instance = dacite.from_dict(
             data_class=config_class,
             data=config_yaml,
-            config=dacite.Config(cast=[tuple], check_types=False),
+            config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
         )
         return _class_instance
     elif require:

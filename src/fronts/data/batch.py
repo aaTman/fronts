@@ -88,8 +88,8 @@ class BatchGeneratorConfig:
         target_dtype: The data type for the target batches. Defaults to tf.float32.
     """
 
-    input_sizes: Optional[tuple[int]] = None
-    target_sizes: Optional[tuple[int]] = None
+    input_sizes: Optional[dict[str, int]] = None
+    target_sizes: Optional[dict[str, int]] = None
     prefetch_number: int = 3
     preload_batch: bool = False
     input_dtype = tf.float32

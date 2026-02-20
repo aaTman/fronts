@@ -59,6 +59,49 @@ model:
 
 
 data:
+  train_years: [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019]
+  val_years: [2020]
+  test_years: [2021]
+  shuffle: true
+  normalization_method: "standard"
+
+  era5:
+    domain_extent: [-140.0, -60.0, 20.0, 60.0]
+    # Use canonical (pressure-level) names for variables that have both surface
+    # and pressure-level representations.  Surface-only variables (e.g.
+    # "mean_sea_level_pressure") are listed here directly.
+    # The mapping from pressure-level name to surface name is defined in
+    # fronts.data.config.SURFACE_VARIABLE_MAP and applied automatically when
+    # "surface" appears in the levels list.
+    variables:
+      - "temperature"            # surface counterpart: 2m_temperature
+      - "specific_humidity"      # surface counterpart: surface_specific_humidity
+      - "u_component_of_wind"    # surface counterpart: 10m_u_component_of_wind
+      - "v_component_of_wind"    # surface counterpart: 10m_v_component_of_wind
+      - "mean_sea_level_pressure"  # surface-only
+    # levels may contain "surface" and/or integer hPa values in any order.
+    # "surface" triggers loading of the surface counterpart for each variable.
+    levels: ["surface", 1000, 950, 900, 850]
+    store: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+    chunks:
+      time: 48
+    consolidated: true
+
+  fronts:
+    directory: "/path/to/fronts/netcdf"
+    front_types: "MERGED-ALL"
+
+  batch:
+    input_sizes:
+      time: 1
+      latitude: 128
+      longitude: 128
+    target_sizes:
+      time: 1
+      latitude: 128
+      longitude: 128
+    prefetch_number: 3
+    preload_batch: false
 
 wandb:
   project_name: 'fronts'
