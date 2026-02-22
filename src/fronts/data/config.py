@@ -220,13 +220,23 @@ class FrontsDataConfig:
     def build(self) -> xr.Dataset:
         """Loads and optionally reformats front label data for the given years.
 
+        Supports two directory layouts automatically:
+        - Flat:  ``{directory}/*{year}*.nc``
+        - Monthly subdirs: ``{directory}/{year}MM/*.nc`` (e.g. ``200701/``)
+
         Returns an xarray Dataset with the "identifier" variable, optionally
         reformatted according to self.front_types.
         """
         files = sorted(
             f
             for year in self.years
-            for f in glob_module.glob(f"{self.directory}/*{year}*.nc")
+            for f in (
+                # Monthly subdirectory layout: <dir>/<YYYYMM>/*.nc
+                glob_module.glob(f"{self.directory}/{year}*/*.nc")
+                or
+                # Flat layout fallback: <dir>/*<year>*.nc
+                glob_module.glob(f"{self.directory}/*{year}*.nc")
+            )
         )
         ds = xr.open_mfdataset(files, engine="netcdf4", combine="by_coords")
 
