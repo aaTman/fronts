@@ -132,7 +132,7 @@ class OptimizerConfig(BaseConfig[tf.keras.optimizers.Optimizer]):
 
 
 @dataclasses.dataclass
-class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
+class ActivationConfig(BaseConfig[tf.keras.layers.Activation | tf.keras.layers.Layer]):
     """Activation configuration for layers in a model.
 
     Attributes:
