@@ -725,16 +725,12 @@ class TestPredictConfig:
         )
 
     def test_build_returns_dataset(self, raw_zarr_ds):
-        """PredictConfig.build() returns a normalized xr.Dataset."""
+        """PredictConfig.build() returns an xr.Dataset."""
         cfg = dacite.from_dict(PredictConfig, _minimal_predict_config_dict(), DACITE_CONFIG)
 
         with patch("xarray.open_zarr", return_value=raw_zarr_ds):
-            with patch(
-                "fronts.utils.data_utils.normalize_dataset", return_value=raw_zarr_ds
-            ) as mock_norm:
-                result = cfg.build()
+            result = cfg.build()
 
-        mock_norm.assert_called_once()
         assert isinstance(result, xr.Dataset)
 
     def test_build_calls_time_selection_apply(self, raw_zarr_ds):
@@ -742,13 +738,10 @@ class TestPredictConfig:
         cfg = dacite.from_dict(PredictConfig, _minimal_predict_config_dict(), DACITE_CONFIG)
 
         with patch("xarray.open_zarr", return_value=raw_zarr_ds):
-            with patch(
-                "fronts.utils.data_utils.normalize_dataset", return_value=raw_zarr_ds
-            ):
-                with patch.object(
-                    TimeSelection, "apply", wraps=cfg.time_selection.apply
-                ) as mock_apply:
-                    cfg.build()
+            with patch.object(
+                TimeSelection, "apply", wraps=cfg.time_selection.apply
+            ) as mock_apply:
+                cfg.build()
 
         mock_apply.assert_called_once()
 

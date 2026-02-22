@@ -304,9 +304,14 @@ class DataConfig:
             # Build ERA5 predictor dataset for this split
             era5_cfg = dataclasses.replace(self.era5, years=years)
             inputs_ds = era5_cfg.build()
-            inputs_ds = data_utils.normalize_dataset(
-                inputs_ds, method=self.normalization_method
-            )
+            # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
+            # short variable-name keys (e.g. "T_850", "u_1000"). Our stacked dataset
+            # uses dimension "level" and ARCO variable names ("temperature", etc.).
+            # Normalization constants and the normalize_dataset function need to be
+            # updated for the new naming scheme before this call can be re-enabled.
+            # inputs_ds = data_utils.normalize_dataset(
+            #     inputs_ds, method=self.normalization_method
+            # )
 
             # Build fronts dataset for this split
             fronts_cfg = dataclasses.replace(self.fronts, years=years)
@@ -466,4 +471,10 @@ class PredictConfig:
             levels=self.era5.levels,
         )
 
-        return data_utils.normalize_dataset(stacked, method=self.normalization_method)
+        # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
+        # short variable-name keys (e.g. "T_850", "u_1000"). Our stacked dataset
+        # uses dimension "level" and ARCO variable names ("temperature", etc.).
+        # Normalization constants and the normalize_dataset function need to be
+        # updated for the new naming scheme before this call can be re-enabled.
+        # return data_utils.normalize_dataset(stacked, method=self.normalization_method)
+        return stacked
