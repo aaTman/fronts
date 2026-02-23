@@ -27,6 +27,7 @@ from fronts.data.config import (
     PredictConfig,
     TimeSelection,
     ModelData,
+    TFDatasetConfig,
     SURFACE_VARIABLE_MAP,
     SURFACE_ONLY_VARIABLES,
 )
@@ -460,6 +461,114 @@ class TestDataConfig:
         assert [2011] in all_era5_years
         assert [2010] in all_fronts_years
         assert [2011] in all_fronts_years
+
+
+# ---------------------------------------------------------------------------
+# TFDatasetConfig
+# ---------------------------------------------------------------------------
+
+
+class TestTFDatasetConfig:
+    def _minimal_dict(self):
+        return {
+            "directory": "/tmp/tf_datasets",
+            "train_years": [2010],
+            "val_years": [2011],
+            "test_years": [],
+            "shuffle": True,
+            "shuffle_buffer": 1000,
+            "prefetch": 3,
+        }
+
+    def test_dacite_parses(self):
+        cfg = dacite.from_dict(TFDatasetConfig, self._minimal_dict(), DACITE_CONFIG)
+        assert cfg.directory == "/tmp/tf_datasets"
+        assert cfg.train_years == [2010]
+        assert cfg.shuffle is True
+
+    def test_build_loads_matching_subdirs(self, tmp_path):
+        """TFDatasetConfig.build() loads subdirs matching the requested years."""
+        (tmp_path / "2010-1_tf").mkdir()
+        (tmp_path / "2010-2_tf").mkdir()
+        (tmp_path / "2011-1_tf").mkdir()
+
+        mock_ds = MagicMock()
+        mock_ds.shuffle = MagicMock(return_value=mock_ds)
+
+        cfg = TFDatasetConfig(
+            directory=str(tmp_path),
+            train_years=[2010],
+            val_years=[2011],
+            test_years=[],
+        )
+
+        # Patch _load_years to avoid calling tf.data.Dataset.load (mocked at class level).
+        # Return None for empty year lists (mirrors real behaviour), mock_ds otherwise.
+        def fake_load_years(self, years):
+            return None if not years else mock_ds
+
+        with patch.object(TFDatasetConfig, "_load_years", fake_load_years):
+            result = cfg.build()
+
+        assert isinstance(result, ModelData)
+        assert result.test_data is None
+
+    def test_build_raises_if_no_subdirs_found(self, tmp_path):
+        """TFDatasetConfig._load_years() raises FileNotFoundError when no dirs match."""
+        cfg = TFDatasetConfig(
+            directory=str(tmp_path),
+            train_years=[2099],
+            val_years=[],
+            test_years=[],
+        )
+        with pytest.raises(FileNotFoundError, match="No subdirectories found"):
+            cfg.build()
+
+    def test_dataconfig_delegates_to_tf_dataset(self, tmp_path):
+        """DataConfig.build() delegates to TFDatasetConfig when tf_dataset is set."""
+        mock_model_data = ModelData(train_data=MagicMock(), validation_data=MagicMock())
+
+        cfg = DataConfig(
+            train_years=[2010],
+            val_years=[2011],
+            test_years=[],
+            tf_dataset=TFDatasetConfig(
+                directory=str(tmp_path),
+                train_years=[],
+                val_years=[],
+                test_years=[],
+            ),
+        )
+
+        with patch.object(TFDatasetConfig, "build", return_value=mock_model_data) as mock_build:
+            result = cfg.build()
+
+        mock_build.assert_called_once()
+        assert isinstance(result, ModelData)
+
+    def test_dataconfig_tf_dataset_yaml_roundtrip(self, tmp_path, sample_config_dict):
+        """DataConfig with tf_dataset parses correctly from YAML."""
+        config = dict(sample_config_dict)
+        config["data"] = {
+            "train_years": [2010],
+            "val_years": [2011],
+            "test_years": [],
+            "tf_dataset": {
+                "directory": "/tmp/tf_datasets",
+                "train_years": [],
+                "val_years": [],
+                "test_years": [],
+            },
+        }
+        path = tmp_path / "config_tf.yaml"
+        path.write_text(yaml.dump(config, default_flow_style=False))
+
+        from fronts.data.config import DataConfig
+        train_cfg = open_config_yaml_as_dataclass(path=str(path), config_class=TrainConfig)
+        assert isinstance(train_cfg.data, DataConfig)
+        assert isinstance(train_cfg.data.tf_dataset, TFDatasetConfig)
+        assert train_cfg.data.tf_dataset.directory == "/tmp/tf_datasets"
+        assert train_cfg.data.era5 is None
 
 
 # ---------------------------------------------------------------------------

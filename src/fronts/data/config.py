@@ -11,8 +11,10 @@ methods that return runtime objects, loadable from YAML via dacite.
 import dataclasses
 import datetime
 import glob as glob_module
+import os
 from typing import Any, Optional, Union
 
+import tensorflow as tf
 import xarray as xr
 
 from fronts.data.batch import BatchGeneratorConfig, create_dataloader
@@ -247,6 +249,97 @@ class FrontsDataConfig:
 
 
 @dataclasses.dataclass
+class TFDatasetConfig:
+    """Configuration for loading pre-built tf.data.Dataset snapshots from disk.
+
+    The on-disk datasets were produced by the previous pipeline and are stored
+    as saved ``tf.data.Dataset`` snapshots in year-labelled subdirectories under
+    a common root, e.g.::
+
+        <directory>/
+            2010-1_tf/
+            2010-2_tf/
+            ...
+            2020-12_tf/
+
+    All monthly subdirectories whose name starts with a requested year are
+    concatenated in sorted order to form the split dataset.
+
+    This is the fastest path to training — it bypasses ERA5 zarr loading,
+    front netCDF loading, stacking, and normalization entirely, using data that
+    is already preprocessed and on local disk.
+
+    Attributes:
+        directory: Root directory containing the year-month subdirectories.
+        train_years: Years to include in the training split.
+        val_years: Years to include in the validation split.
+        test_years: Years to include in the test split. May be empty [].
+        shuffle: Whether to shuffle the training dataset. Defaults to True.
+        shuffle_buffer: Buffer size passed to ``tf.data.Dataset.shuffle()``.
+            Defaults to 1000.
+        prefetch: Number of batches to prefetch. Defaults to 3.
+    """
+
+    directory: str
+    train_years: list[int]
+    val_years: list[int]
+    test_years: list[int]
+    shuffle: bool = True
+    shuffle_buffer: int = 1000
+    prefetch: int = 3
+
+    def _load_years(self, years: list[int]) -> Optional[Any]:
+        """Loads and concatenates all monthly TF dataset snapshots for ``years``.
+
+        Subdirectories are matched by prefix: a directory named ``2010-3_tf``
+        matches year ``2010``.
+
+        Returns a ``tf.data.Dataset``, or ``None`` if ``years`` is empty or no
+        matching subdirectories are found.
+        """
+        if not years:
+            return None
+
+        subdirs = sorted(
+            os.path.join(self.directory, d)
+            for d in os.listdir(self.directory)
+            if any(d.startswith(str(y)) for y in years)
+            and os.path.isdir(os.path.join(self.directory, d))
+        )
+
+        if not subdirs:
+            raise FileNotFoundError(
+                f"No subdirectories found in {self.directory!r} matching years "
+                f"{years}. Expected names like '2010-1_tf', '2010-2_tf', etc."
+            )
+
+        datasets = [tf.data.Dataset.load(s) for s in subdirs]
+        combined = datasets[0]
+        for ds in datasets[1:]:
+            combined = combined.concatenate(ds)
+        return combined.prefetch(self.prefetch)
+
+    def build(self) -> "ModelData":
+        """Builds train, validation, and test ``tf.data.Dataset`` objects.
+
+        Returns a :class:`ModelData` with ``train_data``, ``validation_data``,
+        and optionally ``test_data``.
+        """
+        train_ds = self._load_years(self.train_years)
+        if self.shuffle and train_ds is not None:
+            train_ds = train_ds.shuffle(buffer_size=self.shuffle_buffer)
+
+        val_ds = self._load_years(self.val_years)
+        test_ds = self._load_years(self.test_years)
+
+        return ModelData(
+            train_data=train_ds,
+            validation_data=val_ds,
+            test_data=test_ds,
+        )
+
+
+@dataclasses.dataclass
 class ModelData:
     """Runtime holder for train/validation/test tf.data.Dataset objects.
 
@@ -268,44 +361,75 @@ class ModelData:
 class DataConfig:
     """Top-level data configuration for the FrontFinder training pipeline.
 
-    Composes ERA5 predictor and front label configs, handles train/val/test year
-    splits, normalization, and shuffling, and builds the tf.data.Dataset objects
-    consumed by Trainer.
+    Supports two mutually exclusive data sources:
 
-    Year lists (train_years, val_years, test_years) are specified at this level and
-    injected into ERA5PredictorConfig and FrontsDataConfig at build time using
-    dataclasses.replace() — they should NOT be set in the era5/fronts YAML blocks.
+    1. **Pre-built TF datasets** (``tf_dataset`` key) — fastest path, loads
+       saved ``tf.data.Dataset`` snapshots directly from disk.  Set
+       ``tf_dataset:`` in YAML and leave ``era5``, ``fronts``, ``batch`` unset.
+
+    2. **ARCO ERA5 + front netCDF** (``era5`` + ``fronts`` + ``batch`` keys) —
+       full pipeline that loads from the zarr store and front label files,
+       stacks variables, and builds batches via xbatcher.
+
+    Year lists (``train_years``, ``val_years``, ``test_years``) are always
+    specified at this level.  For the ERA5 path they are injected into
+    ``ERA5PredictorConfig`` and ``FrontsDataConfig`` at build time via
+    ``dataclasses.replace()`` — they should NOT be set in the era5/fronts YAML
+    blocks.
 
     Attributes:
-        era5: ERA5PredictorConfig defining the predictor variable source.
-        fronts: FrontsDataConfig defining the front label source.
         train_years: Years to use for the training split.
         val_years: Years to use for the validation split.
         test_years: Years to use for the test split. May be empty [].
-        batch: BatchGeneratorConfig defining spatial patch sizes and prefetch settings.
+        tf_dataset: TFDatasetConfig for loading pre-built TF dataset snapshots.
+            Mutually exclusive with era5/fronts/batch.
+        era5: ERA5PredictorConfig defining the predictor variable source.
+            Required when tf_dataset is not set.
+        fronts: FrontsDataConfig defining the front label source.
+            Required when tf_dataset is not set.
+        batch: BatchGeneratorConfig defining spatial patch sizes and prefetch.
+            Required when tf_dataset is not set.
         shuffle: Whether to shuffle the training dataset. Defaults to True.
+            Ignored when tf_dataset is set (shuffle is configured there instead).
         normalization_method: One of "standard", "standard_weighted", "min-max".
-            Defaults to "standard".
+            Defaults to "standard". Only used by the ERA5 path.
     """
 
-    era5: ERA5PredictorConfig
-    fronts: FrontsDataConfig
     train_years: list[int]
     val_years: list[int]
     test_years: list[int]
-    batch: BatchGeneratorConfig
+    tf_dataset: Optional[TFDatasetConfig] = None
+    era5: Optional[ERA5PredictorConfig] = None
+    fronts: Optional[FrontsDataConfig] = None
+    batch: Optional[BatchGeneratorConfig] = None
     shuffle: bool = True
     normalization_method: str = "standard"
 
     def build(self) -> ModelData:
         """Builds train, validation, and test tf.data.Dataset objects.
 
-        For each split, clones the ERA5 and fronts configs with the appropriate years,
-        builds the xarray datasets, normalizes the predictors, and wraps them in a
-        tf.data.Dataset via create_dataloader.
+        Delegates to TFDatasetConfig.build() when tf_dataset is set, otherwise
+        uses the ERA5 + fronts pipeline.
 
         Returns a ModelData with train_data, validation_data, and optionally test_data.
         """
+        if self.tf_dataset is not None:
+            # Inject year lists into the TFDatasetConfig and build
+            tf_cfg = dataclasses.replace(
+                self.tf_dataset,
+                train_years=self.train_years,
+                val_years=self.val_years,
+                test_years=self.test_years,
+                shuffle=self.shuffle,
+            )
+            return tf_cfg.build()
+
+        # --- ERA5 + fronts path ---
+        if self.era5 is None or self.fronts is None or self.batch is None:
+            raise ValueError(
+                "DataConfig requires either tf_dataset or all three of "
+                "era5, fronts, and batch to be set."
+            )
 
         def _build_split(years: list[int]) -> Optional[Any]:
             if not years:
