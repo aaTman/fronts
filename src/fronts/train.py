@@ -1,6 +1,7 @@
 """Train a FrontFinder model with optional Weights and Biases tracking."""
 
 import tensorflow.keras  # ty: ignore[unresolved-import]
+import logging
 import os
 import wandb
 from wandb.integration import keras as wandb_keras
@@ -12,6 +13,18 @@ import dacite
 import yaml
 from fronts.model import ModelConfig
 from fronts.data.config import DataConfig
+
+# ---------------------------------------------------------------------------
+# Module-level logger — writes to stderr so output appears in Slurm logs even
+# when stdout is redirected. Log level can be overridden by setting the
+# FRONTS_LOG_LEVEL environment variable, e.g. FRONTS_LOG_LEVEL=DEBUG.
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=os.environ.get("FRONTS_LOG_LEVEL", "INFO"),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("fronts.train")
 
 T = TypeVar("T")
 
@@ -316,8 +329,19 @@ class TrainConfig:
 
         Returns a Trainer object that can be used to instantiate a training run.
         """
+        log.info("Building callbacks...")
         callbacks = self.callbacks.build()
-        model_data = self.data.build() if self.data is not None else ""
+        log.debug("Callbacks built: %s", [type(c).__name__ for c in callbacks])
+
+        if self.data is not None:
+            log.info("Building data pipeline (this may take several minutes)...")
+            model_data = self.data.build()
+            log.info("Data pipeline ready.")
+        else:
+            log.warning("No data config provided — trainer will have empty data.")
+            model_data = ""
+
+        log.info("Building Trainer...")
         trainer = Trainer(
             # TODO: build model from ModelConfig
             model="",
@@ -380,10 +404,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Build the training configuration
+    log.info("Loading config from: %s", args.train_config_path)
     train_config = open_config_yaml_as_dataclass(
         path=args.train_config_path, config_class=TrainConfig, require=True
     )
+    log.info("Config loaded. epochs=%d, steps_per_epoch=%d",
+             train_config.epochs, train_config.training_steps_per_epoch)
 
     # Load the data
     # TODO: build out training data builder
@@ -397,8 +423,10 @@ if __name__ == "__main__":
     # TODO: build out the dictionary builder
     model_config = {}
 
-    # Build trainer
+    log.info("Building trainer (data pipeline will be constructed here)...")
     trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
+    log.info("Trainer ready. Starting training run...")
 
     # Trigger training run
     trainer.train(model=model)
+    log.info("Training complete.")

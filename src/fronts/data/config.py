@@ -11,6 +11,7 @@ methods that return runtime objects, loadable from YAML via dacite.
 import dataclasses
 import datetime
 import glob as glob_module
+import logging
 import os
 from typing import Any, Optional, Union
 
@@ -20,6 +21,8 @@ import xarray as xr
 from fronts.data.batch import BatchGeneratorConfig, create_dataloader
 from fronts.data.era5 import convert_domain_extent_to_bounding_box
 from fronts.utils import data_utils
+
+log = logging.getLogger("fronts.data.config")
 
 
 # ---------------------------------------------------------------------------
@@ -175,27 +178,43 @@ class ERA5PredictorConfig:
         ``"surface"`` (for surface variables) and integer hPa values (for
         pressure-level variables).  Time is filtered to ``self.years``.
         """
+        log.info(
+            "ERA5PredictorConfig.build() — opening zarr store: %s", self.store
+        )
         ds = xr.open_zarr(
             store=self.store,
             chunks=self.chunks,
             consolidated=self.consolidated,
         )
+        log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
         # Spatial subset
+        log.debug("Applying spatial subset: domain_extent=%s", self.domain_extent)
         bbox = convert_domain_extent_to_bounding_box(self.domain_extent)
         ds = ds.sel(
             latitude=slice(bbox.lat_max, bbox.lat_min),
             longitude=slice(bbox.lon_min, bbox.lon_max),
         )
+        log.debug(
+            "Spatial subset done. lat shape=%s, lon shape=%s",
+            ds.latitude.shape, ds.longitude.shape,
+        )
 
         # Temporal subset: keep only the requested years
+        log.debug("Applying temporal subset for years=%s...", self.years)
         ds = ds.isel(time=ds.time.dt.year.isin(self.years))
+        log.info("ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0))
 
-        return _stack_era5_variables(
+        log.debug("Stacking variables=%s at levels=%s...", self.variables, self.levels)
+        result = _stack_era5_variables(
             ds,
             variables=self.variables,
             levels=self.levels,
         )
+        log.info(
+            "ERA5PredictorConfig.build() complete. Output vars: %s", list(result.data_vars)
+        )
+        return result
 
 
 @dataclasses.dataclass
@@ -229,6 +248,10 @@ class FrontsDataConfig:
         Returns an xarray Dataset with the "identifier" variable, optionally
         reformatted according to self.front_types.
         """
+        log.info(
+            "FrontsDataConfig.build() — globbing files for years=%s in %r...",
+            self.years, self.directory,
+        )
         files = sorted(
             f
             for year in self.years
@@ -240,11 +263,16 @@ class FrontsDataConfig:
                 glob_module.glob(f"{self.directory}/*{year}*.nc")
             )
         )
+        log.info("FrontsDataConfig — found %d file(s). Opening with open_mfdataset...", len(files))
         ds = xr.open_mfdataset(files, engine="netcdf4", combine="by_coords")
+        log.info("FrontsDataConfig — dataset opened. Variables: %s", list(ds.data_vars))
 
         if self.front_types is not None:
+            log.debug("Reformatting fronts with front_types=%s...", self.front_types)
             ds = data_utils.reformat_fronts(ds, self.front_types)
+            log.debug("reformat_fronts complete.")
 
+        log.info("FrontsDataConfig.build() complete.")
         return ds
 
 
@@ -298,8 +326,10 @@ class TFDatasetConfig:
         matching subdirectories are found.
         """
         if not years:
+            log.debug("_load_years called with empty years list — returning None.")
             return None
 
+        log.debug("Scanning %r for subdirs matching years %s...", self.directory, years)
         subdirs = sorted(
             os.path.join(self.directory, d)
             for d in os.listdir(self.directory)
@@ -313,10 +343,17 @@ class TFDatasetConfig:
                 f"{years}. Expected names like '2010-1_tf', '2010-2_tf', etc."
             )
 
-        datasets = [tf.data.Dataset.load(s) for s in subdirs]
+        log.info("Loading %d TF dataset snapshot(s) for years %s...", len(subdirs), years)
+        datasets = []
+        for i, s in enumerate(subdirs):
+            log.debug("  [%d/%d] Loading %s", i + 1, len(subdirs), s)
+            datasets.append(tf.data.Dataset.load(s))
+        log.debug("All snapshots loaded. Concatenating...")
+
         combined = datasets[0]
         for ds in datasets[1:]:
             combined = combined.concatenate(ds)
+        log.debug("Concatenation complete. Applying prefetch=%d.", self.prefetch)
         return combined.prefetch(self.prefetch)
 
     def build(self) -> "ModelData":
@@ -325,13 +362,20 @@ class TFDatasetConfig:
         Returns a :class:`ModelData` with ``train_data``, ``validation_data``,
         and optionally ``test_data``.
         """
+        log.info("TFDatasetConfig.build() — loading train split (years=%s)...", self.train_years)
         train_ds = self._load_years(self.train_years)
         if self.shuffle and train_ds is not None:
+            log.debug("Shuffling train dataset (buffer_size=%d).", self.shuffle_buffer)
             train_ds = train_ds.shuffle(buffer_size=self.shuffle_buffer)
 
+        log.info("TFDatasetConfig.build() — loading val split (years=%s)...", self.val_years)
         val_ds = self._load_years(self.val_years)
+
+        if self.test_years:
+            log.info("TFDatasetConfig.build() — loading test split (years=%s)...", self.test_years)
         test_ds = self._load_years(self.test_years)
 
+        log.info("TFDatasetConfig.build() complete.")
         return ModelData(
             train_data=train_ds,
             validation_data=val_ds,
@@ -414,6 +458,11 @@ class DataConfig:
         Returns a ModelData with train_data, validation_data, and optionally test_data.
         """
         if self.tf_dataset is not None:
+            log.info(
+                "DataConfig.build() — using TFDatasetConfig path. "
+                "train_years=%s, val_years=%s, test_years=%s",
+                self.train_years, self.val_years, self.test_years,
+            )
             # Inject year lists into the TFDatasetConfig and build
             tf_cfg = dataclasses.replace(
                 self.tf_dataset,
@@ -425,6 +474,11 @@ class DataConfig:
             return tf_cfg.build()
 
         # --- ERA5 + fronts path ---
+        log.info(
+            "DataConfig.build() — using ERA5+fronts path. "
+            "train_years=%s, val_years=%s, test_years=%s",
+            self.train_years, self.val_years, self.test_years,
+        )
         if self.era5 is None or self.fronts is None or self.batch is None:
             raise ValueError(
                 "DataConfig requires either tf_dataset or all three of "
@@ -436,8 +490,10 @@ class DataConfig:
                 return None
 
             # Build ERA5 predictor dataset for this split
+            log.info("  Building ERA5 predictor dataset for years=%s...", years)
             era5_cfg = dataclasses.replace(self.era5, years=years)
             inputs_ds = era5_cfg.build()
+            log.info("  ERA5 dataset ready.")
             # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
             # short variable-name keys (e.g. "T_850", "u_1000"). Our stacked dataset
             # uses dimension "level" and ARCO variable names ("temperature", etc.).
@@ -448,11 +504,14 @@ class DataConfig:
             # )
 
             # Build fronts dataset for this split
+            log.info("  Building fronts dataset for years=%s...", years)
             fronts_cfg = dataclasses.replace(self.fronts, years=years)
             targets_ds = fronts_cfg.build()
+            log.info("  Fronts dataset ready.")
 
             # Build tf.data.Dataset via create_dataloader directly
             # (BatchGeneratorConfig.build() is not used because it lacks inputs/targets fields)
+            log.info("  Wrapping into tf.data.Dataset via create_dataloader...")
             tf_ds = create_dataloader(
                 inputs=inputs_ds,
                 targets=targets_ds,
@@ -461,15 +520,23 @@ class DataConfig:
                 prefetch_number=self.batch.prefetch_number,
                 preload_batch=self.batch.preload_batch,
             )
+            log.info("  tf.data.Dataset ready for years=%s.", years)
             return tf_ds
 
+        log.info("Building train split...")
         train_ds = _build_split(self.train_years)
         if self.shuffle and train_ds is not None:
+            log.debug("Shuffling train dataset.")
             train_ds = train_ds.shuffle(buffer_size=1000)
 
+        log.info("Building val split...")
         val_ds = _build_split(self.val_years)
+
+        if self.test_years:
+            log.info("Building test split...")
         test_ds = _build_split(self.test_years)
 
+        log.info("DataConfig.build() complete.")
         return ModelData(
             train_data=train_ds,
             validation_data=val_ds,
@@ -582,13 +649,16 @@ class PredictConfig:
 
         Returns a normalized xarray Dataset ready for model inference.
         """
+        log.info("PredictConfig.build() — opening zarr store: %s", self.era5.store)
         ds = xr.open_zarr(
             store=self.era5.store,
             chunks=self.era5.chunks,
             consolidated=self.era5.consolidated,
         )
+        log.debug("Zarr store opened.")
 
         # Spatial subset
+        log.debug("Applying spatial subset...")
         bbox = convert_domain_extent_to_bounding_box(self.era5.domain_extent)
         ds = ds.sel(
             latitude=slice(bbox.lat_max, bbox.lat_min),
@@ -596,19 +666,24 @@ class PredictConfig:
         )
 
         # Time selection
+        log.debug("Applying time selection: %s", self.time_selection)
         ds = self.time_selection.apply(ds)
+        log.info("Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0))
 
         # Stack surface and pressure-level variables
+        log.debug("Stacking variables...")
         stacked = _stack_era5_variables(
             ds,
             variables=self.era5.variables,
             levels=self.era5.levels,
         )
 
+        log.info("PredictConfig.build() — stacking complete. Output vars: %s", list(stacked.data_vars))
         # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
         # short variable-name keys (e.g. "T_850", "u_1000"). Our stacked dataset
         # uses dimension "level" and ARCO variable names ("temperature", etc.).
         # Normalization constants and the normalize_dataset function need to be
         # updated for the new naming scheme before this call can be re-enabled.
         # return data_utils.normalize_dataset(stacked, method=self.normalization_method)
+        log.info("PredictConfig.build() complete.")
         return stacked
