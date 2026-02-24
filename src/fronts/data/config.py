@@ -264,7 +264,7 @@ class FrontsDataConfig:
             )
         )
         log.info("FrontsDataConfig — found %d file(s). Opening with open_mfdataset...", len(files))
-        ds = xr.open_mfdataset(files, engine="netcdf4", combine="by_coords")
+        ds = xr.open_mfdataset(files, engine="netcdf4", combine="by_coords", coords="minimal", compat="override")
         log.info("FrontsDataConfig — dataset opened. Variables: %s", list(ds.data_vars))
 
         if self.front_types is not None:
