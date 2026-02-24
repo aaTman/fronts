@@ -228,7 +228,7 @@ class Trainer:
         self.validation_steps_per_epoch = validation_steps_per_epoch
         self.verbose = verbose
         self.repeat = repeat
-        self.callbacks = self.build_callbacks(callbacks or [])
+        self.callbacks = callbacks or []
         self.seed = seed
 
     def train(self, model: dict) -> None:
@@ -256,15 +256,16 @@ class Trainer:
             "steps_per_epoch": self.training_steps_per_epoch,
             "validation_steps": self.validation_steps_per_epoch,
             "verbose": self.verbose,
-            "callbacks": self.callbacks,
         }
 
-        # Use WandB if exists
+        # Use WandB if exists — WandB callbacks must be built AFTER wandb.init()
         if self.wandb:
             wandb_init = self.wandb.build_init_config(model)
             with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
+                fit_args["callbacks"] = self.build_callbacks(self.callbacks)
                 self.model.fit(**fit_args)
         else:
+            fit_args["callbacks"] = self.build_callbacks(self.callbacks)
             self.model.fit(**fit_args)
 
     def build_callbacks(self, callbacks: list):
