@@ -352,10 +352,24 @@ class TrainConfig:
             log.warning("No data config provided — trainer will have empty data.")
             model_data = ""
 
+        # Derive input_shape and num_classes from the training dataset element spec.
+        # input_shape: set spatial dims to None for variable-size inference.
+        # num_classes: last dim of the target tensor (e.g. 6 for 5 front types + background).
+        log.info("Deriving input_shape and num_classes from training dataset...")
+        train_spec = model_data.train_data.element_spec
+        raw_input_shape = list(train_spec[0].shape)
+        input_shape = tuple([None, None] + raw_input_shape[2:])
+        num_classes = train_spec[1].shape[-1]
+        log.info("  input_shape=%s, num_classes=%d", input_shape, num_classes)
+
+        log.info("Building model...")
+        keras_model = self.model.build(input_shape=input_shape, num_classes=num_classes)
+        keras_model.summary(print_fn=log.info)
+        log.info("Model built and compiled.")
+
         log.info("Building Trainer...")
         trainer = Trainer(
-            # TODO: build model from ModelConfig
-            model="",
+            model=keras_model,
             data=model_data,
             epochs=self.epochs,
             validation_frequency=self.validation_frequency,
@@ -447,22 +461,13 @@ if __name__ == "__main__":
         log.info("=== DRY run complete. No errors. ===")
         raise SystemExit(0)
 
-    # Load the data
-    # TODO: build out training data builder
-    data = ""
-
-    # Load the tensorflow.keras.Model type
-    # TODO: build out model builder
-    model = None
-
-    # Build full dictionary of model config options
-    # TODO: build out the dictionary builder
-    model_config = {}
-
-    log.info("Building trainer (data pipeline will be constructed here)...")
+    log.info("Building trainer (data pipeline + model will be constructed here)...")
     trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
     log.info("Trainer ready. Starting training run...")
 
+    # model_config dict is passed to wandb.init for run metadata
+    model_config = dataclasses.asdict(train_config.model)
+
     # Trigger training run
-    trainer.train(model=model)
+    trainer.train(model=model_config)
     log.info("Training complete.")
