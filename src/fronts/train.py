@@ -161,7 +161,7 @@ class CallbacksConfig:
             callback_list.append(checkpoint_callback)
         if self.csv_logger_path:
             history_logger_callback = tensorflow.keras.callbacks.CSVLogger(
-                filepath=self.csv_logger_path, append=True
+                filename=self.csv_logger_path, append=True
             )
             callback_list.append(history_logger_callback)
         if self.patience:
