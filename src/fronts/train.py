@@ -63,8 +63,12 @@ class WandBConfig:
         self.login()
 
     def login(self):
-        """Helper method to automatically login to WandB."""
-        wandb.login(key=self.api_key)
+        """Helper method to automatically login to WandB.
+
+        Skipped if no API key is configured (e.g. local dry-run without credentials).
+        """
+        if self.api_key:
+            wandb.login(key=self.api_key)
 
     def build_init_config(self, init_config: dict) -> dict:
         """Builds the keyword arguments to apply to wandb.init.

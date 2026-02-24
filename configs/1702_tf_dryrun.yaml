@@ -1,0 +1,96 @@
+# Local dry-run config — used for smoke-testing config parsing and data
+# pipeline construction on a developer machine without cluster data or GPUs.
+#
+# Workflow:
+#   1. Generate fixtures (one-time):
+#        python scripts/make_dryrun_data.py
+#   2. Run dry-run:
+#        python -m fronts.train --train_config_path configs/1702_tf_dryrun.yaml --dry_run
+#
+# The fixture dataset has element shapes matching the real cluster data:
+#   inputs:  (128, 288, 7, 9)  float16
+#   targets: (128, 288, 6)     float16
+
+epochs: 1
+training_steps_per_epoch: 2
+validation_steps_per_epoch: 1
+validation_frequency: 1
+verbose: 1
+repeat: false
+seed: 42
+
+model:
+  name: "unet_3plus"
+  batch_normalization: true
+  num_filters: [16, 32, 64, 128]
+  kernel_size: [5, 5, 5]
+  pool_size: [2, 2, 1]
+  upsample_size: [2, 2, 1]
+  depth: 4
+  modules_per_node: 2
+  padding: "same"
+  bias: true
+  loss:
+    name: "fractions_skill_score"
+    config:
+      mask_size: [3, 3]
+  metric:
+    name: "critical_success_index"
+    config:
+      class_weights: [0, 1, 1, 1, 1, 1]
+
+  optimizer:
+    name: "Adam"
+    config:
+      beta_1: 0.9
+      beta_2: 0.999
+
+  convolution_activity_regularizer:
+    regularizer:
+
+  bias_vector:
+    constraint:
+    initializer:
+      name: "zeros"
+      config:
+    regularizer:
+
+  kernel_matrix:
+    constraint:
+    initializer:
+      name: "glorot_uniform"
+      config:
+    regularizer:
+
+  activation:
+    name: "gelu"
+    config:
+
+
+data:
+  train_years: [2000]
+  val_years: [2001]
+  test_years: []
+  shuffle: false  # no need to shuffle tiny fixtures
+
+  tf_dataset:
+    directory: "tests/fixtures/dryrun_tf_dataset"
+    train_years: []
+    val_years: []
+    test_years: []
+    shuffle: false
+    shuffle_buffer: 1
+    prefetch: 1
+
+wandb:
+  project_name: 'fronts'
+  model_run_name: 'dryrun'
+  wandb_filepath: '/tmp/dryrun_model.keras'
+
+callbacks:
+  monitor: "val_loss"
+  verbose: 1
+  save_best_only: false
+  save_weights_only: false
+  save_freq: "epoch"
+  # No model_checkpoint_path or csv_logger_path — dry run only
