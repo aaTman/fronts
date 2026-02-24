@@ -44,6 +44,8 @@ class WandBConfig:
             False.
         api_key: the API key for a WandB account. Defaults to the WANDB_KEY environment
             var.
+        wandb_filepath: path for WandbModelCheckpoint. Must end in `.keras`.
+            Defaults to `models/<model_run_name>.keras`.
     """
 
     project_name: str
@@ -51,9 +53,13 @@ class WandBConfig:
     log_frequency: int = 1
     upload_checkpoints: bool = False
     api_key: str = os.environ.get("WANDB_KEY", "")
-    wandb_filepath: str = "models"
+    wandb_filepath: Optional[str] = None
 
     def __post_init__(self):
+        # Default checkpoint path: models/<model_run_name>.keras
+        # WandbModelCheckpoint requires a .keras extension (Keras 3 requirement).
+        if self.wandb_filepath is None:
+            self.wandb_filepath = f"models/{self.model_run_name}.keras"
         self.login()
 
     def login(self):

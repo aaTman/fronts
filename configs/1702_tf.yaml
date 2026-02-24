@@ -76,11 +76,11 @@ data:
 wandb:
   project_name: 'fronts'
   model_run_name: '1702_retrain'
+  wandb_filepath: '/ourdisk/hpc/ai2es/tman/models/1702_retrain.keras'
   # -- Optional parameters --
   # log_frequency:
   # upload_checkpoints:
   # api_key:
-  # wandb_filepath:
 
 callbacks:
   monitor: "val_loss"
@@ -88,6 +88,6 @@ callbacks:
   save_best_only: true
   save_weights_only: false
   save_freq: "epoch"
-  # model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702_tf.keras"
-  # csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702_tf.csv"
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702_tf.keras"
+  csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702_tf.csv"
   # patience: 55
