@@ -407,6 +407,17 @@ if __name__ == "__main__":
             "for more information on each of these attributes."
         ),
     )
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        default=False,
+        help=(
+            "Validate config parsing and data pipeline construction without running "
+            "training or initializing WandB. Exits after the data pipeline is built "
+            "and reports success. Useful for catching bugs locally before submitting "
+            "a SLURM job."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -416,6 +427,20 @@ if __name__ == "__main__":
     )
     log.info("Config loaded. epochs=%d, steps_per_epoch=%d",
              train_config.epochs, train_config.training_steps_per_epoch)
+
+    if args.dry_run:
+        log.info("=== DRY RUN MODE — skipping WandB init and training ===")
+        if train_config.data is not None:
+            log.info("Building data pipeline...")
+            model_data = train_config.data.build()
+            log.info("Data pipeline built successfully.")
+            log.info("  train_data:      %s", model_data.train_data)
+            log.info("  validation_data: %s", model_data.validation_data)
+            log.info("  test_data:       %s", model_data.test_data)
+        else:
+            log.warning("No data config present — nothing to validate.")
+        log.info("=== DRY run complete. No errors. ===")
+        raise SystemExit(0)
 
     # Load the data
     # TODO: build out training data builder
