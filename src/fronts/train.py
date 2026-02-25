@@ -314,7 +314,7 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    wandb: WandBConfig
+    wandb: Optional[WandBConfig]
     callbacks: CallbacksConfig
     epochs: int
     training_steps_per_epoch: int
@@ -431,10 +431,21 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help=(
-            "Validate config parsing and data pipeline construction without running "
-            "training or initializing WandB. Exits after the data pipeline is built "
-            "and reports success. Useful for catching bugs locally before submitting "
-            "a SLURM job."
+            "Validate config parsing, data pipeline construction, and model building "
+            "without running training or initializing WandB. Uses a small local fixture "
+            "dataset instead of the real data directory, so no cluster data or GPU is "
+            "needed. Exits 0 on success. Useful for catching bugs before submitting a "
+            "SLURM job."
+        ),
+    )
+    parser.add_argument(
+        "--fixture_dir",
+        type=str,
+        default="tests/fixtures/dryrun_tf_dataset",
+        help=(
+            "Path to the fixture TF dataset used during --dry_run. "
+            "Generate fixtures once with: python scripts/make_dryrun_data.py. "
+            "Defaults to tests/fixtures/dryrun_tf_dataset."
         ),
     )
 
@@ -449,16 +460,39 @@ if __name__ == "__main__":
 
     if args.dry_run:
         log.info("=== DRY RUN MODE — skipping WandB init and training ===")
-        # Build the full trainer (data pipeline + model) to catch all config/API
-        # errors locally before submitting to SLURM. WandB is skipped because
-        # login() is a no-op without an API key.
+        log.info("  fixture_dir: %s", args.fixture_dir)
+
+        # Patch the loaded config so it uses the tiny local fixture dataset
+        # instead of the real cluster data path, and runs for a single step.
+        # This lets any production YAML work with --dry_run without a separate
+        # dry-run config file.
+        dry_data = dataclasses.replace(
+            train_config.data,
+            train_years=[2000],
+            val_years=[2001],
+            test_years=[],
+            tf_dataset=dataclasses.replace(
+                train_config.data.tf_dataset,
+                directory=args.fixture_dir,
+            ),
+        )
+        train_config = dataclasses.replace(
+            train_config,
+            data=dry_data,
+            epochs=1,
+            training_steps_per_epoch=2,
+            validation_steps_per_epoch=1,
+            repeat=False,
+            wandb=None,  # skip WandB entirely in dry run
+        )
+
         log.info("Building trainer (data pipeline + model)...")
         trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
         log.info("  train_data:      %s", trainer.data.train_data)
         log.info("  validation_data: %s", trainer.data.validation_data)
         log.info("  test_data:       %s", trainer.data.test_data)
         log.info("  model:           %s", trainer.model)
-        log.info("=== DRY run complete. No errors. ===")
+        log.info("=== DRY RUN complete. No errors. ===")
         raise SystemExit(0)
 
     log.info("Building trainer (data pipeline + model will be constructed here)...")
