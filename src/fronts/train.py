@@ -449,15 +449,15 @@ if __name__ == "__main__":
 
     if args.dry_run:
         log.info("=== DRY RUN MODE — skipping WandB init and training ===")
-        if train_config.data is not None:
-            log.info("Building data pipeline...")
-            model_data = train_config.data.build()
-            log.info("Data pipeline built successfully.")
-            log.info("  train_data:      %s", model_data.train_data)
-            log.info("  validation_data: %s", model_data.validation_data)
-            log.info("  test_data:       %s", model_data.test_data)
-        else:
-            log.warning("No data config present — nothing to validate.")
+        # Build the full trainer (data pipeline + model) to catch all config/API
+        # errors locally before submitting to SLURM. WandB is skipped because
+        # login() is a no-op without an API key.
+        log.info("Building trainer (data pipeline + model)...")
+        trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
+        log.info("  train_data:      %s", trainer.data.train_data)
+        log.info("  validation_data: %s", trainer.data.validation_data)
+        log.info("  test_data:       %s", trainer.data.test_data)
+        log.info("  model:           %s", trainer.model)
         log.info("=== DRY run complete. No errors. ===")
         raise SystemExit(0)
 

@@ -1000,6 +1000,11 @@ class UNet3Plus(UNet):
         U-Net 3+ model.
     """
 
+    filter_num_skip: int | None = None
+    filter_num_aggregate: int | None = None
+    first_encoder_connections: bool = False
+    deep_supervision: bool = False
+
     def build(self):
         ndims = (
             len(self.input_shape) - 1

@@ -162,7 +162,7 @@ class Model:
             "shared_axes": shared_axes,
             "modules_per_node": self.modules_per_node,
             "batch_normalization": self.batch_normalization,
-            "activation": self.activation,
+            "activation": self.activation_config.name,
             "padding": self.padding,
             "use_bias": self.bias,
             "kernel_initializer": self.kernel_matrix.kernel_initializer,
@@ -173,7 +173,18 @@ class Model:
             "kernel_constraint": self.kernel_matrix.kernel_constraint,
             "bias_constraint": self.bias_vector.bias_constraint,
         }
-        output_model = UNetRegistry(name=self.name, config=self.config).build()
+        # UNet3Plus has extra fields not present in other UNet variants.
+        # Pass defaults so the dataclass instantiates correctly.
+        if self.name == "unet_3plus":
+            self.config.update({
+                "filter_num_skip": None,       # defaults to filter_num[0]
+                "filter_num_aggregate": None,  # defaults to levels * filter_num_skip
+                "first_encoder_connections": False,
+                "deep_supervision": False,
+            })
+        # UNetRegistry.build() instantiates the UNet dataclass; .build() on that
+        # dataclass constructs and returns the tf.keras.Model.
+        output_model = UNetRegistry(name=self.name, config=self.config).build().build()
         output_model.compile(
             loss=self.loss,
             optimizer=self.optimizer,
