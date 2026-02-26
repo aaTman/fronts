@@ -241,16 +241,28 @@ class Trainer:
         # Set the seed for fitting the model
         tensorflow.keras.utils.set_random_seed(self.seed)
 
-        # If indefinite repeat is enabled, instantiate the bound method
+        # Each saved TF dataset element is a pre-gridded spatial patch
+        # (lat, lon, level, ch) — a single complete sample, not a batch of rows.
+        # Without an explicit .batch() call, Keras treats dim 0 (lat=128) as the
+        # batch size and feeds the model 3D samples (lon, level, ch), which
+        # mismatches the model's Input(shape=(None, None, level, ch)).
+        # .batch(1) wraps each element in a batch of 1 so Keras sees one sample
+        # of the full (lat, lon, level, ch) shape per gradient step.
         if self.repeat:
-            training_data = self.data.train_data.repeat()
+            training_data = self.data.train_data.batch(1).repeat()
         else:
-            training_data = self.data.train_data
+            training_data = self.data.train_data.batch(1)
+
+        validation_data = (
+            self.data.validation_data.batch(1)
+            if self.data.validation_data is not None
+            else None
+        )
 
         # Set up the arguments to fit
         fit_args = {
             "x": training_data,
-            "validation_data": self.data.validation_data,
+            "validation_data": validation_data,
             "validation_freq": self.validation_frequency,
             "epochs": self.epochs,
             "steps_per_epoch": self.training_steps_per_epoch,
