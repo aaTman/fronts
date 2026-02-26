@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Literal, Any, TypeVar, Generic
+from typing import ClassVar, Literal, Any, TypeVar, Generic
 import tensorflow as tf
 from fronts.layers import activations, losses, metrics
 
@@ -176,7 +176,7 @@ class ActivationConfig(BaseConfig[tf.keras.layers.Activation | tf.keras.layers.L
     # Activations that are passed as string names to Keras layers directly.
     # These do not need instantiation — the UNet/convolution_module accepts
     # the string name via the Keras activation API.
-    _BUILTIN_NAMES: frozenset = frozenset({
+    _BUILTIN_NAMES: ClassVar[frozenset] = frozenset({
         "elu", "exponential", "gelu", "hard_sigmoid", "linear",
         "relu", "selu", "sigmoid", "softmax", "softplus", "softsign",
         "swish", "tanh",
