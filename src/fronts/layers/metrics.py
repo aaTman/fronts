@@ -193,8 +193,8 @@ def fractions_skill_score(
         O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
         M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
 
-        MSE_n = tf.keras.losses.mean_squared_error(
-            O_n * class_weights, M_n * class_weights
+        MSE_n = tf.reduce_mean(
+            tf.square(O_n * class_weights - M_n * class_weights)
         )  # MSE for model forecast fractions (Eq. 5 in RL2008)
         MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(
             tf.square(M_n * class_weights)
