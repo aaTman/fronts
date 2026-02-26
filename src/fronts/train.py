@@ -190,6 +190,7 @@ class Trainer:
         wandb: Optional[WandBConfig] = None,
         repeat: bool = True,
         seed: int = 42,
+        num_replicas: int = 1,
     ) -> None:
         """Initialize the Trainer class and maybe build callbacks.
 
@@ -217,7 +218,9 @@ class Trainer:
                 many batches will run per epoch.
             seed: the seed to use for for all of the backend seeds to allow for
                 determinism. Defaults to 42.
-
+            num_replicas: number of distribution replicas (GPUs). The global batch
+                size is set to this value so each replica receives exactly one
+                complete spatial patch per step. Defaults to 1 (single device).
 
         """
         self.model = model
@@ -231,6 +234,7 @@ class Trainer:
         self.repeat = repeat
         self.callbacks = callbacks or []
         self.seed = seed
+        self.num_replicas = num_replicas
 
     def train(self, model: dict) -> None:
         """Triggers a keras training run using model.fit().
@@ -247,18 +251,20 @@ class Trainer:
         # Without an explicit .batch() call, Keras treats dim 0 (lat=128) as the
         # batch size and feeds the model 3D samples (lon, level, ch), which
         # mismatches the model's Input(shape=(None, None, level, ch)).
-        # .batch(1, drop_remainder=True) wraps each element in a batch of 1 so
-        # Keras sees one sample of the full (lat, lon, level, ch) shape per step.
-        # drop_remainder=True is required for MirroredStrategy: without it, a
-        # partial batch at an epoch boundary produces an empty shard on one replica,
-        # causing an AddN shape mismatch during gradient aggregation.
+        #
+        # The global batch size is set to num_replicas (number of GPUs) so that
+        # MirroredStrategy distributes exactly one complete patch to each replica
+        # per step. With batch_size=1 and N GPUs, MirroredStrategy would try to
+        # shard 1 sample across N devices (impossible), leaving N-1 replicas with
+        # empty shards [0, ...] and causing an AddN shape mismatch during gradient
+        # aggregation. drop_remainder=True ensures no partial batch is emitted.
         if self.repeat:
-            training_data = self.data.train_data.batch(1, drop_remainder=True).repeat()
+            training_data = self.data.train_data.batch(self.num_replicas, drop_remainder=True).repeat()
         else:
-            training_data = self.data.train_data.batch(1, drop_remainder=True)
+            training_data = self.data.train_data.batch(self.num_replicas, drop_remainder=True)
 
         validation_data = (
-            self.data.validation_data.batch(1, drop_remainder=True)
+            self.data.validation_data.batch(self.num_replicas, drop_remainder=True)
             if self.data.validation_data is not None
             else None
         )
@@ -408,6 +414,7 @@ class TrainConfig:
             wandb=self.wandb,
             repeat=self.repeat,
             seed=self.seed,
+            num_replicas=strategy.num_replicas_in_sync,
         )
         return trainer
 
