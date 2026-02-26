@@ -247,15 +247,18 @@ class Trainer:
         # Without an explicit .batch() call, Keras treats dim 0 (lat=128) as the
         # batch size and feeds the model 3D samples (lon, level, ch), which
         # mismatches the model's Input(shape=(None, None, level, ch)).
-        # .batch(1) wraps each element in a batch of 1 so Keras sees one sample
-        # of the full (lat, lon, level, ch) shape per gradient step.
+        # .batch(1, drop_remainder=True) wraps each element in a batch of 1 so
+        # Keras sees one sample of the full (lat, lon, level, ch) shape per step.
+        # drop_remainder=True is required for MirroredStrategy: without it, a
+        # partial batch at an epoch boundary produces an empty shard on one replica,
+        # causing an AddN shape mismatch during gradient aggregation.
         if self.repeat:
-            training_data = self.data.train_data.batch(1).repeat()
+            training_data = self.data.train_data.batch(1, drop_remainder=True).repeat()
         else:
-            training_data = self.data.train_data.batch(1)
+            training_data = self.data.train_data.batch(1, drop_remainder=True)
 
         validation_data = (
-            self.data.validation_data.batch(1)
+            self.data.validation_data.batch(1, drop_remainder=True)
             if self.data.validation_data is not None
             else None
         )
