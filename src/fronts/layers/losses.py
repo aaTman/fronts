@@ -41,6 +41,8 @@ def brier_skill_score(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         # discretize model predictions and labels
         y_true = tf.math.sigmoid(alpha * (y_true - beta))
@@ -86,6 +88,8 @@ def critical_success_index(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         # discretize model predictions and labels
         y_true = tf.math.sigmoid(alpha * (y_true - beta))
@@ -183,6 +187,8 @@ def fractions_skill_score(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if class_weights is not None:
             y_true *= class_weights
@@ -227,6 +233,8 @@ def probability_of_detection(class_weights: list[int | float, ...] = None):
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         y_pred_neg = 1 - y_pred
 
