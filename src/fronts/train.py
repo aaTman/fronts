@@ -1,5 +1,6 @@
 """Train a FrontFinder model with optional Weights and Biases tracking."""
 
+import tensorflow as tf  # ty: ignore[unresolved-import]
 import tensorflow.keras  # ty: ignore[unresolved-import]
 import logging
 import os
@@ -336,6 +337,7 @@ class TrainConfig:
     repeat: bool
     seed: int
     data: Optional[DataConfig] = None
+    distribution: Optional[str] = None
 
     def build(
         self,
@@ -374,8 +376,19 @@ class TrainConfig:
         num_classes = train_spec[1].shape[-1]
         log.info("  input_shape=%s, num_classes=%d", input_shape, num_classes)
 
+        if self.distribution == "mirrored":
+            strategy = tf.distribute.MirroredStrategy()
+            log.info(
+                "Distribution strategy: MirroredStrategy (%d device(s))",
+                strategy.num_replicas_in_sync,
+            )
+        else:
+            strategy = tf.distribute.get_strategy()  # default single-device no-op scope
+            log.info("Distribution strategy: default (single device)")
+
         log.info("Building model...")
-        keras_model = self.model.build(input_shape=input_shape, num_classes=num_classes)
+        with strategy.scope():
+            keras_model = self.model.build(input_shape=input_shape, num_classes=num_classes)
         keras_model.summary(print_fn=log.info)
         log.info("Model built and compiled.")
 

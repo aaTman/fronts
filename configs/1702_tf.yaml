@@ -1,3 +1,4 @@
+distribution: "mirrored"
 epochs: 5000
 training_steps_per_epoch: 30
 validation_steps_per_epoch:
