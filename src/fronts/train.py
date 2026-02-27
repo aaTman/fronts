@@ -269,6 +269,20 @@ class Trainer:
             else None
         )
 
+        # Deep supervision produces N outputs; the dataset yields one target.
+        # Replicate the target so y_true structure matches y_pred structure.
+        n_outputs = len(self.model.outputs)
+        if n_outputs > 1:
+            training_data = training_data.map(
+                lambda x, y: (x, (y,) * n_outputs),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+            if validation_data is not None:
+                validation_data = validation_data.map(
+                    lambda x, y: (x, (y,) * n_outputs),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
+
         # Set up the arguments to fit
         fit_args = {
             "x": training_data,
