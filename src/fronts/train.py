@@ -336,9 +336,7 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    data: DataConfig | None
-    predict: DataConfig | None
-    wandb: WandBConfig
+    wandb: WandBConfig | None
     callbacks: CallbacksConfig
     epochs: int
     training_steps_per_epoch: int
@@ -347,8 +345,9 @@ class TrainConfig:
     verbose: Literal["auto", 0, 1, 2]
     repeat: bool
     seed: int
-    data: DataConfig | None
-    distribution: str | None
+    data: DataConfig | None = None
+    predict: PredictConfig | None = None
+    distribution: str | None = None
 
     def build(
         self,
