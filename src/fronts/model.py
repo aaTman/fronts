@@ -182,11 +182,13 @@ class Model:
             "bias_constraint": self.bias_vector.bias_constraint,
         }
         # UNet3Plus has extra fields not present in other UNet variants.
-        # Pass defaults so the dataclass instantiates correctly.
+        # BaseConfig.build() does method(**config), so passing these keys for
+        # any other variant would raise TypeError — hence the name guard.
+        # filter_num_skip/filter_num_aggregate are omitted: their dataclass
+        # defaults (None → derived from filter_num[0] and levels) apply when
+        # the keys are absent from the dict.
         if self.name == "unet_3plus":
             self.config.update({
-                "filter_num_skip": None,       # defaults to filter_num[0]
-                "filter_num_aggregate": None,  # defaults to levels * filter_num_skip
                 "first_encoder_connections": self.first_encoder_connections,
                 "deep_supervision": self.deep_supervision,
             })
