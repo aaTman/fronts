@@ -13,7 +13,7 @@ import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig
+from fronts.data.config import DataConfig, PredictConfig
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to stderr so output appears in Slurm logs even
@@ -346,6 +346,7 @@ class TrainConfig:
     repeat: bool
     seed: int
     data: Optional[DataConfig] = None
+    predict: Optional[PredictConfig] = None
     distribution: Optional[str] = None
 
     def build(
