@@ -315,6 +315,11 @@ class TFDatasetConfig:
     shuffle: bool = True
     shuffle_buffer: int = 1000
     prefetch: int = 3
+    # Optional metadata for WandB logging only — not used by the data pipeline.
+    # ERA5 variable names and pressure levels are baked into the pre-built TF
+    # dataset; these fields let you record what was used for experiment tracking.
+    variables: Optional[list[str]] = None
+    levels: Optional[list[Union[str, int]]] = None
 
     def _load_years(self, years: list[int]) -> Optional[Any]:
         """Loads and concatenates all monthly TF dataset snapshots for ``years``.
