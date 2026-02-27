@@ -28,6 +28,8 @@ def brier_skill_score(class_weights: list[int | float, ...] = None):
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         squared_errors = tf.math.square(tf.subtract(y_true, y_pred))
 
@@ -72,6 +74,8 @@ def critical_success_index(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if window_size is not None:
             y_pred = tf.nn.max_pool(
@@ -181,6 +185,8 @@ def fractions_skill_score(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if class_weights is not None:
             y_true *= class_weights
@@ -193,8 +199,8 @@ def fractions_skill_score(
         O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
         M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
 
-        MSE_n = tf.keras.metrics.mean_squared_error(
-            O_n * class_weights, M_n * class_weights
+        MSE_n = tf.reduce_mean(
+            tf.square(O_n * class_weights - M_n * class_weights)
         )  # MSE for model forecast fractions (Eq. 5 in RL2008)
         MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(
             tf.square(M_n * class_weights)
@@ -235,6 +241,8 @@ def heidke_skill_score(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if window_size is not None:
             y_pred = tf.nn.max_pool(
@@ -309,6 +317,8 @@ def probability_of_detection(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if window_size is not None:
             y_pred = tf.nn.max_pool(

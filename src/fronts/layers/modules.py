@@ -965,9 +965,13 @@ def deep_supervision_side_output(
         tensor = conv_layer(filters=num_classes, **conv_kwargs)(
             tensor
         )  # This convolution layer contains num_classes filters, one for each class
-        tensor = tf.squeeze(
-            tensor, axis=squeeze_axes
-        )  # Squeeze the tensor and remove the dimension
+        # tf.squeeze cannot be called directly on KerasTensors during model
+        # construction (Keras 3 / TF 2.16+). Wrap in a Lambda layer instead.
+        squeeze_axes_captured = squeeze_axes
+        tensor = tf.keras.layers.Lambda(
+            lambda t: tf.squeeze(t, axis=squeeze_axes_captured),
+            name=f"{name}_Squeeze",
+        )(tensor)  # Squeeze the tensor and remove the dimension
 
     activation_kwargs = {"name": f"{name}_{activation}"}
     activation_config = keras_builders.ActivationConfig(
