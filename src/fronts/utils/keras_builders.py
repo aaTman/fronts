@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Literal, Any, TypeVar, Generic
+from typing import ClassVar, Literal, Any, TypeVar, Generic
 import tensorflow as tf
 from fronts.layers import activations, losses, metrics
 
@@ -42,7 +42,7 @@ class BaseConfig(Generic[T]):
             )
 
         method = self.registry[self.name]
-        return method(**self.config)
+        return method(**(self.config or {}))
 
 
 @dataclasses.dataclass
@@ -132,7 +132,7 @@ class OptimizerConfig(BaseConfig[tf.keras.optimizers.Optimizer]):
 
 
 @dataclasses.dataclass
-class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
+class ActivationConfig(BaseConfig[tf.keras.layers.Activation | tf.keras.layers.Layer]):
     """Activation configuration for layers in a model.
 
     Attributes:
@@ -173,40 +173,47 @@ class ActivationConfig(BaseConfig[tf.keras.Activation | tf.keras.Layer]):
         "thresholded_relu",
     ]
 
+    # Activations that are passed as string names to Keras layers directly.
+    # These do not need instantiation — the UNet/convolution_module accepts
+    # the string name via the Keras activation API.
+    _BUILTIN_NAMES: ClassVar[frozenset] = frozenset({
+        "elu", "exponential", "gelu", "hard_sigmoid", "linear",
+        "relu", "selu", "sigmoid", "softmax", "softplus", "softsign",
+        "swish", "tanh",
+    })
+
     @property
     def registry(self) -> dict[str, type]:
         return {
             "elliott": activations.Elliott,
-            "elu": tf.keras.activations.elu,
-            "exponential": tf.keras.activations.exponential,
             "gaussian": activations.Gaussian,
             "gcu": activations.GCU,
-            "gelu": tf.keras.activations.gelu,
-            "hard_sigmoid": tf.keras.activations.hard_sigmoid,
             "hexpo": activations.Hexpo,
             "isigmoid": activations.ISigmoid,
-            "linear": tf.keras.activations.linear,
             "lisht": activations.LiSHT,
             "prelu": tf.keras.layers.PReLU,
             "psigmoid": activations.PSigmoid,
             "ptanh": activations.PTanh,
             "ptelu": activations.PTELU,
-            "relu": tf.keras.activations.relu,
             "leaky_relu": tf.keras.layers.LeakyReLU,
             "resech": activations.ReSech,
-            "selu": tf.keras.activations.selu,
-            "sigmoid": tf.keras.activations.sigmoid,
             "smelu": activations.SmeLU,
             "snake": activations.Snake,
-            "softmax": tf.keras.activations.softmax,
-            "softplus": tf.keras.activations.softplus,
-            "softsign": tf.keras.activations.softsign,
             "srs": activations.SRS,
             "stanh": activations.STanh,
-            "swish": tf.keras.activations.swish,
-            "tanh": tf.keras.activations.tanh,
-            "thresholded_relu": tf.keras.activations.thresholded_relu,
+            "thresholded_relu": tf.keras.layers.ThresholdedReLU,
         }
+
+    def build(self):
+        """Returns a tf.keras.layers.Activation layer for built-in activations,
+        or an instantiated Layer object for custom/parametric activations.
+
+        convolution_module calls the result as a callable layer, so we always
+        return a Layer instance rather than a bare string.
+        """
+        if self.name in self._BUILTIN_NAMES:
+            return tf.keras.layers.Activation(self.name)
+        return super().build()
 
 
 @dataclasses.dataclass

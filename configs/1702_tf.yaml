@@ -1,0 +1,100 @@
+distribution: "mirrored"
+epochs: 5000
+training_steps_per_epoch: 30
+validation_steps_per_epoch:
+validation_frequency: 1
+verbose: 1
+repeat: true
+seed: 42
+
+model:
+  name: "unet_3plus"
+  batch_normalization: true
+  num_filters: [16, 32, 64, 128]
+  kernel_size: [5, 5, 5]
+  pool_size: [2, 2, 1]
+  upsample_size: [2, 2, 1]
+  depth: 4
+  modules_per_node: 2
+  padding: "same"
+  bias: true
+  loss:
+    name: "fractions_skill_score"
+    config:
+      mask_size: [3, 3]
+  metric:
+    name: "critical_success_index"
+    config:
+      class_weights: [0, 1, 1, 1, 1, 1]
+
+  optimizer:
+    name: "Adam"
+    config:
+      beta_1: 0.9
+      beta_2: 0.999
+
+  convolution_activity_regularizer:
+    regularizer:
+
+  bias_vector:
+    constraint:
+    initializer:
+      name: "zeros"
+      config:
+    regularizer:
+
+  kernel_matrix:
+    constraint:
+    initializer:
+      name: "glorot_uniform"
+      config:
+    regularizer:
+
+  activation:
+    name: "gelu"
+    config:
+
+  deep_supervision: true
+  first_encoder_connections: true
+
+
+data:
+  train_years: [2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2020, 2021, 2022, 2024]
+  val_years: [2023]
+  test_years: []
+  shuffle: true
+
+  # Load pre-built TF dataset snapshots directly from disk.
+  # Subdirectory naming convention: {year}-{month}_tf  (e.g. 2010-1_tf)
+  # train_years/val_years/test_years above are injected at build time —
+  # leave them as [] here.
+  tf_dataset:
+    directory: "/ourdisk/hpc/ai2es/fronts/raw_front_data/tf_datasets/5class-7lvl-conus"
+    train_years: []
+    val_years: []
+    test_years: []
+    shuffle: true
+    shuffle_buffer: 1000
+    prefetch: 3
+    # Metadata for WandB logging — not used by the data pipeline itself.
+    variables: [temperature, specific_humidity, u_component_of_wind, v_component_of_wind, mean_sea_level_pressure]
+    levels: ["surface", 1000, 950, 900, 850]
+
+wandb:
+  project_name: 'fronts'
+  model_run_name: '1702_retrain'
+  wandb_filepath: '/ourdisk/hpc/ai2es/tman/models/1702_retrain.keras'
+  # -- Optional parameters --
+  # log_frequency:
+  # upload_checkpoints:
+  # api_key:
+
+callbacks:
+  monitor: "val_loss"
+  verbose: 1
+  save_best_only: true
+  save_weights_only: false
+  save_freq: "epoch"
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702_tf.keras"
+  csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702_tf.csv"
+  # patience: 55

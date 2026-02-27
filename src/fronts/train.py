@@ -8,12 +8,12 @@ import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
 import datetime
-from typing import Literal, Any, Optional, Union, TypeVar, Type
+from typing import Literal, Any, TypeVar, Type
 import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig
+from fronts.data.config import DataConfig, PredictConfig
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to stderr so output appears in Slurm logs even
@@ -54,7 +54,7 @@ class WandBConfig:
     log_frequency: int = 1
     upload_checkpoints: bool = False
     api_key: str = os.environ.get("WANDB_KEY", "")
-    wandb_filepath: Optional[str] = None
+    wandb_filepath: str | None = None
 
     def __post_init__(self):
         # Default checkpoint path: models/<model_run_name>.keras
@@ -139,10 +139,10 @@ class CallbacksConfig:
     verbose: int
     save_best_only: bool
     save_weights_only: bool
-    save_freq: Union[Literal["epoch"], int]
-    model_checkpoint_path: Optional[str] = None
-    csv_logger_path: Optional[str] = None
-    patience: Optional[int] = None
+    save_freq: Literal["epoch"] | int
+    model_checkpoint_path: str | None = None
+    csv_logger_path: str | None = None
+    patience: int | None = None
 
     def build(self) -> list[tensorflow.keras.callbacks.Callback]:
         # Initialize list
@@ -187,7 +187,7 @@ class Trainer:
         validation_steps_per_epoch: int,
         callbacks: list = None,
         verbose: Literal["auto", 0, 1, 2] = "auto",
-        wandb: Optional[WandBConfig] = None,
+        wandb: WandBConfig | None = None,
         repeat: bool = True,
         seed: int = 42,
         num_replicas: int = 1,
@@ -336,7 +336,9 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    wandb: Optional[WandBConfig]
+    data: DataConfig | None
+    predict: DataConfig | None
+    wandb: WandBConfig
     callbacks: CallbacksConfig
     epochs: int
     training_steps_per_epoch: int
@@ -345,8 +347,8 @@ class TrainConfig:
     verbose: Literal["auto", 0, 1, 2]
     repeat: bool
     seed: int
-    data: Optional[DataConfig] = None
-    distribution: Optional[str] = None
+    data: DataConfig | None
+    distribution: str | None
 
     def build(
         self,
@@ -421,7 +423,7 @@ class TrainConfig:
 
 def open_config_yaml_as_dataclass(
     path: str, config_class: Type[T], require: bool = False
-) -> Optional[T]:
+) -> T | None:
     """Opens a configuration yaml if exists and returns it as the relevant dataclass.
 
     Args:
