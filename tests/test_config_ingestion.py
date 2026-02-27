@@ -166,9 +166,13 @@ class TestFromActualYaml:
 
     def test_actual_yaml_builds_trainer(self, actual_yaml_path):
         """The real 1702.yaml config builds a Trainer."""
+        from fronts.data.config import DataConfig, ModelData
+
         config = open_config_yaml_as_dataclass(
             path=actual_yaml_path, config_class=TrainConfig
         )
-        trainer = config.build()
+        dummy_data = ModelData(train_data=None, validation_data=None)
+        with patch.object(DataConfig, "build", return_value=dummy_data):
+            trainer = config.build()
         assert isinstance(trainer, Trainer)
         assert trainer.epochs == 5000

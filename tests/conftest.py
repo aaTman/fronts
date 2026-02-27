@@ -26,6 +26,11 @@ def _setup_tensorflow_mocks():
     tf.cast = MagicMock()
     tf.abs = MagicMock()
     tf.function = lambda f: f  # passthrough decorator
+    tf.float32 = "float32"
+    tf.float16 = "float16"
+    tf.is_tensor = MagicMock(return_value=False)
+    tf.data = types.ModuleType("tensorflow.data")
+    tf.data.Dataset = MagicMock
 
     # tensorflow.keras
     keras = _make_module("tensorflow.keras")
@@ -144,6 +149,37 @@ def _setup_tensorflow_mocks():
     keras.Layer = layers.Layer
 
 
+def _setup_geospatial_mocks():
+    """Install mock modules for heavy geospatial/data dependencies."""
+    # shapely — imported by data_utils.py
+    shapely = _make_module("shapely")
+    shapely_geom = _make_module("shapely.geometry")
+    shapely_geom.LineString = MagicMock
+    shapely_geom.MultiLineString = MagicMock
+    shapely_geom.Point = MagicMock
+    shapely.geometry = shapely_geom
+    _make_module("shapely.ops")
+
+    # regionmask — may be imported transitively
+    _make_module("regionmask")
+
+    # gcsfs — for ERA5 zarr store access
+    _make_module("gcsfs")
+
+
+def _setup_xbatcher_mocks():
+    """Install mock xbatcher modules before any fronts imports."""
+    xb = _make_module("xbatcher")
+    xb.BatchGenerator = MagicMock(return_value=MagicMock())
+
+    loaders = _make_module("xbatcher.loaders")
+    xb.loaders = loaders
+
+    loaders_keras = _make_module("xbatcher.loaders.keras")
+    loaders_keras.CustomTFDataset = MagicMock(return_value=iter([]))
+    loaders.keras = loaders_keras
+
+
 def _setup_wandb_mocks():
     """Install mock wandb modules."""
     wandb = _make_module("wandb")
@@ -161,6 +197,8 @@ def _setup_wandb_mocks():
 
 # Install mocks before any test collection triggers fronts imports
 _setup_tensorflow_mocks()
+_setup_geospatial_mocks()
+_setup_xbatcher_mocks()
 _setup_wandb_mocks()
 
 
@@ -223,6 +261,7 @@ def sample_config_dict():
             "save_freq": "epoch",
         },
     }
+
 
 
 @pytest.fixture
