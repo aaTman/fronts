@@ -309,9 +309,12 @@ class TFDatasetConfig:
     """
 
     directory: str
-    train_years: list[int]
-    val_years: list[int]
-    test_years: list[int]
+    # Years default to empty lists — DataConfig.build() injects the correct
+    # values via dataclasses.replace() at runtime, so the YAML doesn't need
+    # to repeat them when tf_dataset is nested inside a DataConfig block.
+    train_years: list[int] = dataclasses.field(default_factory=list)
+    val_years: list[int] = dataclasses.field(default_factory=list)
+    test_years: list[int] = dataclasses.field(default_factory=list)
     shuffle: bool = True
     shuffle_buffer: int = 1000
     prefetch: int = 3
