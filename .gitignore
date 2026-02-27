@@ -139,3 +139,6 @@ wandb/
 
 # osx files
 .DS_Store
+
+# dry run files
+fixtures/
