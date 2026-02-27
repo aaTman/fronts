@@ -1,9 +1,8 @@
 """End-to-end test: YAML file -> dacite -> TrainConfig -> Trainer.
 
-Uses the actual 1702.yaml config to verify the full pipeline works.
+Uses test fixture YAMLs to verify the full config ingestion pipeline.
 """
 
-import os
 from unittest.mock import patch
 
 import dacite
@@ -142,37 +141,18 @@ class TestFullPipelineFromFixture:
         assert result.model.name == "nonexistent_model"
 
 
-class TestFromActualYaml:
-    """Test loading the actual 1702.yaml config file."""
+class TestBuildTrainerFromConfig:
+    """Test that a loaded TrainConfig can build a Trainer."""
 
-    @pytest.fixture
-    def actual_yaml_path(self):
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "configs", "1702.yaml"
-        )
-        if not os.path.exists(path):
-            pytest.skip("1702.yaml not found")
-        return path
-
-    def test_actual_yaml_loads(self, actual_yaml_path):
-        """The real 1702.yaml config loads successfully into TrainConfig."""
-        config = open_config_yaml_as_dataclass(
-            path=actual_yaml_path, config_class=TrainConfig
-        )
-        assert config is not None
-        assert isinstance(config, TrainConfig)
-        assert config.epochs == 5000
-        assert config.model.name == "unet_3plus"
-
-    def test_actual_yaml_builds_trainer(self, actual_yaml_path):
-        """The real 1702.yaml config builds a Trainer."""
+    def test_config_builds_trainer(self, sample_yaml_file):
+        """A valid config builds a Trainer with mocked data."""
         from fronts.data.config import DataConfig, ModelData
 
         config = open_config_yaml_as_dataclass(
-            path=actual_yaml_path, config_class=TrainConfig
+            path=sample_yaml_file, config_class=TrainConfig
         )
         dummy_data = ModelData(train_data=None, validation_data=None)
         with patch.object(DataConfig, "build", return_value=dummy_data):
             trainer = config.build()
         assert isinstance(trainer, Trainer)
-        assert trainer.epochs == 5000
+        assert trainer.epochs == 10

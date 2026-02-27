@@ -11,7 +11,7 @@ import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig
+from fronts.data.config import DataConfig, PredictConfig
 
 T = TypeVar("T")
 
@@ -291,6 +291,7 @@ class TrainConfig:
 
     model: ModelConfig
     data: Optional[DataConfig] = None
+    predict: Optional[PredictConfig] = None
     wandb: WandBConfig
     callbacks: CallbacksConfig
     epochs: int
