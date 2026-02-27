@@ -40,6 +40,8 @@ class ModelConfig:
     pool_size: tuple[int]
     upsample_size: tuple[int]
     bias: bool
+    deep_supervision: bool = False
+    first_encoder_connections: bool = False
 
     def build(self, input_shape: tuple, num_classes: int):
         """Builds and compiles the UNet model based on the configuration.
@@ -72,6 +74,8 @@ class ModelConfig:
             bias=self.bias,
             input_shape=input_shape,
             num_classes=num_classes,
+            deep_supervision=self.deep_supervision,
+            first_encoder_connections=self.first_encoder_connections,
         )
         return model.build()
 
@@ -105,6 +109,8 @@ class Model:
         bias: bool,
         input_shape: tuple,
         num_classes: int,
+        deep_supervision: bool = False,
+        first_encoder_connections: bool = False,
     ):
         self.name = name
         self.loss_config = loss_config
@@ -127,6 +133,8 @@ class Model:
         self.bias = bias
         self.input_shape = input_shape
         self.num_classes = num_classes
+        self.deep_supervision = deep_supervision
+        self.first_encoder_connections = first_encoder_connections
 
         if len(self.num_filters) != self.depth:
             raise ValueError(
@@ -179,8 +187,8 @@ class Model:
             self.config.update({
                 "filter_num_skip": None,       # defaults to filter_num[0]
                 "filter_num_aggregate": None,  # defaults to levels * filter_num_skip
-                "first_encoder_connections": False,
-                "deep_supervision": False,
+                "first_encoder_connections": self.first_encoder_connections,
+                "deep_supervision": self.deep_supervision,
             })
         # UNetRegistry.build() instantiates the UNet dataclass; .build() on that
         # dataclass constructs and returns the tf.keras.Model.
