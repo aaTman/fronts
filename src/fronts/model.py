@@ -40,9 +40,20 @@ class ModelConfig:
     pool_size: tuple[int]
     upsample_size: tuple[int]
     bias: bool
+    deep_supervision: bool = False
+    first_encoder_connections: bool = False
 
-    def build(self):
-        """Builds the UNet model based on the configuration."""
+    def build(self, input_shape: tuple, num_classes: int):
+        """Builds and compiles the UNet model based on the configuration.
+
+        Args:
+            input_shape: Shape of the model inputs (excluding batch dimension).
+                Spatial dims should be None to allow variable-size inference,
+                e.g. (None, None, 7, 9) for 3D inputs.
+            num_classes: Number of output classes (e.g. 6 for 5 front types + background).
+
+        Returns a compiled tf.keras.Model.
+        """
         model = Model(
             name=self.name,
             loss_config=self.loss,
@@ -61,8 +72,12 @@ class ModelConfig:
             pool_size=self.pool_size,
             upsample_size=self.upsample_size,
             bias=self.bias,
+            input_shape=input_shape,
+            num_classes=num_classes,
+            deep_supervision=self.deep_supervision,
+            first_encoder_connections=self.first_encoder_connections,
         )
-        return model
+        return model.build()
 
 
 class Model:
@@ -83,7 +98,6 @@ class Model:
         bias_vector_config: BiasVectorConfig,
         kernel_matrix_config: KernelMatrixConfig,
         activation_config: ActivationConfig,
-        output_activation_config: ActivationConfig,
         batch_normalization: bool,
         num_filters: list[int],
         kernel_size: list[int],
@@ -93,6 +107,10 @@ class Model:
         pool_size: tuple[int],
         upsample_size: tuple[int],
         bias: bool,
+        input_shape: tuple,
+        num_classes: int,
+        deep_supervision: bool = False,
+        first_encoder_connections: bool = False,
     ):
         self.name = name
         self.loss_config = loss_config
@@ -104,7 +122,6 @@ class Model:
         self.bias_vector_config = bias_vector_config
         self.kernel_matrix_config = kernel_matrix_config
         self.activation_config = activation_config
-        self.output_activation_config = output_activation_config
         self.batch_normalization = batch_normalization
         self.num_filters = num_filters
         self.kernel_size = kernel_size
@@ -114,6 +131,10 @@ class Model:
         self.pool_size = pool_size
         self.upsample_size = upsample_size
         self.bias = bias
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        self.deep_supervision = deep_supervision
+        self.first_encoder_connections = first_encoder_connections
 
         if len(self.num_filters) != self.depth:
             raise ValueError(
@@ -128,16 +149,15 @@ class Model:
         self.bias_vector = self.bias_vector_config.build()
         self.kernel_matrix = self.kernel_matrix_config.build()
         self.activation = self.activation_config.build()
-        self.output_activation = self.output_activation_config.build()
-        # TODO: input_shape and num_classes
-        # TODO: modify pool size if needed to match len of dims
-        # TODO: match kernel size to depth as well
-        # TODO: match upsample_size as well
 
     def build(self):
-        """Builds the model based on the configuration."""
-        self.squeeze_axes = determine_squeeze_axes()
-        self.shared_axes = determine_shared_axes()
+        """Builds and compiles the Keras model."""
+        # For 3D inputs (lat, lon, level, channels), squeeze the level axis (index 2)
+        # so the UNet output matches the 2D target shape (lat, lon, classes).
+        # For 2D inputs (lat, lon, channels), no squeezing is needed.
+        squeeze_axes = determine_squeeze_axes(self.input_shape)
+        shared_axes = determine_shared_axes(self.input_shape)
+
         self.config = {
             "input_shape": self.input_shape,
             "num_classes": self.num_classes,
@@ -146,12 +166,11 @@ class Model:
             "levels": self.depth,
             "filter_num": self.num_filters,
             "kernel_size": self.kernel_size,
-            "squeeze_axes": self.squeeze_axes,
-            "shared_axes": self.shared_axes,
+            "squeeze_axes": squeeze_axes,
+            "shared_axes": shared_axes,
             "modules_per_node": self.modules_per_node,
             "batch_normalization": self.batch_normalization,
-            "activation": self.activation,
-            "output_activation": self.output_activation,
+            "activation": self.activation_config.name,
             "padding": self.padding,
             "use_bias": self.bias,
             "kernel_initializer": self.kernel_matrix.kernel_initializer,
@@ -162,13 +181,45 @@ class Model:
             "kernel_constraint": self.kernel_matrix.kernel_constraint,
             "bias_constraint": self.bias_vector.bias_constraint,
         }
-        output_model = UNetRegistry(name=self.name, config=self.config).build()
+        # UNet3Plus has extra fields not present in other UNet variants.
+        # BaseConfig.build() does method(**config), so passing these keys for
+        # any other variant would raise TypeError — hence the name guard.
+        # filter_num_skip/filter_num_aggregate are omitted: their dataclass
+        # defaults (None → derived from filter_num[0] and levels) apply when
+        # the keys are absent from the dict.
+        if self.name == "unet_3plus":
+            self.config.update({
+                "first_encoder_connections": self.first_encoder_connections,
+                "deep_supervision": self.deep_supervision,
+            })
+        # UNetRegistry.build() instantiates the UNet dataclass; .build() on that
+        # dataclass constructs and returns the tf.keras.Model.
+        output_model = UNetRegistry(name=self.name, config=self.config).build().build()
+        output_model.compile(
+            loss=self.loss,
+            optimizer=self.optimizer,
+            metrics=[self.metric],
+        )
         return output_model
 
 
-def determine_squeeze_axes() -> int | None:
-    pass
+def determine_squeeze_axes(input_shape: tuple) -> int | None:
+    """Returns the axis to squeeze for 3D→2D output, or None for 2D inputs.
+
+    The UNet processes 3D inputs (lat, lon, level, channels) but produces
+    2D targets (lat, lon, classes). The level axis (index 3, 1-based with
+    batch) is squeezed in the final output layer.
+
+    For 2D inputs (lat, lon, channels) no squeeze is needed.
+    """
+    # input_shape excludes batch dim, e.g. (None, None, 7, 9) = 3D, (None, None, 9) = 2D
+    ndims = len(input_shape) - 1  # spatial dims (exclude channel dim)
+    return 3 if ndims == 3 else None
 
 
-def determine_shared_axes() -> int | None:
-    pass
+def determine_shared_axes(input_shape: tuple) -> int | None:
+    """Returns shared axes for learnable activation parameters, or None.
+
+    Following the legacy convention: None (share across all arbitrary dims).
+    """
+    return None
