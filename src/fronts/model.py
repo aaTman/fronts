@@ -195,11 +195,21 @@ class Model:
         # UNetRegistry.build() instantiates the UNet dataclass; .build() on that
         # dataclass constructs and returns the tf.keras.Model.
         output_model = UNetRegistry(name=self.name, config=self.config).build().build()
-        output_model.compile(
-            loss=self.loss,
-            optimizer=self.optimizer,
-            metrics=[self.metric],
-        )
+        # Multi-output models (deep_supervision=True) require one loss and one
+        # metric list per output; single-output models use the plain forms.
+        n_outputs = len(output_model.outputs)
+        if n_outputs > 1:
+            output_model.compile(
+                loss=[self.loss] * n_outputs,
+                optimizer=self.optimizer,
+                metrics=[[self.metric]] * n_outputs,
+            )
+        else:
+            output_model.compile(
+                loss=self.loss,
+                optimizer=self.optimizer,
+                metrics=[self.metric],
+            )
         return output_model
 
 
