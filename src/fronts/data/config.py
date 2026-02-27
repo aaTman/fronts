@@ -13,7 +13,7 @@ import datetime
 import glob as glob_module
 import logging
 import os
-from typing import Any, Optional, Union
+from typing import Any
 
 import tensorflow as tf
 import xarray as xr
@@ -55,7 +55,7 @@ SURFACE_ONLY_VARIABLES: set[str] = {
 def _stack_era5_variables(
     ds: xr.Dataset,
     variables: list[str],
-    levels: list[Union[str, int]],
+    levels: list[str | int],
 ) -> xr.Dataset:
     """Stacks ERA5 variables into a unified Dataset with a mixed level coordinate.
 
@@ -165,7 +165,7 @@ class ERA5PredictorConfig:
 
     domain_extent: list[float]
     variables: list[str]
-    levels: list[Union[str, int]]
+    levels: list[str | int]
     store: str
     chunks: dict[str, int]
     consolidated: bool
@@ -235,7 +235,7 @@ class FrontsDataConfig:
     """
 
     directory: str
-    front_types: Optional[Any]  # str | list[str] | None
+    front_types: str | list[str] | None
     years: list[int] = dataclasses.field(default_factory=list)
 
     def build(self) -> xr.Dataset:
@@ -318,10 +318,10 @@ class TFDatasetConfig:
     # Optional metadata for WandB logging only — not used by the data pipeline.
     # ERA5 variable names and pressure levels are baked into the pre-built TF
     # dataset; these fields let you record what was used for experiment tracking.
-    variables: Optional[list[str]] = None
-    levels: Optional[list[Union[str, int]]] = None
+    variables: list[str] | None = None
+    levels: list[str | int] | None = None
 
-    def _load_years(self, years: list[int]) -> Optional[Any]:
+    def _load_years(self, years: list[int]) -> Any | None:
         """Loads and concatenates all monthly TF dataset snapshots for ``years``.
 
         Subdirectories are matched by prefix: a directory named ``2010-3_tf``
@@ -403,7 +403,7 @@ class ModelData:
 
     train_data: Any
     validation_data: Any
-    test_data: Optional[Any] = None
+    test_data: Any | None = None
 
 
 @dataclasses.dataclass
@@ -447,10 +447,10 @@ class DataConfig:
     train_years: list[int]
     val_years: list[int]
     test_years: list[int]
-    tf_dataset: Optional[TFDatasetConfig] = None
-    era5: Optional[ERA5PredictorConfig] = None
-    fronts: Optional[FrontsDataConfig] = None
-    batch: Optional[BatchGeneratorConfig] = None
+    tf_dataset: TFDatasetConfig | None = None
+    era5: ERA5PredictorConfig | None = None
+    fronts: FrontsDataConfig | None = None
+    batch: BatchGeneratorConfig | None = None
     shuffle: bool = True
     normalization_method: str = "standard"
 
@@ -490,7 +490,7 @@ class DataConfig:
                 "era5, fronts, and batch to be set."
             )
 
-        def _build_split(years: list[int]) -> Optional[Any]:
+        def _build_split(years: list[int]) -> Any | None:
             if not years:
                 return None
 
@@ -586,8 +586,8 @@ class TimeSelection:
     """
 
     most_recent: bool = False
-    timestamps: Optional[list[datetime.datetime]] = None
-    date_range: Optional[list[datetime.datetime]] = None  # exactly [start, end]
+    timestamps: list[datetime.datetime] | None = None
+    date_range: list[datetime.datetime] | None = None  # exactly [start, end]
 
     def __post_init__(self):
         modes_set = sum([
