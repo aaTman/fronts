@@ -13,7 +13,7 @@ import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig, PredictConfig
+from fronts.data.config import DataConfig
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to stderr so output appears in Slurm logs even
@@ -346,7 +346,6 @@ class TrainConfig:
     repeat: bool
     seed: int
     data: Optional[DataConfig] = None
-    predict: Optional[PredictConfig] = None
     distribution: Optional[str] = None
 
     def build(
@@ -535,9 +534,31 @@ if __name__ == "__main__":
     trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
     log.info("Trainer ready. Starting training run...")
 
-    # model_config dict is passed to wandb.init for run metadata
-    model_config = dataclasses.asdict(train_config.model)
+    # Build WandB run metadata — model architecture plus data/training provenance
+    # to match the fields logged by the legacy pipeline.
+    run_metadata = dataclasses.asdict(train_config.model)
+    if train_config.data is not None:
+        data = train_config.data
+        run_metadata["training_years"] = data.train_years
+        run_metadata["validation_years"] = data.val_years
+        run_metadata["test_years"] = data.test_years
+        run_metadata["steps_per_epoch"] = [
+            train_config.training_steps_per_epoch,
+            train_config.validation_steps_per_epoch,
+        ]
+        # Prefer ERA5 config for variable/level metadata; fall back to optional
+        # metadata fields on TFDatasetConfig when using pre-built datasets.
+        if data.era5 is not None:
+            run_metadata["variables"] = data.era5.variables
+            run_metadata["pressure_levels"] = [str(lvl) for lvl in data.era5.levels]
+        elif data.tf_dataset is not None:
+            if data.tf_dataset.variables is not None:
+                run_metadata["variables"] = data.tf_dataset.variables
+            if data.tf_dataset.levels is not None:
+                run_metadata["pressure_levels"] = [
+                    str(lvl) for lvl in data.tf_dataset.levels
+                ]
 
     # Trigger training run
-    trainer.train(model=model_config)
+    trainer.train(model=run_metadata)
     log.info("Training complete.")
