@@ -5,11 +5,13 @@ import os
 import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
+import datetime
 from typing import Literal, Any, Optional, Union, TypeVar, Type
 import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
+from fronts.data.config import DataConfig, PredictConfig
 
 T = TypeVar("T")
 
@@ -288,8 +290,8 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    # need to build out data config module
-    # data: DataConfig
+    data: Optional[DataConfig] = None
+    predict: Optional[PredictConfig] = None
     wandb: WandBConfig
     callbacks: CallbacksConfig
     epochs: int
@@ -353,7 +355,7 @@ def open_config_yaml_as_dataclass(
         _class_instance = dacite.from_dict(
             data_class=config_class,
             data=config_yaml,
-            config=dacite.Config(cast=[tuple], check_types=False),
+            config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
         )
         return _class_instance
     elif require:
