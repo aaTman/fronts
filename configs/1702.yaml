@@ -22,6 +22,8 @@ model:
     name: "fractions_skill_score"
     config:
       mask_size: [3, 3]
+      c: 1.0
+      threshold: 0.5
   metric:
     name: "critical_success_index"
     config:
@@ -70,16 +72,12 @@ data:
       2015,
       2016,
       2017,
-      2018,
       2020,
-      2021,
-      2022,
-      2024,
     ]
-  val_years: [2023]
-  test_years: []
+  val_years: [2018]
+  test_years: [2019]
   shuffle: true
-  normalization_method: "standard"
+  normalization_method: "min-max"
 
   # ---- NetCDF pipeline (ERA5 + fronts) ----
   # Used when tf_dataset is absent or null. Requires era5, fronts, and batch.
@@ -176,7 +174,7 @@ predict:
   #     - "2024-06-01T00:00:00"
   #     - "2024-06-07T18:00:00"
 
-  normalization_method: "standard"
+  normalization_method: "min-max"
 
   era5:
     domain_extent: [-140.0, -60.0, 20.0, 60.0]

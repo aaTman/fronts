@@ -3,10 +3,11 @@ Custom metrics for U-Net models.
     - Brier Skill Score (BSS)
     - Critical Success Index (CSI)
     - Fractions Skill Score (FSS)
+    - Heidke Skill Score (HSS)
     - Probability of Detection (POD)
 
 Author: Andrew Justin (andrewjustinwx@gmail.com)
-Script version: 2025.3.5
+Script version: 2023.12.19
 """
 
 import tensorflow as tf
@@ -124,8 +125,9 @@ def critical_success_index(
 
 def fractions_skill_score(
     mask_size: int | tuple[int, ...] | list[int, ...] = (3, 3),
-    alpha: int | float = 1.0,
-    beta: int | float = 0.5,
+    c: float = 1.0,
+    binary: bool = False,
+    threshold: float = 0.5,
     class_weights: list[int | float, ...] = None,
 ):
     """
@@ -135,13 +137,15 @@ def fractions_skill_score(
     ----------
     mask_size: int or tuple
         Size of the mask/pool in the AveragePooling layers.
-    alpha: int or float
-        Parameter that controls how steep the sigmoid function is for discretization. Higher alpha makes the sigmoid function
-            steeper.
-    beta: int or float
-        Parameter used to control some behaviors of the sigmoid discretization function. Default and recommended value is 0.5.
+    c: int or float
+        C parameter in the sigmoid function. This will only be used if 'binary' is False.
+    binary: bool
+        Convert y_pred to binary values (0/1).
+    threshold: float
+        If binary is False, this threshold is used in the sigmoid function.
+        If binary is True, this is the threshold used to convert y_pred to binary values (0/1).
     class_weights: list of values or None
-            List of weights to apply to each class. The length must be equal to the number of classes in y_pred and y_true.
+        List of weights to apply to each class. The length must be equal to the number of classes in y_pred and y_true.
 
     Returns
     -------
@@ -151,31 +155,30 @@ def fractions_skill_score(
     References
     ----------
     (RL2008) Roberts, N. M., and H. W. Lean, 2008: Scale-Selective Verification of Rainfall Accumulations from High-Resolution
-        Forecasts of Convective Events. Mon. Wea. Rev., 136, 78–97, https://doi.org/10.1175/2007MWR2123.1.
+        Forecasts of Convective Events. Mon. Wea. Rev., 136, 78-97, https://doi.org/10.1175/2007MWR2123.1.
     """
 
-    # keyword arguments for the AveragePooling layer
-    pool_args = dict(pool_size=mask_size, strides=1, padding="same")
-
-    # if mask_size is an int, convert to a tuple. This allows us to check the length of the tuple and pull the correct AveragePooling layer
+    # if mask_size is an int, convert to a tuple
     if isinstance(mask_size, int):
         mask_size = (mask_size,)
-
-    # if mask_size is an list, convert to a tuple
     elif isinstance(mask_size, list):
         mask_size = tuple(mask_size)
 
-    # make sure the mask size is between 1 and 3
-    assert 1 <= len(mask_size) <= 3, (
-        "mask_size must have length between 1 and 3, received length %d"
-        % len(mask_size)
+    num_dims = len(mask_size)
+
+    assert 1 <= num_dims <= 3, (
+        "mask_size must have length between 1 and 3, received length %d" % num_dims
     )
 
-    # get the pooling layer based off the length of the mask_size tuple
-    pool = getattr(tf.keras.layers, "AveragePooling%dD" % len(mask_size))(**pool_args)
+    pool_kwargs = {
+        "pool_size": mask_size,
+        "strides": (1,) * num_dims,
+        "padding": "valid",
+    }
 
-    if class_weights is not None:
-        class_weights = tf.cast(class_weights, tf.float32)
+    pool_class = getattr(tf.keras.layers, "AveragePooling%dD" % num_dims)
+    pool1 = pool_class(**pool_kwargs)
+    pool2 = pool_class(**pool_kwargs)
 
     @tf.function
     def fss(y_true, y_pred):
@@ -188,27 +191,55 @@ def fractions_skill_score(
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
 
-        if class_weights is not None:
-            y_true *= class_weights
-            y_pred *= class_weights
+        if binary:
+            y_true_disc = tf.where(y_true > threshold, 1.0, 0.0)
+            y_pred_disc = tf.where(y_pred > threshold, 1.0, 0.0)
+        else:
+            y_true_disc = tf.math.sigmoid(c * (y_true - threshold))
+            y_pred_disc = tf.math.sigmoid(c * (y_pred - threshold))
 
-        # discretize model predictions and labels
-        y_true = tf.math.sigmoid(alpha * (y_true - beta))
-        y_pred = tf.math.sigmoid(alpha * (y_pred - beta))
+        y_true_density = pool1(y_true_disc)
+        n_density_pixels = tf.cast(
+            (tf.shape(y_true_density)[1] * tf.shape(y_true_density)[2]), tf.float32
+        )
 
-        O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
-        M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
+        y_pred_density = pool2(y_pred_disc)
 
-        MSE_n = tf.reduce_mean(
-            tf.square(O_n * class_weights - M_n * class_weights)
-        )  # MSE for model forecast fractions (Eq. 5 in RL2008)
-        MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(
-            tf.square(M_n * class_weights)
-        )  # reference forecast (Eq. 7 in RL2008)
+        if class_weights is None:
+            MSE_n = tf.keras.metrics.mean_squared_error(y_true_density, y_pred_density)
+        else:
+            relative_class_weights = tf.cast(
+                class_weights / tf.math.reduce_sum(class_weights), tf.float32
+            )
+            MSE_n = tf.reduce_mean(
+                tf.math.square(y_true_density - y_pred_density)
+                * relative_class_weights,
+                axis=-1,
+            )
 
-        FSS = 1 - MSE_n / (MSE_ref + 1e-10)  # fractions skill score (Eq. 6 in RL2008)
+        O_n_squared_image = tf.keras.layers.Multiply()(
+            [y_true_density, y_true_density]
+        )
+        O_n_squared_vector = tf.keras.layers.Flatten()(O_n_squared_image)
+        O_n_squared_sum = tf.reduce_sum(O_n_squared_vector)
 
-        return FSS
+        M_n_squared_image = tf.keras.layers.Multiply()(
+            [y_pred_density, y_pred_density]
+        )
+        M_n_squared_vector = tf.keras.layers.Flatten()(M_n_squared_image)
+        M_n_squared_sum = tf.reduce_sum(M_n_squared_vector)
+
+        MSE_n_ref = (O_n_squared_sum + M_n_squared_sum) / n_density_pixels
+
+        epsilon = tf.keras.backend.epsilon()  # 1e-7, constant for numeric stability
+
+        if binary:
+            if MSE_n_ref == 0:
+                return 1 - MSE_n
+            else:
+                return 1 - (MSE_n / MSE_n_ref)
+        else:
+            return 1 - (MSE_n / (MSE_n_ref + epsilon))
 
     return fss
 
@@ -329,7 +360,9 @@ def probability_of_detection(
             )
 
         y_pred = (
-            tf.where(y_pred >= threshold, 1.0, 0.0) if threshold is not None else y_pred
+            tf.where(y_pred >= threshold, 1.0, 0.0)
+            if threshold is not None
+            else y_pred
         )
         y_pred_neg = 1 - y_pred
 
@@ -345,12 +378,16 @@ def probability_of_detection(
                 class_weights / tf.math.reduce_sum(class_weights), tf.float32
             )
             pod = tf.math.reduce_sum(
-                tf.math.divide_no_nan(true_positives, true_positives + false_negatives)
+                tf.math.divide_no_nan(
+                    true_positives, true_positives + false_negatives
+                )
                 * relative_class_weights
             )
         else:
             pod = tf.math.reduce_sum(
-                tf.math.divide_no_nan(true_positives, true_positives + false_negatives)
+                tf.math.divide_no_nan(
+                    true_positives, true_positives + false_negatives
+                )
             )
 
         return pod
