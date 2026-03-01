@@ -199,40 +199,19 @@ def fractions_skill_score(
             y_pred_disc = tf.math.sigmoid(c * (y_pred - threshold))
 
         y_true_density = pool1(y_true_disc)
-        n_density_pixels = tf.cast(
-            (tf.shape(y_true_density)[1] * tf.shape(y_true_density)[2]), tf.float32
-        )
-
         y_pred_density = pool2(y_pred_disc)
 
-        if class_weights is None:
-            MSE_n = tf.reduce_mean(
-                tf.math.square(y_true_density - y_pred_density), axis=-1
-            )
-        else:
+        if class_weights is not None:
             relative_class_weights = tf.cast(
                 class_weights / tf.math.reduce_sum(class_weights), tf.float32
             )
-            MSE_n = tf.reduce_mean(
-                tf.math.square(y_true_density - y_pred_density)
-                * relative_class_weights,
-                axis=-1,
-            )
+            y_true_density = y_true_density * relative_class_weights
+            y_pred_density = y_pred_density * relative_class_weights
 
-        O_n_squared_sum = tf.reduce_sum(tf.math.square(y_true_density))
-        M_n_squared_sum = tf.reduce_sum(tf.math.square(y_pred_density))
+        MSE_n = tf.reduce_mean(tf.math.square(y_true_density - y_pred_density))
+        MSE_ref = tf.reduce_mean(tf.math.square(y_true_density)) + tf.reduce_mean(tf.math.square(y_pred_density))
 
-        MSE_n_ref = (O_n_squared_sum + M_n_squared_sum) / n_density_pixels
-
-        epsilon = 1e-7  # constant for numeric stability
-
-        if binary:
-            if MSE_n_ref == 0:
-                return 1 - MSE_n
-            else:
-                return 1 - (MSE_n / MSE_n_ref)
-        else:
-            return 1 - (MSE_n / (MSE_n_ref + epsilon))
+        return 1 - MSE_n / (MSE_ref + 1e-7)
 
     return fss
 
