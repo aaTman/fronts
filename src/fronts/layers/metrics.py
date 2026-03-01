@@ -206,7 +206,9 @@ def fractions_skill_score(
         y_pred_density = pool2(y_pred_disc)
 
         if class_weights is None:
-            MSE_n = tf.keras.metrics.mean_squared_error(y_true_density, y_pred_density)
+            MSE_n = tf.reduce_mean(
+                tf.math.square(y_true_density - y_pred_density), axis=-1
+            )
         else:
             relative_class_weights = tf.cast(
                 class_weights / tf.math.reduce_sum(class_weights), tf.float32
@@ -217,21 +219,12 @@ def fractions_skill_score(
                 axis=-1,
             )
 
-        O_n_squared_image = tf.keras.layers.Multiply()(
-            [y_true_density, y_true_density]
-        )
-        O_n_squared_vector = tf.keras.layers.Flatten()(O_n_squared_image)
-        O_n_squared_sum = tf.reduce_sum(O_n_squared_vector)
-
-        M_n_squared_image = tf.keras.layers.Multiply()(
-            [y_pred_density, y_pred_density]
-        )
-        M_n_squared_vector = tf.keras.layers.Flatten()(M_n_squared_image)
-        M_n_squared_sum = tf.reduce_sum(M_n_squared_vector)
+        O_n_squared_sum = tf.reduce_sum(tf.math.square(y_true_density))
+        M_n_squared_sum = tf.reduce_sum(tf.math.square(y_pred_density))
 
         MSE_n_ref = (O_n_squared_sum + M_n_squared_sum) / n_density_pixels
 
-        epsilon = tf.keras.backend.epsilon()  # 1e-7, constant for numeric stability
+        epsilon = 1e-7  # constant for numeric stability
 
         if binary:
             if MSE_n_ref == 0:
