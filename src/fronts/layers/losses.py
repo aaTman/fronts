@@ -28,6 +28,8 @@ def brier_skill_score(class_weights: list[int | float, ...] = None):
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         losses = tf.math.square(tf.subtract(y_true, y_pred))
 
@@ -71,6 +73,8 @@ def critical_success_index(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if window_size is not None:
             y_pred = tf.nn.max_pool(
@@ -183,6 +187,8 @@ def fractions_skill_score(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if binary:
             y_true_disc = tf.where(y_true > threshold, 1.0, 0.0)
@@ -237,6 +243,8 @@ def probability_of_detection(
         y_pred: tf.Tensor
             Tensor containing model predictions.
         """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
 
         if window_size is not None:
             y_pred = tf.nn.max_pool(
