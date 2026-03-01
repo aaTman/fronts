@@ -173,7 +173,7 @@ def fractions_skill_score(
     pool_kwargs = {
         "pool_size": mask_size,
         "strides": (1,) * num_dims,
-        "padding": "valid",
+        "padding": "same",
     }
 
     pool_class = getattr(tf.keras.layers, "AveragePooling%dD" % num_dims)
