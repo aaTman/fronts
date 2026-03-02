@@ -635,6 +635,25 @@ class DataConfig:
             targets_ds = fronts_cfg.build()
             log.info("  Fronts dataset ready.")
 
+            # Align timestamps: keep only times present in BOTH datasets.
+            # ERA5 is hourly; fronts exist only at analysis times (e.g. 00Z/12Z).
+            common_times = sorted(
+                set(inputs_ds.time.values) & set(targets_ds.time.values)
+            )
+            if not common_times:
+                raise ValueError(
+                    f"No overlapping timestamps between ERA5 and fronts "
+                    f"for years={years}."
+                )
+            n_era5 = inputs_ds.sizes["time"]
+            n_fronts = targets_ds.sizes["time"]
+            inputs_ds = inputs_ds.sel(time=common_times)
+            targets_ds = targets_ds.sel(time=common_times)
+            log.info(
+                "  Timestamp alignment: ERA5=%d, fronts=%d → %d common timesteps.",
+                n_era5, n_fronts, len(common_times),
+            )
+
             # Build tf.data.Dataset via create_dataloader directly
             # (BatchGeneratorConfig.build() is not used because it lacks inputs/targets fields)
             log.info("  Wrapping into tf.data.Dataset via create_dataloader...")
