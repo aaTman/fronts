@@ -6,6 +6,7 @@ validation_frequency: 1
 verbose: 1
 repeat: true
 seed: 42
+batch_size: 64
 
 model:
   name: "unet_3plus"
@@ -32,6 +33,7 @@ model:
   optimizer:
     name: "Adam"
     config:
+      learning_rate: 0.0001
       beta_1: 0.9
       beta_2: 0.999
 
@@ -79,6 +81,12 @@ data:
   shuffle: true
   normalization_method: "min-max"
 
+  augmentation:
+    flip_chance_lat: 0.29
+    flip_chance_lon: 0.29
+    u_wind_index: 3   # "u" in the variable ordering [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
+    v_wind_index: 4   # "v" in the variable ordering
+
   # ---- NetCDF pipeline (ERA5 + fronts) ----
   # Used when tf_dataset is absent or null. Requires era5, fronts, and batch.
   era5:
@@ -94,7 +102,16 @@ data:
       - "specific_humidity" # surface counterpart: surface_specific_humidity
       - "u_component_of_wind" # surface counterpart: 10m_u_component_of_wind
       - "v_component_of_wind" # surface counterpart: 10m_v_component_of_wind
+      - "geopotential" # raw geopotential (m²/s²), derived → geopotential_height (dam)
       - "mean_sea_level_pressure" # surface-only
+    # Derived variables computed after stacking.  Order matters: dewpoint must
+    # come before virtual_temperature, relative_humidity, and theta_e.
+    derived_variables:
+      - "dewpoint"
+      - "virtual_temperature"
+      - "relative_humidity"
+      - "equivalent_potential_temperature"
+      - "geopotential_height"
     # levels may contain "surface" and/or integer hPa values in any order.
     # "surface" triggers loading of the surface counterpart for each variable.
     levels: ["surface", 1000, 950, 900, 850]
@@ -129,8 +146,9 @@ data:
     shuffle_buffer: 1000
     prefetch: 3
     # Metadata for WandB logging — not used by the data pipeline itself.
-    variables: [temperature, specific_humidity, u_component_of_wind, v_component_of_wind, mean_sea_level_pressure]
-    levels: ["surface", 1000, 950, 900, 850]
+    # Legacy short names: [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
+    variables: [temperature, dewpoint, virtual_temperature, u_component_of_wind, v_component_of_wind, specific_humidity, relative_humidity, geopotential_height, equivalent_potential_temperature]
+    levels: ["surface", 1000, 950, 900, 850, 700, 500]
 
 wandb:
   project_name: "fronts"
@@ -183,7 +201,14 @@ predict:
       - "specific_humidity"
       - "u_component_of_wind"
       - "v_component_of_wind"
+      - "geopotential"
       - "mean_sea_level_pressure"
+    derived_variables:
+      - "dewpoint"
+      - "virtual_temperature"
+      - "relative_humidity"
+      - "equivalent_potential_temperature"
+      - "geopotential_height"
     levels: ["surface", 1000, 950, 900, 850]
     store: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
     chunks:

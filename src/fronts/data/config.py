@@ -20,7 +20,7 @@ import xarray as xr
 
 from fronts.data.batch import BatchGeneratorConfig, create_dataloader
 from fronts.data.era5 import convert_domain_extent_to_bounding_box
-from fronts.utils import data_utils
+from fronts.utils import calc, data_utils
 
 log = logging.getLogger("fronts.data.config")
 
@@ -128,6 +128,97 @@ def _stack_era5_variables(
     return xr.merge(result_datasets, join="outer")
 
 
+# ---------------------------------------------------------------------------
+# Derived variable computation
+# ---------------------------------------------------------------------------
+
+# Mapping from derived variable name → computation function.
+# Each function receives the stacked xr.Dataset (which must already contain
+# the prerequisite raw variables) and returns the dataset with the new
+# variable added.  Order matters — e.g. dewpoint must be derived before
+# virtual_temperature, relative_humidity, or theta_e.
+GEOPOTENTIAL_TO_DAM = 98.0665  # geopotential (m²/s²) → geopotential height (dam)
+
+
+def _derive_dewpoint(ds: xr.Dataset) -> xr.Dataset:
+    """Derive dewpoint temperature from specific_humidity and pressure."""
+    # Build a pressure array matching the data shape from the level coordinate.
+    # Level values are hPa (int) or "surface" (str).  For "surface" we
+    # approximate with 1013.25 hPa.
+    level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
+    pressure_pa = xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    ds["dewpoint"] = calc.dewpoint_from_specific_humidity(pressure_pa, ds["specific_humidity"])
+    return ds
+
+
+def _derive_virtual_temperature(ds: xr.Dataset) -> xr.Dataset:
+    """Derive virtual temperature from temperature, dewpoint, and pressure."""
+    level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
+    pressure_pa = xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    ds["virtual_temperature"] = calc.virtual_temperature_from_dewpoint(
+        pressure_pa, ds["temperature"], ds["dewpoint"]
+    )
+    return ds
+
+
+def _derive_relative_humidity(ds: xr.Dataset) -> xr.Dataset:
+    """Derive relative humidity from temperature and dewpoint."""
+    ds["relative_humidity"] = calc.relative_humidity_from_dewpoint(
+        ds["temperature"], ds["dewpoint"]
+    )
+    return ds
+
+
+def _derive_theta_e(ds: xr.Dataset) -> xr.Dataset:
+    """Derive equivalent potential temperature from temperature, dewpoint, and pressure."""
+    level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
+    pressure_pa = xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    ds["equivalent_potential_temperature"] = calc.equivalent_potential_temperature(
+        pressure_pa, ds["temperature"], ds["dewpoint"]
+    )
+    return ds
+
+
+def _derive_geopotential_height(ds: xr.Dataset) -> xr.Dataset:
+    """Convert geopotential (m²/s²) to geopotential height in decameters."""
+    ds["geopotential_height"] = ds["geopotential"] / GEOPOTENTIAL_TO_DAM
+    return ds
+
+
+DERIVED_VARIABLE_REGISTRY: dict[str, callable] = {
+    "dewpoint": _derive_dewpoint,
+    "virtual_temperature": _derive_virtual_temperature,
+    "relative_humidity": _derive_relative_humidity,
+    "equivalent_potential_temperature": _derive_theta_e,
+    "geopotential_height": _derive_geopotential_height,
+}
+
+
+def _derive_era5_variables(
+    ds: xr.Dataset, derived_variables: list[str]
+) -> xr.Dataset:
+    """Compute derived meteorological variables and add them to the dataset.
+
+    Variables are computed in the order given.  Dependencies must appear
+    earlier in the list (e.g. "dewpoint" before "virtual_temperature").
+
+    Args:
+        ds: Stacked xr.Dataset with raw ERA5 variables.
+        derived_variables: Ordered list of derived variable names.  Valid
+            names are keys of DERIVED_VARIABLE_REGISTRY.
+    """
+    for name in derived_variables:
+        fn = DERIVED_VARIABLE_REGISTRY.get(name)
+        if fn is None:
+            raise ValueError(
+                f"Unknown derived variable {name!r}. "
+                f"Valid options: {list(DERIVED_VARIABLE_REGISTRY.keys())}"
+            )
+        log.debug("Deriving %s...", name)
+        ds = fn(ds)
+    return ds
+
+
 @dataclasses.dataclass
 class ERA5PredictorConfig:
     """Configuration for loading and stacking ERA5 predictor variables.
@@ -170,6 +261,7 @@ class ERA5PredictorConfig:
     chunks: dict[str, int]
     consolidated: bool
     years: list[int] = dataclasses.field(default_factory=list)
+    derived_variables: list[str] = dataclasses.field(default_factory=list)
 
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
@@ -177,6 +269,7 @@ class ERA5PredictorConfig:
         Returns an xarray Dataset with a ``"level"`` coordinate that includes
         ``"surface"`` (for surface variables) and integer hPa values (for
         pressure-level variables).  Time is filtered to ``self.years``.
+        Any ``derived_variables`` are computed after stacking.
         """
         log.info(
             "ERA5PredictorConfig.build() — opening zarr store: %s", self.store
@@ -211,6 +304,11 @@ class ERA5PredictorConfig:
             variables=self.variables,
             levels=self.levels,
         )
+
+        if self.derived_variables:
+            log.info("Deriving variables: %s", self.derived_variables)
+            result = _derive_era5_variables(result, self.derived_variables)
+
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s", list(result.data_vars)
         )
@@ -274,6 +372,25 @@ class FrontsDataConfig:
 
         log.info("FrontsDataConfig.build() complete.")
         return ds
+
+
+@dataclasses.dataclass
+class AugmentationConfig:
+    """Runtime augmentation applied to training data via .map().
+
+    Attributes:
+        flip_chance_lat: Probability of flipping the latitude axis per sample.
+        flip_chance_lon: Probability of flipping the longitude axis per sample.
+        u_wind_index: Index of u_component_of_wind in the variable dimension
+            (last axis). Required for lon flip to negate u-wind. None to skip.
+        v_wind_index: Index of v_component_of_wind in the variable dimension
+            (last axis). Required for lat flip to negate v-wind. None to skip.
+    """
+
+    flip_chance_lat: float = 0.0
+    flip_chance_lon: float = 0.0
+    u_wind_index: int | None = None
+    v_wind_index: int | None = None
 
 
 @dataclasses.dataclass
@@ -456,6 +573,7 @@ class DataConfig:
     batch: BatchGeneratorConfig | None = None
     shuffle: bool = True
     normalization_method: str = "standard"
+    augmentation: AugmentationConfig | None = None
 
     def build(self) -> ModelData:
         """Builds train, validation, and test tf.data.Dataset objects.
@@ -685,6 +803,10 @@ class PredictConfig:
             variables=self.era5.variables,
             levels=self.era5.levels,
         )
+
+        if self.era5.derived_variables:
+            log.info("Deriving variables: %s", self.era5.derived_variables)
+            stacked = _derive_era5_variables(stacked, self.era5.derived_variables)
 
         log.info("PredictConfig.build() — stacking complete. Output vars: %s", list(stacked.data_vars))
         # TODO: normalize_dataset expects a "pressure_level" dimension and legacy

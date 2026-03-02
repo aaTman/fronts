@@ -13,7 +13,7 @@ import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig, PredictConfig
+from fronts.data.config import DataConfig, PredictConfig, AugmentationConfig
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to stderr so output appears in Slurm logs even
@@ -174,6 +174,50 @@ class CallbacksConfig:
         return callback_list
 
 
+def build_augment_fn(aug: AugmentationConfig):
+    """Returns a tf.function that randomly flips input/target pairs.
+
+    Wind components are negated when their spatial axis is flipped:
+    v-wind is negated on latitude flip, u-wind on longitude flip.
+    """
+    flip_lat = aug.flip_chance_lat
+    flip_lon = aug.flip_chance_lon
+    v_idx = aug.v_wind_index
+    u_idx = aug.u_wind_index
+
+    @tf.function
+    def augment(x, y):
+        # Latitude flip
+        if flip_lat > 0:
+            if tf.random.uniform(()) <= flip_lat:
+                x = tf.reverse(x, axis=[0])
+                y = tf.reverse(y, axis=[0])
+                # Negate v-wind across all levels
+                if v_idx is not None:
+                    n_vars = tf.shape(x)[-1]
+                    sign = tf.where(
+                        tf.equal(tf.range(n_vars), v_idx), -1.0, 1.0
+                    )
+                    x = x * tf.cast(sign, x.dtype)
+
+        # Longitude flip
+        if flip_lon > 0:
+            if tf.random.uniform(()) <= flip_lon:
+                x = tf.reverse(x, axis=[1])
+                y = tf.reverse(y, axis=[1])
+                # Negate u-wind across all levels
+                if u_idx is not None:
+                    n_vars = tf.shape(x)[-1]
+                    sign = tf.where(
+                        tf.equal(tf.range(n_vars), u_idx), -1.0, 1.0
+                    )
+                    x = x * tf.cast(sign, x.dtype)
+
+        return x, y
+
+    return augment
+
+
 class Trainer:
     """Main class to build and trigger model training for FrontFinder."""
 
@@ -191,6 +235,8 @@ class Trainer:
         repeat: bool = True,
         seed: int = 42,
         num_replicas: int = 1,
+        batch_size: int = 1,
+        augmentation=None,
     ) -> None:
         """Initialize the Trainer class and maybe build callbacks.
 
@@ -218,9 +264,10 @@ class Trainer:
                 many batches will run per epoch.
             seed: the seed to use for for all of the backend seeds to allow for
                 determinism. Defaults to 42.
-            num_replicas: number of distribution replicas (GPUs). The global batch
-                size is set to this value so each replica receives exactly one
-                complete spatial patch per step. Defaults to 1 (single device).
+            num_replicas: number of distribution replicas (GPUs). Defaults to 1.
+            batch_size: global batch size. MirroredStrategy shards this across
+                replicas (batch_size / num_replicas per GPU). Defaults to 1.
+            augmentation: optional AugmentationConfig for runtime data augmentation.
 
         """
         self.model = model
@@ -235,6 +282,8 @@ class Trainer:
         self.callbacks = callbacks or []
         self.seed = seed
         self.num_replicas = num_replicas
+        self.batch_size = batch_size
+        self.augmentation = augmentation
 
     def train(self, model: dict) -> None:
         """Triggers a keras training run using model.fit().
@@ -246,25 +295,23 @@ class Trainer:
         # Set the seed for fitting the model
         tensorflow.keras.utils.set_random_seed(self.seed)
 
-        # Each saved TF dataset element is a pre-gridded spatial patch
-        # (lat, lon, level, ch) — a single complete sample, not a batch of rows.
-        # Without an explicit .batch() call, Keras treats dim 0 (lat=128) as the
-        # batch size and feeds the model 3D samples (lon, level, ch), which
-        # mismatches the model's Input(shape=(None, None, level, ch)).
-        #
-        # The global batch size is set to num_replicas (number of GPUs) so that
-        # MirroredStrategy distributes exactly one complete patch to each replica
-        # per step. With batch_size=1 and N GPUs, MirroredStrategy would try to
-        # shard 1 sample across N devices (impossible), leaving N-1 replicas with
-        # empty shards [0, ...] and causing an AddN shape mismatch during gradient
-        # aggregation. drop_remainder=True ensures no partial batch is emitted.
+        # Apply augmentation to training data (before batching).
+        unbatched_train = self.data.train_data
+        if self.augmentation is not None:
+            augment_fn = build_augment_fn(self.augmentation)
+            unbatched_train = unbatched_train.map(
+                augment_fn, num_parallel_calls=tf.data.AUTOTUNE
+            )
+
+        # Batch and optionally repeat.  MirroredStrategy automatically shards
+        # the global batch across replicas (batch_size / num_replicas per GPU).
+        # drop_remainder=True ensures no partial batch is emitted.
+        training_data = unbatched_train.batch(self.batch_size, drop_remainder=True)
         if self.repeat:
-            training_data = self.data.train_data.batch(self.num_replicas, drop_remainder=True).repeat()
-        else:
-            training_data = self.data.train_data.batch(self.num_replicas, drop_remainder=True)
+            training_data = training_data.repeat()
 
         validation_data = (
-            self.data.validation_data.batch(self.num_replicas, drop_remainder=True)
+            self.data.validation_data.batch(self.batch_size, drop_remainder=True)
             if self.data.validation_data is not None
             else None
         )
@@ -362,6 +409,7 @@ class TrainConfig:
     data: DataConfig | None = None
     predict: PredictConfig | None = None
     distribution: str | None = None
+    batch_size: int = 1
 
     def build(
         self,
@@ -416,6 +464,8 @@ class TrainConfig:
         keras_model.summary(print_fn=log.info)
         log.info("Model built and compiled.")
 
+        augmentation = self.data.augmentation if self.data is not None else None
+
         log.info("Building Trainer...")
         trainer = Trainer(
             model=keras_model,
@@ -430,6 +480,8 @@ class TrainConfig:
             repeat=self.repeat,
             seed=self.seed,
             num_replicas=strategy.num_replicas_in_sync,
+            batch_size=self.batch_size,
+            augmentation=augmentation,
         )
         return trainer
 
