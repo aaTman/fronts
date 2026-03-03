@@ -97,21 +97,22 @@ data:
     # The mapping from pressure-level name to surface name is defined in
     # fronts.data.config.SURFACE_VARIABLE_MAP and applied automatically when
     # "surface" appears in the levels list.
+    # Raw ERA5 variables are loaded from the zarr store.  Derived variables
+    # (registered in DERIVED_VARIABLE_REGISTRY) are auto-detected and computed
+    # after stacking.  Order matters: dependencies first (e.g. dewpoint before
+    # virtual_temperature).
     variables:
-      - "temperature" # surface counterpart: 2m_temperature
-      - "specific_humidity" # surface counterpart: surface_specific_humidity
-      - "u_component_of_wind" # surface counterpart: 10m_u_component_of_wind
-      - "v_component_of_wind" # surface counterpart: 10m_v_component_of_wind
-      - "geopotential" # raw geopotential (m²/s²), derived → geopotential_height (dam)
-      - "mean_sea_level_pressure" # surface-only
-    # Derived variables computed after stacking.  Order matters: dewpoint must
-    # come before virtual_temperature, relative_humidity, and theta_e.
-    derived_variables:
-      - "dewpoint"
-      - "virtual_temperature"
-      - "relative_humidity"
-      - "equivalent_potential_temperature"
-      - "geopotential_height"
+      - "temperature"                       # raw — surface: 2m_temperature
+      - "specific_humidity"                 # raw — surface: surface_specific_humidity
+      - "u_component_of_wind"               # raw — surface: 10m_u_component_of_wind
+      - "v_component_of_wind"               # raw — surface: 10m_v_component_of_wind
+      - "geopotential"                      # raw — geopotential (m²/s²)
+      - "mean_sea_level_pressure"           # raw — surface-only
+      - "dewpoint"                          # derived — from specific_humidity + pressure
+      - "virtual_temperature"               # derived — from temperature + dewpoint + pressure
+      - "relative_humidity"                 # derived — from temperature + dewpoint
+      - "equivalent_potential_temperature"  # derived — from temperature + dewpoint + pressure
+      - "geopotential_height"              # derived — geopotential / 98.0665 → dam
     # levels may contain "surface" and/or integer hPa values in any order.
     # "surface" triggers loading of the surface counterpart for each variable.
     levels: ["surface", 1000, 950, 900, 850]
@@ -203,7 +204,6 @@ predict:
       - "v_component_of_wind"
       - "geopotential"
       - "mean_sea_level_pressure"
-    derived_variables:
       - "dewpoint"
       - "virtual_temperature"
       - "relative_humidity"

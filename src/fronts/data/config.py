@@ -240,10 +240,13 @@ class ERA5PredictorConfig:
 
     Attributes:
         domain_extent: [lon_min, lon_max, lat_min, lat_max] geographic extent.
-        variables: Canonical variable names to load.  For variables with both
-            surface and pressure-level representations, use the pressure-level
-            name (e.g. ``"temperature"``); for surface-only variables, use the
-            store name directly (e.g. ``"mean_sea_level_pressure"``).
+        variables: Variable names to include.  May contain both raw ERA5 names
+            (e.g. ``"temperature"``, ``"mean_sea_level_pressure"``) and derived
+            variable names registered in :data:`DERIVED_VARIABLE_REGISTRY`
+            (e.g. ``"dewpoint"``, ``"virtual_temperature"``).  Raw variables are
+            loaded from the zarr store; derived variables are computed after
+            stacking.  Order matters for derived variables — dependencies must
+            appear first (e.g. ``"dewpoint"`` before ``"virtual_temperature"``).
         levels: Ordered list of levels to include.  May contain ``"surface"``
             and/or integer hPa values, e.g. ``["surface", 1000, 950, 900, 850]``
             or ``[1000, 900, 750]``.
@@ -261,7 +264,6 @@ class ERA5PredictorConfig:
     chunks: dict[str, int]
     consolidated: bool
     years: list[int] = dataclasses.field(default_factory=list)
-    derived_variables: list[str] = dataclasses.field(default_factory=list)
 
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
@@ -269,7 +271,12 @@ class ERA5PredictorConfig:
         Returns an xarray Dataset with a ``"level"`` coordinate that includes
         ``"surface"`` (for surface variables) and integer hPa values (for
         pressure-level variables).  Time is filtered to ``self.years``.
-        Any ``derived_variables`` are computed after stacking.
+
+        Variables listed in :data:`DERIVED_VARIABLE_REGISTRY` are computed
+        automatically after stacking the raw variables.  Derived variables
+        are processed in the order they appear in ``self.variables``, so
+        dependencies must come first (e.g. ``"dewpoint"`` before
+        ``"virtual_temperature"``).
         """
         log.info(
             "ERA5PredictorConfig.build() — opening zarr store: %s", self.store
@@ -298,16 +305,21 @@ class ERA5PredictorConfig:
         ds = ds.isel(time=ds.time.dt.year.isin(self.years))
         log.info("ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0))
 
-        log.debug("Stacking variables=%s at levels=%s...", self.variables, self.levels)
+        # Partition variables: raw ones are loaded from the store, derived
+        # ones are computed after stacking.
+        raw_vars = [v for v in self.variables if v not in DERIVED_VARIABLE_REGISTRY]
+        to_derive = [v for v in self.variables if v in DERIVED_VARIABLE_REGISTRY]
+
+        log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
         result = _stack_era5_variables(
             ds,
-            variables=self.variables,
+            variables=raw_vars,
             levels=self.levels,
         )
 
-        if self.derived_variables:
-            log.info("Deriving variables: %s", self.derived_variables)
-            result = _derive_era5_variables(result, self.derived_variables)
+        if to_derive:
+            log.info("Deriving variables: %s", to_derive)
+            result = _derive_era5_variables(result, to_derive)
 
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s", list(result.data_vars)
@@ -815,17 +827,20 @@ class PredictConfig:
         ds = self.time_selection.apply(ds)
         log.info("Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0))
 
-        # Stack surface and pressure-level variables
-        log.debug("Stacking variables...")
+        # Partition variables into raw (load) and derived (compute).
+        raw_vars = [v for v in self.era5.variables if v not in DERIVED_VARIABLE_REGISTRY]
+        to_derive = [v for v in self.era5.variables if v in DERIVED_VARIABLE_REGISTRY]
+
+        log.debug("Stacking raw variables=%s...", raw_vars)
         stacked = _stack_era5_variables(
             ds,
-            variables=self.era5.variables,
+            variables=raw_vars,
             levels=self.era5.levels,
         )
 
-        if self.era5.derived_variables:
-            log.info("Deriving variables: %s", self.era5.derived_variables)
-            stacked = _derive_era5_variables(stacked, self.era5.derived_variables)
+        if to_derive:
+            log.info("Deriving variables: %s", to_derive)
+            stacked = _derive_era5_variables(stacked, to_derive)
 
         log.info("PredictConfig.build() — stacking complete. Output vars: %s", list(stacked.data_vars))
         # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
