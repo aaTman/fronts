@@ -13,6 +13,7 @@ import datetime
 import glob as glob_module
 import logging
 import os
+import re
 from typing import Any
 
 import tensorflow as tf
@@ -480,6 +481,51 @@ class FrontsDataConfig:
         log.info("FrontsDataConfig.build() complete.")
         return ds
 
+    def build_index(self) -> dict[str, str]:
+        """Build a {ISO-timestamp-string: filepath} index without opening any files.
+
+        Parses timestamps from filenames matching the pattern
+        ``FrontObjects_YYYYMMDDHH_full.nc`` (e.g.
+        ``FrontObjects_2008010100_full.nc`` → ``"2008-01-01T00:00:00"``).
+
+        This is **much faster** than :meth:`build` for large collections (tens of
+        thousands of files) because it only performs a directory listing — no
+        netCDF file is opened.  The generator in :meth:`DataConfig._build_split`
+        opens individual files on demand as training samples are requested.
+
+        Returns a dict mapping ISO-format timestamp strings
+        (``"YYYY-MM-DDTHH:00:00"``, second precision) to absolute file paths.
+        """
+        files = sorted(
+            f
+            for year in self.years
+            for f in (
+                glob_module.glob(f"{self.directory}/{year}*/*.nc")
+                or glob_module.glob(f"{self.directory}/*{year}*.nc")
+            )
+        )
+        log.info(
+            "FrontsDataConfig.build_index() — found %d file(s) for years=%s.",
+            len(files), self.years,
+        )
+
+        index: dict[str, str] = {}
+        for f in files:
+            m = re.search(r"(\d{10})_full\.nc$", os.path.basename(f))
+            if m is None:
+                log.warning(
+                    "Could not parse timestamp from filename %r — skipping.", f
+                )
+                continue
+            dt = datetime.datetime.strptime(m.group(1), "%Y%m%d%H")
+            key = dt.strftime("%Y-%m-%dT%H:00:00")
+            index[key] = f
+
+        log.info(
+            "FrontsDataConfig.build_index() — indexed %d timestep(s).", len(index)
+        )
+        return index
+
 
 @dataclasses.dataclass
 class AugmentationConfig:
@@ -760,37 +806,49 @@ class DataConfig:
                 dict(inputs_da.sizes),
             )
 
-            # Build fronts dataset for this split
-            log.info("  Building fronts dataset for years=%s...", years)
+            # Build fronts file index for this split — O(n_files glob) only,
+            # NO netCDF files are opened here.  Timestamps are parsed from
+            # filenames matching FrontObjects_YYYYMMDDHH_full.nc.
+            log.info("  Building fronts file index for years=%s...", years)
             fronts_cfg = dataclasses.replace(self.fronts, years=years)
-            targets_ds = fronts_cfg.build()
-            log.info("  Fronts dataset ready.")
+            fronts_index = fronts_cfg.build_index()  # {iso_str: filepath}
+            log.info("  Fronts index ready: %d timestep(s).", len(fronts_index))
 
-            # Extract the integer identifier as a DataArray
-            targets_da = targets_ds["identifier"]
+            # Align timestamps: keep only times present in BOTH ERA5 and fronts.
+            # ERA5 is hourly; fronts exist only at analysis times (00Z/06Z/12Z/18Z).
+            # Use ISO second-precision strings as the common key to avoid
+            # numpy datetime64 precision mismatches (zarr uses ns, filenames give s).
+            def _iso(t) -> str:
+                """Truncate a numpy datetime64 scalar to second-precision ISO."""
+                return str(t)[:19]  # "2008-01-01T00:00:00"
 
-            # Align timestamps: keep only times present in BOTH datasets.
-            # ERA5 is hourly; fronts exist only at analysis times (e.g. 00Z/12Z).
-            common_times = sorted(
-                set(inputs_da.time.values) & set(targets_da.time.values)
+            era5_time_map: dict[str, Any] = {
+                _iso(t): t for t in inputs_da.time.values
+            }
+            common_keys = sorted(
+                set(era5_time_map.keys()) & set(fronts_index.keys())
             )
-            if not common_times:
+            if not common_keys:
                 raise ValueError(
                     f"No overlapping timestamps between ERA5 and fronts "
                     f"for years={years}."
                 )
-            n_inputs = inputs_da.sizes["time"]
-            n_fronts = targets_da.sizes["time"]
-            inputs_da = inputs_da.sel(time=common_times)
-            targets_da = targets_da.sel(time=common_times)
             log.info(
                 "  Timestamp alignment: ERA5=%d, fronts=%d → %d common timesteps.",
-                n_inputs, n_fronts, len(common_times),
+                inputs_da.sizes["time"], len(fronts_index), len(common_keys),
             )
 
-            # Build tf.data.Dataset via generator — one timestep per sample.
-            # Lazy: each timestep is loaded from the dask-backed DataArray on demand.
-            n_times = len(common_times)
+            # Subset ERA5 DataArray to aligned timestamps.
+            aligned_era5_times = [era5_time_map[k] for k in common_keys]
+            inputs_da = inputs_da.sel(time=aligned_era5_times)
+
+            # Build tf.data.Dataset via generator.
+            # For each timestep the generator:
+            #   1. Reads the ERA5 slice (triggers one dask chunk load from zarr).
+            #   2. Opens the corresponding front netCDF file (one file, one timestep).
+            #   3. Applies reformat_fronts + expand_fronts per-file — avoids loading
+            #      all 67k+ files with open_mfdataset at startup.
+            n_times = len(common_keys)
             lat_size = inputs_da.sizes["latitude"]
             lon_size = inputs_da.sizes["longitude"]
             n_levels = inputs_da.sizes["level"]
@@ -804,9 +862,28 @@ class DataConfig:
             )
 
             def gen():
-                for t in range(n_times):
-                    x = inputs_da.isel(time=t).values.astype("float32")
-                    y = targets_da.isel(time=t).values.astype("float32")
+                for i, iso_key in enumerate(common_keys):
+                    # ERA5 input — isel by position for speed
+                    x = inputs_da.isel(time=i).values.astype("float32")
+
+                    # Front label — open one file, apply transforms, discard
+                    front_ds = xr.open_dataset(
+                        fronts_index[iso_key], engine="netcdf4"
+                    )
+                    if fronts_cfg.front_types is not None:
+                        front_ds = data_utils.reformat_fronts(
+                            front_ds, fronts_cfg.front_types
+                        )
+                    if fronts_cfg.front_dilation > 0:
+                        front_ds = data_utils.expand_fronts(
+                            front_ds, iterations=fronts_cfg.front_dilation
+                        )
+                    # squeeze() removes any degenerate time dim present in some files
+                    y = (
+                        front_ds["identifier"]
+                        .squeeze(drop=True)
+                        .values.astype("float32")
+                    )
                     yield x, y
 
             tf_ds = tf.data.Dataset.from_generator(
