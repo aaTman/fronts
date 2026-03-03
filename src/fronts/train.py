@@ -8,6 +8,7 @@ import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
 import datetime
+import subprocess
 from typing import Literal, Any, TypeVar, Type
 import argparse
 import dacite
@@ -625,6 +626,17 @@ if __name__ == "__main__":
                 run_metadata["pressure_levels"] = [
                     str(lvl) for lvl in data.tf_dataset.levels
                 ]
+
+    # Capture git commit hash and branch for reproducibility tracking
+    try:
+        run_metadata["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+        run_metadata["git_branch"] = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        log.warning("Could not determine git commit/branch — skipping.")
 
     # Trigger training run
     trainer.train(model=run_metadata)
