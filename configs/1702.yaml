@@ -1,7 +1,7 @@
 distribution: "mirrored"
 epochs: 5000
-training_steps_per_epoch: 30
-validation_steps_per_epoch:
+training_steps_per_epoch: 10
+validation_steps_per_epoch: 51
 validation_frequency: 1
 verbose: 1
 repeat: true
@@ -87,8 +87,10 @@ data:
     u_wind_index: 3   # "u" in the variable ordering [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
     v_wind_index: 4   # "v" in the variable ordering
 
-  # ---- NetCDF pipeline (ERA5 + fronts) ----
-  # Used when tf_dataset is absent or null. Requires era5, fronts, and batch.
+  num_classes: 6
+
+  # ---- ERA5 + fronts pipeline ----
+  # Used when tf_dataset is absent or null. Requires era5 and fronts.
   era5:
     domain_extent: [-140.0, -60.0, 20.0, 60.0]
     # Use canonical (pressure-level) names for variables that have both surface
@@ -122,34 +124,9 @@ data:
     consolidated: true
 
   fronts:
-    directory: "/path/to/fronts/netcdf"
-    front_types: "MERGED-ALL"
-
-  batch:
-    input_sizes:
-      time: 1
-      latitude: 128
-      longitude: 128
-    target_sizes:
-      time: 1
-      latitude: 128
-      longitude: 128
-    prefetch_number: 3
-    preload_batch: false
-
-  # ---- TF dataset pipeline (takes priority when present) ----
-  # Load pre-built TF dataset snapshots directly from disk.
-  # Subdirectory naming convention: {year}-{month}_tf  (e.g. 2010-1_tf)
-  # train_years/val_years/test_years from above are injected at build time.
-  tf_dataset:
-    directory: "/ourdisk/hpc/ai2es/fronts/raw_front_data/tf_datasets/5class-7lvl-conus"
-    shuffle: true
-    shuffle_buffer: 1000
-    prefetch: 3
-    # Metadata for WandB logging — not used by the data pipeline itself.
-    # Legacy short names: [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
-    variables: [temperature, dewpoint, virtual_temperature, u_component_of_wind, v_component_of_wind, specific_humidity, relative_humidity, geopotential_height, equivalent_potential_temperature]
-    levels: ["surface", 1000, 950, 900, 850, 700, 500]
+    directory: "/ourdisk/hpc/ai2es/fronts/raw_front_data/netcdf"
+    front_types: ["CF", "WF", "SF", "OF", "DL"]
+    front_dilation: 0  # configurable — set to N to expand front labels by N pixels
 
 wandb:
   project_name: "fronts"

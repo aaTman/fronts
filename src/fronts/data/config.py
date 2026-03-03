@@ -18,9 +18,8 @@ from typing import Any
 import tensorflow as tf
 import xarray as xr
 
-from fronts.data.batch import BatchGeneratorConfig, create_dataloader
 from fronts.data.era5 import convert_domain_extent_to_bounding_box
-from fronts.utils import calc, data_utils
+from fronts.utils import calc, constants, data_utils
 
 log = logging.getLogger("fronts.data.config")
 
@@ -219,6 +218,74 @@ def _derive_era5_variables(
     return ds
 
 
+# ---------------------------------------------------------------------------
+# Normalization for ARCO ERA5 data
+# ---------------------------------------------------------------------------
+
+# Maps ARCO variable names to the legacy short-name prefixes used as keys
+# in constants.NORMALIZATION_PARAMS (e.g. "temperature" → "T", so the lookup
+# key becomes "T_850" or "T_surface").
+_ARCO_TO_LEGACY_NORM_KEY: dict[str, str] = {
+    "temperature": "T",
+    "dewpoint": "Td",
+    "virtual_temperature": "Tv",
+    "u_component_of_wind": "u",
+    "v_component_of_wind": "v",
+    "specific_humidity": "q",
+    "relative_humidity": "RH",
+    "geopotential_height": "sp_z",
+    "equivalent_potential_temperature": "theta_e",
+    "mean_sea_level_pressure": "mslp_z",
+    "geopotential": "sp_z",
+}
+
+
+def normalize_arco_era5(
+    ds: xr.Dataset,
+    method: str = "min-max",
+    params: dict | None = None,
+) -> xr.Dataset:
+    """Normalize a stacked ARCO ERA5 Dataset using legacy normalization constants.
+
+    For each variable and level, looks up the normalization parameters using
+    the legacy naming convention (e.g. ``"T_850"``, ``"q_surface"``) and applies
+    the requested normalization method.
+
+    Args:
+        ds: Stacked xr.Dataset with ARCO variable names and a ``"level"``
+            coordinate containing ``"surface"`` and/or integer hPa values.
+        method: ``"min-max"``, ``"standard"``, or ``"standard_weighted"``.
+        params: Normalization parameter dict. Defaults to
+            ``constants.NORMALIZATION_PARAMS``.
+
+    Returns a copy of the dataset with each variable-level slice normalized.
+    """
+    if params is None:
+        params = constants.NORMALIZATION_PARAMS
+    ds = ds.copy()
+    for var in list(ds.data_vars):
+        legacy_prefix = _ARCO_TO_LEGACY_NORM_KEY.get(var)
+        if legacy_prefix is None:
+            log.warning("No normalization mapping for variable %r — skipping.", var)
+            continue
+        for lv in ds.level.values:
+            key = f"{legacy_prefix}_{lv}"
+            if key not in params:
+                log.warning("Normalization key %r not found — skipping.", key)
+                continue
+            p = params[key]  # [min, max, mean, std, mean_weighted, std_weighted]
+            sel = ds[var].sel(level=lv)
+            if method == "min-max":
+                ds[var].loc[{"level": lv}] = (sel - p[0]) / (p[1] - p[0])
+            elif method == "standard":
+                ds[var].loc[{"level": lv}] = (sel - p[2]) / p[3]
+            elif method == "standard_weighted":
+                ds[var].loc[{"level": lv}] = (sel - p[4]) / p[5]
+            else:
+                raise ValueError(f"Unknown normalization method {method!r}")
+    return ds
+
+
 @dataclasses.dataclass
 class ERA5PredictorConfig:
     """Configuration for loading and stacking ERA5 predictor variables.
@@ -346,6 +413,7 @@ class FrontsDataConfig:
 
     directory: str
     front_types: str | list[str] | None
+    front_dilation: int = 0
     years: list[int] = dataclasses.field(default_factory=list)
 
     def build(self) -> xr.Dataset:
@@ -381,6 +449,11 @@ class FrontsDataConfig:
             log.debug("Reformatting fronts with front_types=%s...", self.front_types)
             ds = data_utils.reformat_fronts(ds, self.front_types)
             log.debug("reformat_fronts complete.")
+
+        if self.front_dilation > 0:
+            log.debug("Expanding fronts with %d dilation iteration(s)...", self.front_dilation)
+            ds = data_utils.expand_fronts(ds, iterations=self.front_dilation)
+            log.debug("expand_fronts complete.")
 
         log.info("FrontsDataConfig.build() complete.")
         return ds
@@ -546,11 +619,13 @@ class DataConfig:
 
     1. **Pre-built TF datasets** (``tf_dataset`` key) — fastest path, loads
        saved ``tf.data.Dataset`` snapshots directly from disk.  Set
-       ``tf_dataset:`` in YAML and leave ``era5``, ``fronts``, ``batch`` unset.
+       ``tf_dataset:`` in YAML and leave ``era5``, ``fronts`` unset.
 
-    2. **ARCO ERA5 + front netCDF** (``era5`` + ``fronts`` + ``batch`` keys) —
-       full pipeline that loads from the zarr store and front label files,
-       stacks variables, and builds batches via xbatcher.
+    2. **ARCO ERA5 + front netCDF** (``era5`` + ``fronts`` keys) — full
+       pipeline that loads from the zarr store and front label files, stacks
+       and normalizes variables, and builds a ``tf.data.Dataset`` via
+       ``from_generator()``.  Each timestep is one training sample (full
+       domain, not spatial patches).
 
     Year lists (``train_years``, ``val_years``, ``test_years``) are always
     specified at this level.  For the ERA5 path they are injected into
@@ -563,17 +638,17 @@ class DataConfig:
         val_years: Years to use for the validation split.
         test_years: Years to use for the test split. May be empty [].
         tf_dataset: TFDatasetConfig for loading pre-built TF dataset snapshots.
-            Mutually exclusive with era5/fronts/batch.
+            Mutually exclusive with era5/fronts.
         era5: ERA5PredictorConfig defining the predictor variable source.
             Required when tf_dataset is not set.
         fronts: FrontsDataConfig defining the front label source.
-            Required when tf_dataset is not set.
-        batch: BatchGeneratorConfig defining spatial patch sizes and prefetch.
             Required when tf_dataset is not set.
         shuffle: Whether to shuffle the training dataset. Defaults to True.
             Ignored when tf_dataset is set (shuffle is configured there instead).
         normalization_method: One of "standard", "standard_weighted", "min-max".
             Defaults to "standard". Only used by the ERA5 path.
+        num_classes: Number of front classes (including no-front class 0).
+            Defaults to 6 (no_front + CF + WF + SF + OF + DL).
     """
 
     train_years: list[int]
@@ -582,10 +657,10 @@ class DataConfig:
     tf_dataset: TFDatasetConfig | None = None
     era5: ERA5PredictorConfig | None = None
     fronts: FrontsDataConfig | None = None
-    batch: BatchGeneratorConfig | None = None
     shuffle: bool = True
     normalization_method: str = "standard"
     augmentation: AugmentationConfig | None = None
+    num_classes: int = 6
 
     def build(self) -> ModelData:
         """Builds train, validation, and test tf.data.Dataset objects.
@@ -617,11 +692,13 @@ class DataConfig:
             "train_years=%s, val_years=%s, test_years=%s",
             self.train_years, self.val_years, self.test_years,
         )
-        if self.era5 is None or self.fronts is None or self.batch is None:
+        if self.era5 is None or self.fronts is None:
             raise ValueError(
-                "DataConfig requires either tf_dataset or all three of "
-                "era5, fronts, and batch to be set."
+                "DataConfig requires either tf_dataset or both "
+                "era5 and fronts to be set."
             )
+
+        num_classes = self.num_classes  # capture for closure
 
         def _build_split(years: list[int]) -> Any | None:
             if not years:
@@ -632,14 +709,23 @@ class DataConfig:
             era5_cfg = dataclasses.replace(self.era5, years=years)
             inputs_ds = era5_cfg.build()
             log.info("  ERA5 dataset ready.")
-            # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
-            # short variable-name keys (e.g. "T_850", "u_1000"). Our stacked dataset
-            # uses dimension "level" and ARCO variable names ("temperature", etc.).
-            # Normalization constants and the normalize_dataset function need to be
-            # updated for the new naming scheme before this call can be re-enabled.
-            # inputs_ds = data_utils.normalize_dataset(
-            #     inputs_ds, method=self.normalization_method
-            # )
+
+            # Normalize using ARCO→legacy name bridging
+            log.info("  Normalizing with method=%r...", self.normalization_method)
+            inputs_ds = normalize_arco_era5(
+                inputs_ds, method=self.normalization_method
+            )
+
+            # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
+            # The model expects (lat, lon, level, variable) per timestep.
+            inputs_da = inputs_ds.to_array(dim="variable")
+            inputs_da = inputs_da.transpose(
+                "time", "latitude", "longitude", "level", "variable"
+            )
+            log.info(
+                "  Input DataArray shape: %s (time, lat, lon, level, variable)",
+                dict(inputs_da.sizes),
+            )
 
             # Build fronts dataset for this split
             log.info("  Building fronts dataset for years=%s...", years)
@@ -647,36 +733,70 @@ class DataConfig:
             targets_ds = fronts_cfg.build()
             log.info("  Fronts dataset ready.")
 
+            # Extract the integer identifier as a DataArray
+            targets_da = targets_ds["identifier"]
+
             # Align timestamps: keep only times present in BOTH datasets.
             # ERA5 is hourly; fronts exist only at analysis times (e.g. 00Z/12Z).
             common_times = sorted(
-                set(inputs_ds.time.values) & set(targets_ds.time.values)
+                set(inputs_da.time.values) & set(targets_da.time.values)
             )
             if not common_times:
                 raise ValueError(
                     f"No overlapping timestamps between ERA5 and fronts "
                     f"for years={years}."
                 )
-            n_era5 = inputs_ds.sizes["time"]
-            n_fronts = targets_ds.sizes["time"]
-            inputs_ds = inputs_ds.sel(time=common_times)
-            targets_ds = targets_ds.sel(time=common_times)
+            n_inputs = inputs_da.sizes["time"]
+            n_fronts = targets_da.sizes["time"]
+            inputs_da = inputs_da.sel(time=common_times)
+            targets_da = targets_da.sel(time=common_times)
             log.info(
                 "  Timestamp alignment: ERA5=%d, fronts=%d → %d common timesteps.",
-                n_era5, n_fronts, len(common_times),
+                n_inputs, n_fronts, len(common_times),
             )
 
-            # Build tf.data.Dataset via create_dataloader directly
-            # (BatchGeneratorConfig.build() is not used because it lacks inputs/targets fields)
-            log.info("  Wrapping into tf.data.Dataset via create_dataloader...")
-            tf_ds = create_dataloader(
-                inputs=inputs_ds,
-                targets=targets_ds,
-                input_sizes=self.batch.input_sizes,
-                target_sizes=self.batch.target_sizes,
-                prefetch_number=self.batch.prefetch_number,
-                preload_batch=self.batch.preload_batch,
+            # Build tf.data.Dataset via generator — one timestep per sample.
+            # Lazy: each timestep is loaded from the dask-backed DataArray on demand.
+            n_times = len(common_times)
+            lat_size = inputs_da.sizes["latitude"]
+            lon_size = inputs_da.sizes["longitude"]
+            n_levels = inputs_da.sizes["level"]
+            n_vars = inputs_da.sizes["variable"]
+
+            log.info(
+                "  Building tf.data.Dataset from generator: "
+                "%d timesteps, input=(%d,%d,%d,%d), target=(%d,%d).",
+                n_times, lat_size, lon_size, n_levels, n_vars,
+                lat_size, lon_size,
             )
+
+            def gen():
+                for t in range(n_times):
+                    x = inputs_da.isel(time=t).values.astype("float32")
+                    y = targets_da.isel(time=t).values.astype("float32")
+                    yield x, y
+
+            tf_ds = tf.data.Dataset.from_generator(
+                gen,
+                output_signature=(
+                    tf.TensorSpec(
+                        shape=(lat_size, lon_size, n_levels, n_vars),
+                        dtype=tf.float32,
+                    ),
+                    tf.TensorSpec(
+                        shape=(lat_size, lon_size),
+                        dtype=tf.float32,
+                    ),
+                ),
+            )
+
+            # One-hot encode targets: (lat, lon) int → (lat, lon, num_classes)
+            def encode_targets(x, y):
+                y = tf.one_hot(tf.cast(y, tf.int32), depth=num_classes)
+                return x, y
+
+            tf_ds = tf_ds.map(encode_targets, num_parallel_calls=tf.data.AUTOTUNE)
+
             log.info("  tf.data.Dataset ready for years=%s.", years)
             return tf_ds
 
@@ -779,9 +899,9 @@ class PredictConfig:
     """Configuration for ERA5-based model inference.
 
     Mirrors DataConfig for training but uses TimeSelection instead of year lists
-    for temporal filtering, and returns a plain xr.Dataset rather than a
-    tf.data.Dataset — inference runs one spatial domain at a time rather than
-    batching many patches.
+    for temporal filtering, and returns a normalized xr.DataArray shaped
+    ``(time, latitude, longitude, level, variable)`` — inference runs one
+    spatial domain at a time rather than batching many patches.
 
     Attributes:
         era5: ERA5PredictorConfig defining the variable source, spatial domain,
@@ -798,13 +918,14 @@ class PredictConfig:
     time_selection: TimeSelection
     normalization_method: str = "standard"
 
-    def build(self) -> xr.Dataset:
+    def build(self) -> xr.DataArray:
         """Loads, stacks, and normalizes ERA5 data for the selected timesteps.
 
         Opens the zarr store lazily, applies spatial subsetting, time selection,
-        surface/pressure variable stacking, and normalization.
+        surface/pressure variable stacking, normalization, and converts to a 4D
+        DataArray shaped ``(time, latitude, longitude, level, variable)``.
 
-        Returns a normalized xarray Dataset ready for model inference.
+        Returns a normalized xarray DataArray ready for model inference.
         """
         log.info("PredictConfig.build() — opening zarr store: %s", self.era5.store)
         ds = xr.open_zarr(
@@ -843,11 +964,16 @@ class PredictConfig:
             stacked = _derive_era5_variables(stacked, to_derive)
 
         log.info("PredictConfig.build() — stacking complete. Output vars: %s", list(stacked.data_vars))
-        # TODO: normalize_dataset expects a "pressure_level" dimension and legacy
-        # short variable-name keys (e.g. "T_850", "u_1000"). Our stacked dataset
-        # uses dimension "level" and ARCO variable names ("temperature", etc.).
-        # Normalization constants and the normalize_dataset function need to be
-        # updated for the new naming scheme before this call can be re-enabled.
-        # return data_utils.normalize_dataset(stacked, method=self.normalization_method)
-        log.info("PredictConfig.build() complete.")
-        return stacked
+
+        # Normalize using ARCO→legacy name bridging
+        log.info("Normalizing with method=%r...", self.normalization_method)
+        stacked = normalize_arco_era5(stacked, method=self.normalization_method)
+
+        # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
+        result = stacked.to_array(dim="variable")
+        result = result.transpose("time", "latitude", "longitude", "level", "variable")
+        log.info(
+            "PredictConfig.build() complete. Output shape: %s",
+            dict(result.sizes),
+        )
+        return result
