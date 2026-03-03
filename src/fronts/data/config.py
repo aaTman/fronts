@@ -309,6 +309,19 @@ def normalize_arco_era5(
     return xr.Dataset(result)
 
 
+def _lon_for_store(lon: float, ds: xr.Dataset) -> float:
+    """Convert a longitude from −180/180 to the convention used by ``ds``.
+
+    The ARCO ERA5 zarr store uses 0–360 longitudes.  ``domain_extent`` is
+    specified in the conventional −180/180 range.  When the store's minimum
+    longitude is ≥ 0, shift any negative values by +360 so that slice
+    selection returns the correct grid points.
+    """
+    if float(ds.longitude.min()) >= 0 and lon < 0:
+        return lon + 360.0
+    return lon
+
+
 @dataclasses.dataclass
 class ERA5PredictorConfig:
     """Configuration for loading and stacking ERA5 predictor variables.
@@ -381,9 +394,11 @@ class ERA5PredictorConfig:
         # Spatial subset
         log.debug("Applying spatial subset: domain_extent=%s", self.domain_extent)
         bbox = convert_domain_extent_to_bounding_box(self.domain_extent)
+        lon_min = _lon_for_store(bbox.lon_min, ds)
+        lon_max = _lon_for_store(bbox.lon_max, ds)
         ds = ds.sel(
             latitude=slice(bbox.lat_max, bbox.lat_min),
-            longitude=slice(bbox.lon_min, bbox.lon_max),
+            longitude=slice(lon_min, lon_max),
         )
         log.debug(
             "Spatial subset done. lat shape=%s, lon shape=%s",
@@ -1052,9 +1067,11 @@ class PredictConfig:
         # Spatial subset
         log.debug("Applying spatial subset...")
         bbox = convert_domain_extent_to_bounding_box(self.era5.domain_extent)
+        lon_min = _lon_for_store(bbox.lon_min, ds)
+        lon_max = _lon_for_store(bbox.lon_max, ds)
         ds = ds.sel(
             latitude=slice(bbox.lat_max, bbox.lat_min),
-            longitude=slice(bbox.lon_min, bbox.lon_max),
+            longitude=slice(lon_min, lon_max),
         )
 
         # Time selection
