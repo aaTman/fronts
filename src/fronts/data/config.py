@@ -738,6 +738,17 @@ class DataConfig:
                 inputs_ds, method=self.normalization_method
             )
 
+            # Ensure all variables are consistently dask-backed before stacking.
+            # xr.merge(join="outer") fills missing coordinate slots (e.g. MSLP at
+            # pressure levels) with numpy NaN rather than dask arrays.  When
+            # to_array() calls dask.stack() on a mix of dask + numpy arrays it
+            # falls through to dask.asarray(chunks="auto"), which triggers a
+            # ZeroDivisionError in auto_chunks on dask 2023.3.x.  Rechunking the
+            # whole Dataset forces every variable into the dask graph with an
+            # explicit chunk spec, so all arrays passed to dask.stack are
+            # consistently chunked dask arrays.
+            inputs_ds = inputs_ds.chunk({"latitude": -1, "longitude": -1, "level": -1})
+
             # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
             # The model expects (lat, lon, level, variable) per timestep.
             inputs_da = inputs_ds.to_array(dim="variable")
@@ -990,6 +1001,11 @@ class PredictConfig:
         # Normalize using ARCO→legacy name bridging
         log.info("Normalizing with method=%r...", self.normalization_method)
         stacked = normalize_arco_era5(stacked, method=self.normalization_method)
+
+        # Rechunk before to_array() for the same reason as _build_split():
+        # outer-join merge fills missing levels with numpy NaN; rechunking ensures
+        # all variables are consistently dask-backed before dask.stack is called.
+        stacked = stacked.chunk({"latitude": -1, "longitude": -1, "level": -1})
 
         # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
         result = stacked.to_array(dim="variable")
