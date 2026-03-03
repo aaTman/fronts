@@ -262,28 +262,50 @@ def normalize_arco_era5(
     """
     if params is None:
         params = constants.NORMALIZATION_PARAMS
-    ds = ds.copy()
+
+    # Map method name to the two param-list indices: (subtract, divide-by)
+    idx = {"min-max": (0, 1), "standard": (2, 3), "standard_weighted": (4, 5)}
+    if method not in idx:
+        raise ValueError(f"Unknown normalization method {method!r}")
+    i_a, i_b = idx[method]
+
+    # Build each normalized variable via pure xarray arithmetic — dask-safe.
+    # In-place mutation (ds[var].loc[...] = ...) raises on dask-backed arrays
+    # because dask graphs are immutable.  Instead, accumulate into a dict and
+    # return a new Dataset.
+    result: dict = {}
     for var in list(ds.data_vars):
-        legacy_prefix = _ARCO_TO_LEGACY_NORM_KEY.get(var)
-        if legacy_prefix is None:
+        prefix = _ARCO_TO_LEGACY_NORM_KEY.get(var)
+        if prefix is None:
             log.warning("No normalization mapping for variable %r — skipping.", var)
+            result[var] = ds[var]
             continue
-        for lv in ds.level.values:
-            key = f"{legacy_prefix}_{lv}"
-            if key not in params:
-                log.warning("Normalization key %r not found — skipping.", key)
-                continue
-            p = params[key]  # [min, max, mean, std, mean_weighted, std_weighted]
-            sel = ds[var].sel(level=lv)
-            if method == "min-max":
-                ds[var].loc[{"level": lv}] = (sel - p[0]) / (p[1] - p[0])
-            elif method == "standard":
-                ds[var].loc[{"level": lv}] = (sel - p[2]) / p[3]
-            elif method == "standard_weighted":
-                ds[var].loc[{"level": lv}] = (sel - p[4]) / p[5]
+
+        da = ds[var]
+        vals_a: list[float] = []
+        vals_b: list[float] = []
+        for lv in da.level.values:
+            key = f"{prefix}_{lv}"
+            if key in params:
+                vals_a.append(float(params[key][i_a]))
+                vals_b.append(float(params[key][i_b]))
             else:
-                raise ValueError(f"Unknown normalization method {method!r}")
-    return ds
+                # Level has no normalization entry (e.g. surface-only variable at
+                # a pressure level — the data is NaN there anyway after outer-join
+                # merging).  Use identity (subtract 0, divide by 1) to preserve NaN.
+                log.warning("Normalization key %r not found — using identity.", key)
+                vals_a.append(0.0)
+                vals_b.append(1.0)
+
+        p_a = xr.DataArray(vals_a, dims="level", coords={"level": da.level})
+        p_b = xr.DataArray(vals_b, dims="level", coords={"level": da.level})
+
+        if method == "min-max":
+            result[var] = (da - p_a) / (p_b - p_a)
+        else:  # standard or standard_weighted: (x - mean) / std
+            result[var] = (da - p_a) / p_b
+
+    return xr.Dataset(result)
 
 
 @dataclasses.dataclass
