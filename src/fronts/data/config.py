@@ -500,8 +500,12 @@ class FrontsDataConfig:
             f
             for year in self.years
             for f in (
-                glob_module.glob(f"{self.directory}/{year}*/*.nc")
-                or glob_module.glob(f"{self.directory}/*{year}*.nc")
+                # Monthly subdirectory layout: <dir>/<YYYYMM>/FrontObjects_*_full.nc
+                # Explicit filename prefix avoids picking up co-located era5_*.nc files.
+                glob_module.glob(f"{self.directory}/{year}*/FrontObjects_*_full.nc")
+                or
+                # Flat layout fallback: <dir>/FrontObjects_*<year>*_full.nc
+                glob_module.glob(f"{self.directory}/*{year}*_full.nc")
             )
         )
         log.info(
