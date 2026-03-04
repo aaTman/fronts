@@ -1,4 +1,3 @@
-distribution: "mirrored"
 epochs: 5000
 training_steps_per_epoch: 10
 validation_steps_per_epoch: 51
@@ -7,6 +6,7 @@ verbose: 1
 repeat: true
 seed: 42
 batch_size: 64
+distribution: "mirrored"
 
 model:
   name: "unet_3plus"
@@ -126,12 +126,12 @@ data:
   fronts:
     directory: "/ourdisk/hpc/ai2es/fronts/raw_front_data/netcdf"
     front_types: ["CF", "WF", "SF", "OF", "DL"]
-    front_dilation: 0  # configurable — set to N to expand front labels by N pixels
+    front_dilation: 1  # configurable — set to N to expand front labels by N pixels
 
 wandb:
   project_name: "fronts"
-  model_run_name: "1702_retrain"
-  wandb_filepath: "/ourdisk/hpc/ai2es/tman/models/1702_retrain.keras"
+  model_run_name: "1702_retrain_era5"
+  wandb_filepath: "/ourdisk/hpc/ai2es/tman/models/1702_retrain_era5.keras"
   # -- Optional parameters --
   # log_frequency:
   # upload_checkpoints:
@@ -143,8 +143,8 @@ callbacks:
   save_best_only: true
   save_weights_only: false
   save_freq: "epoch"
-  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702.keras"
-  csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702.csv"
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702_retrain_era5.keras"
+  csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702_retrain_era5.csv"
   patience: 55
 
 # ---- Prediction config ----
