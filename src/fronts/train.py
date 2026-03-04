@@ -294,6 +294,7 @@ class Trainer:
         """
 
         # Set the seed for fitting the model
+        log.info("Random seed set to %s", self.seed)
         tensorflow.keras.utils.set_random_seed(self.seed)
 
         # Apply augmentation to training data (before batching).
@@ -303,14 +304,20 @@ class Trainer:
             unbatched_train = unbatched_train.map(
                 augment_fn, num_parallel_calls=tf.data.AUTOTUNE
             )
+            log.info(
+                "Data augmentation applied to training dataset with config: %s",
+                self.augmentation,
+            )
 
         # Batch and optionally repeat.  MirroredStrategy automatically shards
         # the global batch across replicas (batch_size / num_replicas per GPU).
         # drop_remainder=True ensures no partial batch is emitted.
+        log.info("Batching training data...")
         training_data = unbatched_train.batch(self.batch_size, drop_remainder=True)
         if self.repeat:
             training_data = training_data.repeat()
 
+        log.info("Batching validation data...")
         validation_data = (
             self.data.validation_data.batch(self.batch_size, drop_remainder=True)
             if self.data.validation_data is not None
@@ -321,6 +328,10 @@ class Trainer:
         # Replicate the target so y_true structure matches y_pred structure.
         n_outputs = len(self.model.outputs)
         if n_outputs > 1:
+            log.info(
+                "Model has %d outputs; replicating targets for deep supervision.",
+                n_outputs,
+            )
             training_data = training_data.map(
                 lambda x, y: (x, (y,) * n_outputs),
                 num_parallel_calls=tf.data.AUTOTUNE,
@@ -347,9 +358,11 @@ class Trainer:
             wandb_init = self.wandb.build_init_config(model)
             with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
                 fit_args["callbacks"] = self.build_callbacks(self.callbacks)
+                log.info("Fitting model with args %s...", fit_args)
                 self.model.fit(**fit_args)
         else:
             fit_args["callbacks"] = self.build_callbacks(self.callbacks)
+            log.info("Fitting model with args %s...", fit_args)
             self.model.fit(**fit_args)
 
     def build_callbacks(self, callbacks: list):
