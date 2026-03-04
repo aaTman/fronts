@@ -196,9 +196,7 @@ def build_augment_fn(aug: AugmentationConfig):
                 # Negate v-wind across all levels
                 if v_idx is not None:
                     n_vars = tf.shape(x)[-1]
-                    sign = tf.where(
-                        tf.equal(tf.range(n_vars), v_idx), -1.0, 1.0
-                    )
+                    sign = tf.where(tf.equal(tf.range(n_vars), v_idx), -1.0, 1.0)
                     x = x * tf.cast(sign, x.dtype)
 
         # Longitude flip
@@ -209,9 +207,7 @@ def build_augment_fn(aug: AugmentationConfig):
                 # Negate u-wind across all levels
                 if u_idx is not None:
                     n_vars = tf.shape(x)[-1]
-                    sign = tf.where(
-                        tf.equal(tf.range(n_vars), u_idx), -1.0, 1.0
-                    )
+                    sign = tf.where(tf.equal(tf.range(n_vars), u_idx), -1.0, 1.0)
                     x = x * tf.cast(sign, x.dtype)
 
         return x, y
@@ -474,7 +470,9 @@ class TrainConfig:
 
         log.info("Building model...")
         with strategy.scope():
-            keras_model = self.model.build(input_shape=input_shape, num_classes=num_classes)
+            keras_model = self.model.build(
+                input_shape=input_shape, num_classes=num_classes
+            )
         keras_model.summary(print_fn=log.info)
         log.info("Model built and compiled.")
 
@@ -500,31 +498,23 @@ class TrainConfig:
         return trainer
 
 
-def open_config_yaml_as_dataclass(
-    path: str, config_class: Type[T], require: bool = False
-) -> T | None:
+def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> T | None:
     """Opens a configuration yaml if exists and returns it as the relevant dataclass.
 
     Args:
         path: the absolute path to the configuration file.
         config_class: the configuration dataclass that the incoming yaml will be
             converted to via dacite.
-        require: If True, code will throw an error if the path is not provided.
-            Defaults to False.
-
     Returns either None or the dataclass if path is provided.
     """
-    if path:
-        with open(file=path) as f:
-            config_yaml = yaml.safe_load(f)
-        _class_instance = dacite.from_dict(
-            data_class=config_class,
-            data=config_yaml,
-            config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
-        )
-        return _class_instance
-    elif require:
-        raise ValueError("Path must be included when require is True.")
+    with open(file=path) as f:
+        config_yaml = yaml.safe_load(f)
+    _class_instance = dacite.from_dict(
+        data_class=config_class,
+        data=config_yaml,
+        config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
+    )
+    return _class_instance
 
 
 if __name__ == "__main__":
@@ -571,8 +561,11 @@ if __name__ == "__main__":
     train_config = open_config_yaml_as_dataclass(
         path=args.train_config_path, config_class=TrainConfig, require=True
     )
-    log.info("Config loaded. epochs=%d, steps_per_epoch=%d",
-             train_config.epochs, train_config.training_steps_per_epoch)
+    log.info(
+        "Config loaded. epochs=%d, steps_per_epoch=%d",
+        train_config.epochs,
+        train_config.training_steps_per_epoch,
+    )
 
     if args.dry_run:
         log.info("=== DRY RUN MODE — skipping WandB init and training ===")
