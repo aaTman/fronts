@@ -880,6 +880,14 @@ class DataConfig:
                 lat_size, lon_size,
             )
 
+            # Coordinate arrays used inside gen() to subset each front file.
+            # inputs_da uses ARCO's 0-360 longitude; front files typically use -180/180.
+            era5_lats = inputs_da.latitude.values  # e.g. [60.0, 59.75, ..., 20.0]
+            era5_lons_360 = inputs_da.longitude.values  # e.g. [220.0, ..., 300.0]
+            era5_lons_180 = np.where(
+                era5_lons_360 > 180, era5_lons_360 - 360, era5_lons_360
+            )  # e.g. [-140.0, ..., -60.0]
+
             def gen():
                 for i, iso_key in enumerate(common_keys):
                     # ERA5 input — isel by position for speed
@@ -898,11 +906,23 @@ class DataConfig:
                             front_ds, iterations=fronts_cfg.front_dilation
                         )
                     # squeeze() removes any degenerate time dim present in some files
-                    y = (
-                        front_ds["identifier"]
-                        .squeeze(drop=True)
-                        .values.astype("float32")
+                    identifier = front_ds["identifier"].squeeze(drop=True)
+                    # Front files cover a broader domain than the ERA5 subset.
+                    # Detect the longitude convention used by this file and pick the
+                    # matching ERA5 lon array (0-360 or -180/180).
+                    sel_lons = (
+                        era5_lons_360
+                        if float(identifier.longitude.min()) >= 0
+                        else era5_lons_180
                     )
+                    identifier = identifier.sel(
+                        latitude=era5_lats,
+                        longitude=sel_lons,
+                        method="nearest",
+                    )
+                    # Guarantee (latitude, longitude) ordering regardless of storage order.
+                    identifier = identifier.transpose("latitude", "longitude")
+                    y = identifier.values.astype("float32")
                     yield x, y
 
             tf_ds = tf.data.Dataset.from_generator(
