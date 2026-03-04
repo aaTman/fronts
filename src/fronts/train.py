@@ -639,5 +639,6 @@ if __name__ == "__main__":
         log.warning("Could not determine git commit/branch — skipping.")
 
     # Trigger training run
+    log.info("Beginning training run with metadata: %s", run_metadata)
     trainer.train(model=run_metadata)
     log.info("Training complete.")
