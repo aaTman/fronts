@@ -574,7 +574,7 @@ if __name__ == "__main__":
         run_metadata["git_branch"] = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
         ).strip()
-    except Exception:
+    except subprocess.CalledProcessError:
         log.warning("Could not determine git commit/branch — skipping.")
 
     # Trigger training run
