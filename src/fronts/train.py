@@ -14,13 +14,8 @@ import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig, PredictConfig, AugmentationConfig
+from fronts.data.config import DataConfig
 
-# ---------------------------------------------------------------------------
-# Module-level logger — writes to stderr so output appears in Slurm logs even
-# when stdout is redirected. Log level can be overridden by setting the
-# FRONTS_LOG_LEVEL environment variable, e.g. FRONTS_LOG_LEVEL=DEBUG.
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=os.environ.get("FRONTS_LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -175,46 +170,6 @@ class CallbacksConfig:
         return callback_list
 
 
-def build_augment_fn(aug: AugmentationConfig):
-    """Returns a tf.function that randomly flips input/target pairs.
-
-    Wind components are negated when their spatial axis is flipped:
-    v-wind is negated on latitude flip, u-wind on longitude flip.
-    """
-    flip_lat = aug.flip_chance_lat
-    flip_lon = aug.flip_chance_lon
-    v_idx = aug.v_wind_index
-    u_idx = aug.u_wind_index
-
-    @tf.function
-    def augment(x, y):
-        # Latitude flip
-        if flip_lat > 0:
-            if tf.random.uniform(()) <= flip_lat:
-                x = tf.reverse(x, axis=[0])
-                y = tf.reverse(y, axis=[0])
-                # Negate v-wind across all levels
-                if v_idx is not None:
-                    n_vars = tf.shape(x)[-1]
-                    sign = tf.where(tf.equal(tf.range(n_vars), v_idx), -1.0, 1.0)
-                    x = x * tf.cast(sign, x.dtype)
-
-        # Longitude flip
-        if flip_lon > 0:
-            if tf.random.uniform(()) <= flip_lon:
-                x = tf.reverse(x, axis=[1])
-                y = tf.reverse(y, axis=[1])
-                # Negate u-wind across all levels
-                if u_idx is not None:
-                    n_vars = tf.shape(x)[-1]
-                    sign = tf.where(tf.equal(tf.range(n_vars), u_idx), -1.0, 1.0)
-                    x = x * tf.cast(sign, x.dtype)
-
-        return x, y
-
-    return augment
-
-
 class Trainer:
     """Main class to build and trigger model training for FrontFinder."""
 
@@ -233,7 +188,6 @@ class Trainer:
         seed: int = 42,
         num_replicas: int = 1,
         batch_size: int = 1,
-        augmentation=None,
     ) -> None:
         """Initialize the Trainer class and maybe build callbacks.
 
@@ -280,7 +234,6 @@ class Trainer:
         self.seed = seed
         self.num_replicas = num_replicas
         self.batch_size = batch_size
-        self.augmentation = augmentation
 
     def train(self, model: dict) -> None:
         """Triggers a keras training run using model.fit().
@@ -293,23 +246,11 @@ class Trainer:
         log.info("Random seed set to %s", self.seed)
         tensorflow.keras.utils.set_random_seed(self.seed)
 
-        # Apply augmentation to training data (before batching).
-        unbatched_train = self.data.train_data
-        if self.augmentation is not None:
-            augment_fn = build_augment_fn(self.augmentation)
-            unbatched_train = unbatched_train.map(
-                augment_fn, num_parallel_calls=tf.data.AUTOTUNE
-            )
-            log.info(
-                "Data augmentation applied to training dataset with config: %s",
-                self.augmentation,
-            )
-
         # Batch and optionally repeat.  MirroredStrategy automatically shards
         # the global batch across replicas (batch_size / num_replicas per GPU).
         # drop_remainder=True ensures no partial batch is emitted.
         log.info("Batching training data...")
-        training_data = unbatched_train.batch(self.batch_size, drop_remainder=True)
+        training_data = self.data.train_data.batch(self.batch_size, drop_remainder=True)
         if self.repeat:
             training_data = training_data.repeat()
 
@@ -407,8 +348,9 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    wandb: WandBConfig | None
+    data: DataConfig
     callbacks: CallbacksConfig
+    wandb: WandBConfig | None
     epochs: int
     training_steps_per_epoch: int
     validation_steps_per_epoch: int | None
@@ -416,8 +358,6 @@ class TrainConfig:
     verbose: Literal["auto", 0, 1, 2]
     repeat: bool
     seed: int
-    data: DataConfig | None = None
-    predict: PredictConfig | None = None
     distribution: str | None = None
     batch_size: int = 1
 
@@ -440,13 +380,9 @@ class TrainConfig:
         callbacks = self.callbacks.build()
         log.debug("Callbacks built: %s", [type(c).__name__ for c in callbacks])
 
-        if self.data is not None:
-            log.info("Building data pipeline (this may take several minutes)...")
-            model_data = self.data.build()
-            log.info("Data pipeline ready.")
-        else:
-            log.warning("No data config provided — trainer will have empty data.")
-            model_data = ""
+        log.info("Building data pipeline (this may take several minutes)...")
+        model_data = self.data.build()
+        log.info("Data pipeline ready.")
 
         # Derive input_shape and num_classes from the training dataset element spec.
         # input_shape: set spatial dims to None for variable-size inference.
@@ -476,8 +412,6 @@ class TrainConfig:
         keras_model.summary(print_fn=log.info)
         log.info("Model built and compiled.")
 
-        augmentation = self.data.augmentation if self.data is not None else None
-
         log.info("Building Trainer...")
         trainer = Trainer(
             model=keras_model,
@@ -493,7 +427,6 @@ class TrainConfig:
             seed=self.seed,
             num_replicas=strategy.num_replicas_in_sync,
             batch_size=self.batch_size,
-            augmentation=augmentation,
         )
         return trainer
 

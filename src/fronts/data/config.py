@@ -24,15 +24,6 @@ from fronts.utils import calc, constants, data_utils
 
 log = logging.getLogger("fronts.data.config")
 
-
-# ---------------------------------------------------------------------------
-# Constant mapping: pressure-level variable name -> surface variable name
-#
-# When "surface" appears in the levels list, the code looks up each requested
-# variable name here to find its surface counterpart in the zarr store.
-# Variables absent from this map are pressure-level-only (no surface analogue).
-# ---------------------------------------------------------------------------
-
 SURFACE_VARIABLE_MAP: dict[str, str] = {
     "temperature": "2m_temperature",
     "u_component_of_wind": "10m_u_component_of_wind",
@@ -41,8 +32,8 @@ SURFACE_VARIABLE_MAP: dict[str, str] = {
     "specific_humidity": "surface_specific_humidity",
 }
 
-# Variables that exist only at the surface (no pressure-level equivalent).
-# These are included in the output whenever "surface" is in the levels list.
+# Variables that exist only at the surface (no pressure-level equivalent)
+# These are included in the output whenever "surface" is in the levels list
 SURFACE_ONLY_VARIABLES: set[str] = {
     "mean_sea_level_pressure",
     "total_precipitation",
@@ -128,40 +119,37 @@ def _stack_era5_variables(
     return xr.merge(result_datasets, join="outer")
 
 
-# ---------------------------------------------------------------------------
-# Derived variable computation
-# ---------------------------------------------------------------------------
-
-# Mapping from derived variable name → computation function.
-# Each function receives the stacked xr.Dataset (which must already contain
-# the prerequisite raw variables) and returns the dataset with the new
-# variable added.  Order matters — e.g. dewpoint must be derived before
-# virtual_temperature, relative_humidity, or theta_e.
 GEOPOTENTIAL_TO_DAM = 98.0665  # geopotential (m²/s²) → geopotential height (dam)
 
 
-def _derive_dewpoint(ds: xr.Dataset) -> xr.Dataset:
+def dewpoint(ds: xr.Dataset) -> xr.Dataset:
     """Derive dewpoint temperature from specific_humidity and pressure."""
     # Build a pressure array matching the data shape from the level coordinate.
     # Level values are hPa (int) or "surface" (str).  For "surface" we
     # approximate with 1013.25 hPa.
     level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
-    pressure_pa = xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
-    ds["dewpoint"] = calc.dewpoint_from_specific_humidity(pressure_pa, ds["specific_humidity"])
+    pressure_pa = (
+        xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    )
+    ds["dewpoint"] = calc.dewpoint_from_specific_humidity(
+        pressure_pa, ds["specific_humidity"]
+    )
     return ds
 
 
-def _derive_virtual_temperature(ds: xr.Dataset) -> xr.Dataset:
+def virtual_temperature(ds: xr.Dataset) -> xr.Dataset:
     """Derive virtual temperature from temperature, dewpoint, and pressure."""
     level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
-    pressure_pa = xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    pressure_pa = (
+        xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    )
     ds["virtual_temperature"] = calc.virtual_temperature_from_dewpoint(
         pressure_pa, ds["temperature"], ds["dewpoint"]
     )
     return ds
 
 
-def _derive_relative_humidity(ds: xr.Dataset) -> xr.Dataset:
+def relative_humidity(ds: xr.Dataset) -> xr.Dataset:
     """Derive relative humidity from temperature and dewpoint."""
     ds["relative_humidity"] = calc.relative_humidity_from_dewpoint(
         ds["temperature"], ds["dewpoint"]
@@ -169,34 +157,34 @@ def _derive_relative_humidity(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
-def _derive_theta_e(ds: xr.Dataset) -> xr.Dataset:
+def theta_e(ds: xr.Dataset) -> xr.Dataset:
     """Derive equivalent potential temperature from temperature, dewpoint, and pressure."""
     level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
-    pressure_pa = xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    pressure_pa = (
+        xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
+    )
     ds["equivalent_potential_temperature"] = calc.equivalent_potential_temperature(
         pressure_pa, ds["temperature"], ds["dewpoint"]
     )
     return ds
 
 
-def _derive_geopotential_height(ds: xr.Dataset) -> xr.Dataset:
+def geopotential_height(ds: xr.Dataset) -> xr.Dataset:
     """Convert geopotential (m²/s²) to geopotential height in decameters."""
     ds["geopotential_height"] = ds["geopotential"] / GEOPOTENTIAL_TO_DAM
     return ds
 
 
 DERIVED_VARIABLE_REGISTRY: dict[str, callable] = {
-    "dewpoint": _derive_dewpoint,
-    "virtual_temperature": _derive_virtual_temperature,
-    "relative_humidity": _derive_relative_humidity,
-    "equivalent_potential_temperature": _derive_theta_e,
-    "geopotential_height": _derive_geopotential_height,
+    "dewpoint": dewpoint,
+    "virtual_temperature": virtual_temperature,
+    "relative_humidity": relative_humidity,
+    "equivalent_potential_temperature": theta_e,
+    "geopotential_height": geopotential_height,
 }
 
 
-def _derive_era5_variables(
-    ds: xr.Dataset, derived_variables: list[str]
-) -> xr.Dataset:
+def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Dataset:
     """Compute derived meteorological variables and add them to the dataset.
 
     Variables are computed in the order given.  Dependencies must appear
@@ -219,13 +207,10 @@ def _derive_era5_variables(
     return ds
 
 
-# ---------------------------------------------------------------------------
-# Normalization for ARCO ERA5 data
-# ---------------------------------------------------------------------------
-
 # Maps ARCO variable names to the legacy short-name prefixes used as keys
 # in constants.NORMALIZATION_PARAMS (e.g. "temperature" → "T", so the lookup
 # key becomes "T_850" or "T_surface").
+# TODO: align all variable names within repo
 _ARCO_TO_LEGACY_NORM_KEY: dict[str, str] = {
     "temperature": "T",
     "dewpoint": "Td",
@@ -241,7 +226,7 @@ _ARCO_TO_LEGACY_NORM_KEY: dict[str, str] = {
 }
 
 
-def normalize_arco_era5(
+def normalize_legacy_arco_era5(
     ds: xr.Dataset,
     method: str = "min-max",
     params: dict | None = None,
@@ -270,10 +255,10 @@ def normalize_arco_era5(
         raise ValueError(f"Unknown normalization method {method!r}")
     i_a, i_b = idx[method]
 
-    # Build each normalized variable via pure xarray arithmetic — dask-safe.
+    # Build each normalized variable via pure xarray arithmetic
     # In-place mutation (ds[var].loc[...] = ...) raises on dask-backed arrays
     # because dask graphs are immutable.  Instead, accumulate into a dict and
-    # return a new Dataset.
+    # return a new Dataset
     result: dict = {}
     for var in list(ds.data_vars):
         prefix = _ARCO_TO_LEGACY_NORM_KEY.get(var)
@@ -310,10 +295,10 @@ def normalize_arco_era5(
 
 
 def _lon_for_store(lon: float, ds: xr.Dataset) -> float:
-    """Convert a longitude from −180/180 to the convention used by ``ds``.
+    """Convert a longitude from -180/180 to the convention used by ``ds``.
 
-    The ARCO ERA5 zarr store uses 0–360 longitudes.  ``domain_extent`` is
-    specified in the conventional −180/180 range.  When the store's minimum
+    The ARCO ERA5 zarr store uses 0-360 longitudes. ``domain_extent`` is
+    specified in the conventional -180/180 range.  When the store's minimum
     longitude is ≥ 0, shift any negative values by +360 so that slice
     selection returns the correct grid points.
     """
@@ -381,9 +366,7 @@ class ERA5PredictorConfig:
         dependencies must come first (e.g. ``"dewpoint"`` before
         ``"virtual_temperature"``).
         """
-        log.info(
-            "ERA5PredictorConfig.build() — opening zarr store: %s", self.store
-        )
+        log.info("ERA5PredictorConfig.build() — opening zarr store: %s", self.store)
         ds = xr.open_zarr(
             store=self.store,
             chunks=self.chunks,
@@ -402,13 +385,16 @@ class ERA5PredictorConfig:
         )
         log.debug(
             "Spatial subset done. lat shape=%s, lon shape=%s",
-            ds.latitude.shape, ds.longitude.shape,
+            ds.latitude.shape,
+            ds.longitude.shape,
         )
 
         # Temporal subset: keep only the requested years
         log.debug("Applying temporal subset for years=%s...", self.years)
         ds = ds.isel(time=ds.time.dt.year.isin(self.years))
-        log.info("ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0))
+        log.info(
+            "ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0)
+        )
 
         # Partition variables: raw ones are loaded from the store, derived
         # ones are computed after stacking.
@@ -424,10 +410,11 @@ class ERA5PredictorConfig:
 
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
-            result = _derive_era5_variables(result, to_derive)
+            result = derive_era5_variables(result, to_derive)
 
         log.info(
-            "ERA5PredictorConfig.build() complete. Output vars: %s", list(result.data_vars)
+            "ERA5PredictorConfig.build() complete. Output vars: %s",
+            list(result.data_vars),
         )
         return result
 
@@ -466,7 +453,8 @@ class FrontsDataConfig:
         """
         log.info(
             "FrontsDataConfig.build() — globbing files for years=%s in %r...",
-            self.years, self.directory,
+            self.years,
+            self.directory,
         )
         files = sorted(
             f
@@ -479,8 +467,17 @@ class FrontsDataConfig:
                 glob_module.glob(f"{self.directory}/*{year}*.nc")
             )
         )
-        log.info("FrontsDataConfig — found %d file(s). Opening with open_mfdataset...", len(files))
-        ds = xr.open_mfdataset(files, engine="netcdf4", combine="by_coords", coords="minimal", compat="override")
+        log.info(
+            "FrontsDataConfig — found %d file(s). Opening with open_mfdataset...",
+            len(files),
+        )
+        ds = xr.open_mfdataset(
+            files,
+            engine="netcdf4",
+            combine="by_coords",
+            coords="minimal",
+            compat="override",
+        )
         log.info("FrontsDataConfig — dataset opened. Variables: %s", list(ds.data_vars))
 
         if self.front_types is not None:
@@ -489,7 +486,9 @@ class FrontsDataConfig:
             log.debug("reformat_fronts complete.")
 
         if self.front_dilation > 0:
-            log.debug("Expanding fronts with %d dilation iteration(s)...", self.front_dilation)
+            log.debug(
+                "Expanding fronts with %d dilation iteration(s)...", self.front_dilation
+            )
             ds = data_utils.expand_fronts(ds, iterations=self.front_dilation)
             log.debug("expand_fronts complete.")
 
@@ -525,24 +524,21 @@ class FrontsDataConfig:
         )
         log.info(
             "FrontsDataConfig.build_index() — found %d file(s) for years=%s.",
-            len(files), self.years,
+            len(files),
+            self.years,
         )
 
         index: dict[str, str] = {}
         for f in files:
             m = re.search(r"(\d{10})_full\.nc$", os.path.basename(f))
             if m is None:
-                log.warning(
-                    "Could not parse timestamp from filename %r — skipping.", f
-                )
+                log.warning("Could not parse timestamp from filename %r — skipping.", f)
                 continue
             dt = datetime.datetime.strptime(m.group(1), "%Y%m%d%H")
             key = dt.strftime("%Y-%m-%dT%H:00:00")
             index[key] = f
 
-        log.info(
-            "FrontsDataConfig.build_index() — indexed %d timestep(s).", len(index)
-        )
+        log.info("FrontsDataConfig.build_index() — indexed %d timestep(s).", len(index))
         return index
 
 
@@ -564,120 +560,44 @@ class AugmentationConfig:
     u_wind_index: int | None = None
     v_wind_index: int | None = None
 
+    def build(self):
+        """Returns a tf.function that randomly flips input/target pairs.
 
-@dataclasses.dataclass
-class TFDatasetConfig:
-    """Configuration for loading pre-built tf.data.Dataset snapshots from disk.
-
-    The on-disk datasets were produced by the previous pipeline and are stored
-    as saved ``tf.data.Dataset`` snapshots in year-labelled subdirectories under
-    a common root, e.g.::
-
-        <directory>/
-            2010-1_tf/
-            2010-2_tf/
-            ...
-            2020-12_tf/
-
-    All monthly subdirectories whose name starts with a requested year are
-    concatenated in sorted order to form the split dataset.
-
-    This is the fastest path to training — it bypasses ERA5 zarr loading,
-    front netCDF loading, stacking, and normalization entirely, using data that
-    is already preprocessed and on local disk.
-
-    Attributes:
-        directory: Root directory containing the year-month subdirectories.
-        train_years: Years to include in the training split.
-        val_years: Years to include in the validation split.
-        test_years: Years to include in the test split. May be empty [].
-        shuffle: Whether to shuffle the training dataset. Defaults to True.
-        shuffle_buffer: Buffer size passed to ``tf.data.Dataset.shuffle()``.
-            Defaults to 1000.
-        prefetch: Number of batches to prefetch. Defaults to 3.
-    """
-
-    directory: str
-    # Years default to empty lists — DataConfig.build() injects the correct
-    # values via dataclasses.replace() at runtime, so the YAML doesn't need
-    # to repeat them when tf_dataset is nested inside a DataConfig block.
-    train_years: list[int] = dataclasses.field(default_factory=list)
-    val_years: list[int] = dataclasses.field(default_factory=list)
-    test_years: list[int] = dataclasses.field(default_factory=list)
-    shuffle: bool = True
-    shuffle_buffer: int = 1000
-    prefetch: int = 3
-    # Optional metadata for WandB logging only — not used by the data pipeline.
-    # ERA5 variable names and pressure levels are baked into the pre-built TF
-    # dataset; these fields let you record what was used for experiment tracking.
-    variables: list[str] | None = None
-    levels: list[str | int] | None = None
-
-    def _load_years(self, years: list[int]) -> Any | None:
-        """Loads and concatenates all monthly TF dataset snapshots for ``years``.
-
-        Subdirectories are matched by prefix: a directory named ``2010-3_tf``
-        matches year ``2010``.
-
-        Returns a ``tf.data.Dataset``, or ``None`` if ``years`` is empty or no
-        matching subdirectories are found.
+        Wind components are negated when their spatial axis is flipped:
+        v-wind is negated on latitude flip, u-wind on longitude flip.
         """
-        if not years:
-            log.debug("_load_years called with empty years list — returning None.")
-            return None
 
-        log.debug("Scanning %r for subdirs matching years %s...", self.directory, years)
-        subdirs = sorted(
-            os.path.join(self.directory, d)
-            for d in os.listdir(self.directory)
-            if any(d.startswith(str(y)) for y in years)
-            and os.path.isdir(os.path.join(self.directory, d))
-        )
+        @tf.function
+        def augment(x, y):
+            # Latitude flip
+            if self.flip_chance_lat > 0:
+                if tf.random.uniform(()) <= self.flip_chance_lat:
+                    x = tf.reverse(x, axis=[0])
+                    y = tf.reverse(y, axis=[0])
+                    # Negate v-wind across all levels
+                    if self.v_wind_index is not None:
+                        n_vars = tf.shape(x)[-1]
+                        sign = tf.where(
+                            tf.equal(tf.range(n_vars), self.v_wind_index), -1.0, 1.0
+                        )
+                        x = x * tf.cast(sign, x.dtype)
 
-        if not subdirs:
-            raise FileNotFoundError(
-                f"No subdirectories found in {self.directory!r} matching years "
-                f"{years}. Expected names like '2010-1_tf', '2010-2_tf', etc."
-            )
+            # Longitude flip
+            if self.flip_chance_lon > 0:
+                if tf.random.uniform(()) <= self.flip_chance_lon:
+                    x = tf.reverse(x, axis=[1])
+                    y = tf.reverse(y, axis=[1])
+                    # Negate u-wind across all levels
+                    if self.u_wind_index is not None:
+                        n_vars = tf.shape(x)[-1]
+                        sign = tf.where(
+                            tf.equal(tf.range(n_vars), self.u_wind_index), -1.0, 1.0
+                        )
+                        x = x * tf.cast(sign, x.dtype)
 
-        log.info("Loading %d TF dataset snapshot(s) for years %s...", len(subdirs), years)
-        datasets = []
-        for i, s in enumerate(subdirs):
-            log.debug("  [%d/%d] Loading %s", i + 1, len(subdirs), s)
-            datasets.append(tf.data.Dataset.load(s))
-        log.debug("All snapshots loaded. Concatenating...")
+            return x, y
 
-        combined = datasets[0]
-        for ds in datasets[1:]:
-            combined = combined.concatenate(ds)
-        log.debug("Concatenation complete. Applying prefetch=%d.", self.prefetch)
-        return combined.prefetch(self.prefetch)
-
-    def build(self) -> "ModelData":
-        """Builds train, validation, and test ``tf.data.Dataset`` objects.
-
-        Returns a :class:`ModelData` with ``train_data``, ``validation_data``,
-        and optionally ``test_data``.
-        """
-        log.info("TFDatasetConfig.build() — loading train split (years=%s)...", self.train_years)
-        train_ds = self._load_years(self.train_years)
-        if self.shuffle and train_ds is not None:
-            log.debug("Shuffling train dataset (buffer_size=%d).", self.shuffle_buffer)
-            train_ds = train_ds.shuffle(buffer_size=self.shuffle_buffer)
-
-        log.info("TFDatasetConfig.build() — loading val split (years=%s)...", self.val_years)
-        val_ds = self._load_years(self.val_years)
-
-        if self.test_years:
-            log.info("TFDatasetConfig.build() — loading test split (years=%s)...", self.test_years)
-        test_ds = self._load_years(self.test_years)
-
-        log.info("TFDatasetConfig.build() complete.")
-        return ModelData(
-            train_data=train_ds,
-            validation_data=val_ds,
-            test_data=test_ds,
-        )
+        return augment
 
 
 @dataclasses.dataclass
@@ -724,16 +644,13 @@ class DataConfig:
         train_years: Years to use for the training split.
         val_years: Years to use for the validation split.
         test_years: Years to use for the test split. May be empty [].
-        tf_dataset: TFDatasetConfig for loading pre-built TF dataset snapshots.
-            Mutually exclusive with era5/fronts.
         era5: ERA5PredictorConfig defining the predictor variable source.
-            Required when tf_dataset is not set.
         fronts: FrontsDataConfig defining the front label source.
-            Required when tf_dataset is not set.
         shuffle: Whether to shuffle the training dataset. Defaults to True.
-            Ignored when tf_dataset is set (shuffle is configured there instead).
         normalization_method: One of "standard", "standard_weighted", "min-max".
-            Defaults to "standard". Only used by the ERA5 path.
+            Defaults to "standard".
+        augmentation_config: AugmentationConfig defining runtime data augmentation.
+            Defaults to None.
         num_classes: Number of front classes (including no-front class 0).
             Defaults to 6 (no_front + CF + WF + SF + OF + DL).
     """
@@ -741,7 +658,6 @@ class DataConfig:
     train_years: list[int]
     val_years: list[int]
     test_years: list[int]
-    tf_dataset: TFDatasetConfig | None = None
     era5: ERA5PredictorConfig | None = None
     fronts: FrontsDataConfig | None = None
     shuffle: bool = True
@@ -761,7 +677,9 @@ class DataConfig:
             log.info(
                 "DataConfig.build() — using TFDatasetConfig path. "
                 "train_years=%s, val_years=%s, test_years=%s",
-                self.train_years, self.val_years, self.test_years,
+                self.train_years,
+                self.val_years,
+                self.test_years,
             )
             # Inject year lists into the TFDatasetConfig and build
             tf_cfg = dataclasses.replace(
@@ -777,7 +695,9 @@ class DataConfig:
         log.info(
             "DataConfig.build() — using ERA5+fronts path. "
             "train_years=%s, val_years=%s, test_years=%s",
-            self.train_years, self.val_years, self.test_years,
+            self.train_years,
+            self.val_years,
+            self.test_years,
         )
         if self.era5 is None or self.fronts is None:
             raise ValueError(
@@ -799,7 +719,7 @@ class DataConfig:
 
             # Normalize using ARCO→legacy name bridging
             log.info("  Normalizing with method=%r...", self.normalization_method)
-            inputs_ds = normalize_arco_era5(
+            inputs_ds = normalize_legacy_arco_era5(
                 inputs_ds, method=self.normalization_method
             )
 
@@ -841,12 +761,8 @@ class DataConfig:
                 """Truncate a numpy datetime64 scalar to second-precision ISO."""
                 return str(t)[:19]  # "2008-01-01T00:00:00"
 
-            era5_time_map: dict[str, Any] = {
-                _iso(t): t for t in inputs_da.time.values
-            }
-            common_keys = sorted(
-                set(era5_time_map.keys()) & set(fronts_index.keys())
-            )
+            era5_time_map: dict[str, Any] = {_iso(t): t for t in inputs_da.time.values}
+            common_keys = sorted(set(era5_time_map.keys()) & set(fronts_index.keys()))
             if not common_keys:
                 raise ValueError(
                     f"No overlapping timestamps between ERA5 and fronts "
@@ -854,7 +770,9 @@ class DataConfig:
                 )
             log.info(
                 "  Timestamp alignment: ERA5=%d, fronts=%d → %d common timesteps.",
-                inputs_da.sizes["time"], len(fronts_index), len(common_keys),
+                inputs_da.sizes["time"],
+                len(fronts_index),
+                len(common_keys),
             )
 
             # Subset ERA5 DataArray to aligned timestamps.
@@ -876,8 +794,13 @@ class DataConfig:
             log.info(
                 "  Building tf.data.Dataset from generator: "
                 "%d timesteps, input=(%d,%d,%d,%d), target=(%d,%d).",
-                n_times, lat_size, lon_size, n_levels, n_vars,
-                lat_size, lon_size,
+                n_times,
+                lat_size,
+                lon_size,
+                n_levels,
+                n_vars,
+                lat_size,
+                lon_size,
             )
 
             # Coordinate arrays used inside gen() to subset each front file.
@@ -894,9 +817,7 @@ class DataConfig:
                     x = inputs_da.isel(time=i).values.astype("float32")
 
                     # Front label — open one file, apply transforms, discard
-                    front_ds = xr.open_dataset(
-                        fronts_index[iso_key], engine="netcdf4"
-                    )
+                    front_ds = xr.open_dataset(fronts_index[iso_key], engine="netcdf4")
                     if fronts_cfg.front_types is not None:
                         front_ds = data_utils.reformat_fronts(
                             front_ds, fronts_cfg.front_types
@@ -961,7 +882,15 @@ class DataConfig:
         if self.test_years:
             log.info("Building test split...")
         test_ds = _build_split(self.test_years)
-
+        if self.augmentation_config:
+            log.info("Building augmentation function...")
+            augment_fn = self.augmentation_config.build()
+            log.info("Applying augmentation to train dataset...")
+            train_ds = train_ds.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
+            log.info(
+                "Data augmentation applied to training dataset with config: %s",
+                self.augmentation_config,
+            )
         log.info("DataConfig.build() complete.")
         return ModelData(
             train_data=train_ds,
@@ -1011,11 +940,13 @@ class TimeSelection:
     date_range: list[datetime.datetime] | None = None  # exactly [start, end]
 
     def __post_init__(self):
-        modes_set = sum([
-            bool(self.most_recent),
-            self.timestamps is not None,
-            self.date_range is not None,
-        ])
+        modes_set = sum(
+            [
+                bool(self.most_recent),
+                self.timestamps is not None,
+                self.date_range is not None,
+            ]
+        )
         if modes_set != 1:
             raise ValueError(
                 "Exactly one of most_recent, timestamps, or date_range must be set "
@@ -1097,10 +1028,14 @@ class PredictConfig:
         # Time selection
         log.debug("Applying time selection: %s", self.time_selection)
         ds = self.time_selection.apply(ds)
-        log.info("Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0))
+        log.info(
+            "Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0)
+        )
 
         # Partition variables into raw (load) and derived (compute).
-        raw_vars = [v for v in self.era5.variables if v not in DERIVED_VARIABLE_REGISTRY]
+        raw_vars = [
+            v for v in self.era5.variables if v not in DERIVED_VARIABLE_REGISTRY
+        ]
         to_derive = [v for v in self.era5.variables if v in DERIVED_VARIABLE_REGISTRY]
 
         log.debug("Stacking raw variables=%s...", raw_vars)
@@ -1112,13 +1047,16 @@ class PredictConfig:
 
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
-            stacked = _derive_era5_variables(stacked, to_derive)
+            stacked = derive_era5_variables(stacked, to_derive)
 
-        log.info("PredictConfig.build() — stacking complete. Output vars: %s", list(stacked.data_vars))
+        log.info(
+            "PredictConfig.build() — stacking complete. Output vars: %s",
+            list(stacked.data_vars),
+        )
 
         # Normalize using ARCO→legacy name bridging
         log.info("Normalizing with method=%r...", self.normalization_method)
-        stacked = normalize_arco_era5(stacked, method=self.normalization_method)
+        stacked = normalize_legacy_arco_era5(stacked, method=self.normalization_method)
 
         # Rechunk before to_array() for the same reason as _build_split():
         # outer-join merge fills missing levels with numpy NaN; rechunking ensures
