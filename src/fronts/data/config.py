@@ -228,75 +228,39 @@ class ModelData:
 class DataConfig:
     """Top-level data configuration for the FrontFinder training pipeline.
 
-    Supports two mutually exclusive data sources:
-
-    1. **Pre-built TF datasets** (``tf_dataset`` key) — fastest path, loads
-       saved ``tf.data.Dataset`` snapshots directly from disk.  Set
-       ``tf_dataset:`` in YAML and leave ``era5``, ``fronts`` unset.
-
-    2. **ARCO ERA5 + front netCDF** (``era5`` + ``fronts`` keys) — full
-       pipeline that loads from the zarr store and front label files, stacks
-       and normalizes variables, and builds a ``tf.data.Dataset`` via
-       ``from_generator()``.  Each timestep is one training sample (full
-       domain, not spatial patches).
-
     Year lists (``train_years``, ``val_years``, ``test_years``) are always
     specified at this level.  For the ERA5 path they are injected into
     ``ERA5PredictorConfig`` and ``FrontsDataConfig`` at build time via
-    ``dataclasses.replace()`` — they should NOT be set in the era5/fronts YAML
+    ``dataclasses.replace()`` — they should not be set in the era5/fronts YAML
     blocks.
 
     Attributes:
         train_years: Years to use for the training split.
         val_years: Years to use for the validation split.
         test_years: Years to use for the test split. May be empty [].
+        num_classes: Number of front classes (including no-front class 0).
+        shuffle: Whether to shuffle the training dataset.
+        normalization_method: One of "standard", "standard_weighted", "min-max".
         era5: ERA5PredictorConfig defining the predictor variable source.
         fronts: FrontsDataConfig defining the front label source.
-        shuffle: Whether to shuffle the training dataset. Defaults to True.
-        normalization_method: One of "standard", "standard_weighted", "min-max".
-            Defaults to "standard".
         augmentation_config: AugmentationConfig defining runtime data augmentation.
-            Defaults to None.
-        num_classes: Number of front classes (including no-front class 0).
-            Defaults to 6 (no_front + CF + WF + SF + OF + DL).
     """
 
     train_years: list[int]
     val_years: list[int]
     test_years: list[int]
-    era5_config: era5.ERA5PredictorConfig | None = None
-    fronts: FrontsDataConfig | None = None
-    shuffle: bool = True
-    normalization_method: str = "standard"
-    augmentation: AugmentationConfig | None = None
-    num_classes: int = 6
+    num_classes: int
+    shuffle: bool
+    normalization_method: str
+    era5_config: era5.ERA5PredictorConfig
+    fronts: FrontsDataConfig
+    augmentation: AugmentationConfig | None
 
     def build(self) -> ModelData:
         """Builds train, validation, and test tf.data.Dataset objects.
 
-        Delegates to TFDatasetConfig.build() when tf_dataset is set, otherwise
-        uses the ERA5 + fronts pipeline.
-
-        Returns a ModelData with train_data, validation_data, and optionally test_data.
+        Returns ModelData with train_data, validation_data, and optionally test_data.
         """
-        if self.tf_dataset is not None:
-            log.info(
-                "DataConfig.build() — using TFDatasetConfig path. "
-                "train_years=%s, val_years=%s, test_years=%s",
-                self.train_years,
-                self.val_years,
-                self.test_years,
-            )
-            # Inject year lists into the TFDatasetConfig and build
-            tf_cfg = dataclasses.replace(
-                self.tf_dataset,
-                train_years=self.train_years,
-                val_years=self.val_years,
-                test_years=self.test_years,
-                shuffle=self.shuffle,
-            )
-            return tf_cfg.build()
-
         # --- ERA5 + fronts path ---
         log.info(
             "DataConfig.build() — using ERA5+fronts path. "
@@ -305,13 +269,6 @@ class DataConfig:
             self.val_years,
             self.test_years,
         )
-        if self.era5 is None or self.fronts is None:
-            raise ValueError(
-                "DataConfig requires either tf_dataset or both "
-                "era5 and fronts to be set."
-            )
-
-        num_classes = self.num_classes  # capture for closure
 
         def _build_split(years: list[int]) -> Any | None:
             if not years:
@@ -468,7 +425,7 @@ class DataConfig:
 
             # One-hot encode targets: (lat, lon) int → (lat, lon, num_classes)
             def encode_targets(x, y):
-                y = tf.one_hot(tf.cast(y, tf.int32), depth=num_classes)
+                y = tf.one_hot(tf.cast(y, tf.int32), depth=self.num_classes)
                 return x, y
 
             tf_ds = tf_ds.map(encode_targets, num_parallel_calls=tf.data.AUTOTUNE)
