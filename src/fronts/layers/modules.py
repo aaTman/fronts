@@ -7,6 +7,7 @@ from tensorflow.keras.layers import (
     MaxPooling3D,
     UpSampling2D,
     UpSampling3D,
+    Reshape,
 )
 from fronts.utils import keras_builders
 import tensorflow as tf
@@ -965,13 +966,14 @@ def deep_supervision_side_output(
         tensor = conv_layer(filters=num_classes, **conv_kwargs)(
             tensor
         )  # This convolution layer contains num_classes filters, one for each class
-        # tf.squeeze cannot be called directly on KerasTensors during model
-        # construction (Keras 3 / TF 2.16+). Wrap in a Lambda layer instead.
-        squeeze_axes_captured = squeeze_axes
-        tensor = tf.keras.layers.Lambda(
-            lambda t: tf.squeeze(t, axis=squeeze_axes_captured),
-            name=f"{name}_Squeeze",
-        )(tensor)  # Squeeze the tensor and remove the dimension
+        # Remove singleton spatial dimensions (keep batch + channels)
+        new_shape = []
+
+        for i, dim in enumerate(tensor.shape[1:]):  # skip batch axis
+            if dim != 1:
+                new_shape.append(dim)
+
+        tensor = Reshape(tuple(new_shape), name=f"{name}_Reshape")(tensor)
 
     activation_kwargs = {"name": f"{name}_{activation}"}
     activation_config = keras_builders.ActivationConfig(
