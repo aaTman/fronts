@@ -19,6 +19,29 @@ import xarray as xr
 import tensorflow as tf
 import regionmask
 from fronts.utils import constants
+from collections import namedtuple
+
+
+BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
+
+
+def convert_domain_extent_to_bounding_box(domain_extent: list[float]) -> BoundingBox:
+    """Converts a domain extent from constants.py to a BoundingBox namedtuple.
+
+    Args:
+        domain_extent: A list of four floats representing the domain extent in the
+            format [lat_min, lat_max, lon_min, lon_max].
+
+    Returns a BoundingBox named tuple with the corresponding values.
+    """
+    if len(domain_extent) != 4:
+        raise ValueError("Domain extent must be a list of four floats.")
+    return BoundingBox(
+        lon_min=domain_extent[0],
+        lon_max=domain_extent[1],
+        lat_min=domain_extent[2],
+        lat_max=domain_extent[3],
+    )
 
 
 def expand_fronts(

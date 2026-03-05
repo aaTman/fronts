@@ -1,35 +1,27 @@
 import xarray as xr
 
 import datetime
-from collections import namedtuple
+
 import dataclasses
 from fronts.utils import calc
+from fronts.utils import data_utils
 from typing import Callable
+import logging
+
+log = logging.getLogger("fronts.data.era5")
 
 ARCO_ERA5_GCP_URI = (
     "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 )
 
-BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
 
-
-def convert_domain_extent_to_bounding_box(domain_extent: list[float]) -> BoundingBox:
-    """Converts a domain extent from constants.py to a BoundingBox namedtuple.
-
-    Args:
-        domain_extent: A list of four floats representing the domain extent in the
-            format [lat_min, lat_max, lon_min, lon_max].
-
-    Returns a BoundingBox named tuple with the corresponding values.
-    """
-    if len(domain_extent) != 4:
-        raise ValueError("Domain extent must be a list of four floats.")
-    return BoundingBox(
-        lon_min=domain_extent[0],
-        lon_max=domain_extent[1],
-        lat_min=domain_extent[2],
-        lat_max=domain_extent[3],
-    )
+DERIVED_VARIABLE_REGISTRY: dict[str, callable] = {
+    "dewpoint": calc.dewpoint,
+    "virtual_temperature": calc.virtual_temperature,
+    "relative_humidity": calc.relative_humidity,
+    "equivalent_potential_temperature": calc.theta_e,
+    "geopotential_height": calc.geopotential_height,
+}
 
 
 def load_arco_era5(
@@ -63,7 +55,7 @@ def subset_arco_era5(
     variables: list[str],
     start_date: datetime.datetime,
     end_date: datetime.datetime,
-    bounding_box: BoundingBox,
+    bounding_box: data_utils.BoundingBox,
     levels: list[int],
 ):
     """Subsets the ARCO ERA5 dataset by variables, specific time range, and geographic bounding box.
@@ -96,6 +88,29 @@ def subset_arco_era5(
     )
     ds = ds.sel(time=slice(start_date, end_date))
     ds = ds.sel(level=levels)
+    return ds
+
+
+def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Dataset:
+    """Compute derived meteorological variables and add them to the dataset.
+
+    Variables are computed in the order given.  Dependencies must appear
+    earlier in the list (e.g. "dewpoint" before "virtual_temperature").
+
+    Args:
+        ds: Stacked xr.Dataset with raw ERA5 variables.
+        derived_variables: Ordered list of derived variable names.  Valid
+            names are keys of DERIVED_VARIABLE_REGISTRY.
+    """
+    for name in derived_variables:
+        fn = DERIVED_VARIABLE_REGISTRY.get(name)
+        if fn is None:
+            raise ValueError(
+                f"Unknown derived variable {name!r}. "
+                f"Valid options: {list(DERIVED_VARIABLE_REGISTRY.keys())}"
+            )
+        log.debug("Deriving %s...", name)
+        ds = fn(ds)
     return ds
 
 
@@ -142,7 +157,9 @@ class ERA5TrainingDataConfig:
             variables=self.variables,
             start_date=self.start_date,
             end_date=self.end_date,
-            bounding_box=convert_domain_extent_to_bounding_box(self.domain_extent),
+            bounding_box=data_utils.convert_domain_extent_to_bounding_box(
+                self.domain_extent
+            ),
             levels=self.levels,
         )
         return ds

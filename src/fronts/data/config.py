@@ -19,8 +19,8 @@ import numpy as np
 import tensorflow as tf
 import xarray as xr
 
-from fronts.data.era5 import convert_domain_extent_to_bounding_box
-from fronts.utils import calc, constants, data_utils
+from fronts.data import era5
+from fronts.utils import constants, data_utils
 
 log = logging.getLogger("fronts.data.config")
 
@@ -117,94 +117,6 @@ def _stack_era5_variables(
                 result_datasets.append(da_pl.to_dataset(name=var))
 
     return xr.merge(result_datasets, join="outer")
-
-
-GEOPOTENTIAL_TO_DAM = 98.0665  # geopotential (m²/s²) → geopotential height (dam)
-
-
-def dewpoint(ds: xr.Dataset) -> xr.Dataset:
-    """Derive dewpoint temperature from specific_humidity and pressure."""
-    # Build a pressure array matching the data shape from the level coordinate.
-    # Level values are hPa (int) or "surface" (str).  For "surface" we
-    # approximate with 1013.25 hPa.
-    level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
-    pressure_pa = (
-        xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
-    )
-    ds["dewpoint"] = calc.dewpoint_from_specific_humidity(
-        pressure_pa, ds["specific_humidity"]
-    )
-    return ds
-
-
-def virtual_temperature(ds: xr.Dataset) -> xr.Dataset:
-    """Derive virtual temperature from temperature, dewpoint, and pressure."""
-    level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
-    pressure_pa = (
-        xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
-    )
-    ds["virtual_temperature"] = calc.virtual_temperature_from_dewpoint(
-        pressure_pa, ds["temperature"], ds["dewpoint"]
-    )
-    return ds
-
-
-def relative_humidity(ds: xr.Dataset) -> xr.Dataset:
-    """Derive relative humidity from temperature and dewpoint."""
-    ds["relative_humidity"] = calc.relative_humidity_from_dewpoint(
-        ds["temperature"], ds["dewpoint"]
-    )
-    return ds
-
-
-def theta_e(ds: xr.Dataset) -> xr.Dataset:
-    """Derive equivalent potential temperature from temperature, dewpoint, and pressure."""
-    level_hpa = [1013.25 if lv == "surface" else float(lv) for lv in ds.level.values]
-    pressure_pa = (
-        xr.DataArray(level_hpa, dims="level", coords={"level": ds.level}) * 100
-    )
-    ds["equivalent_potential_temperature"] = calc.equivalent_potential_temperature(
-        pressure_pa, ds["temperature"], ds["dewpoint"]
-    )
-    return ds
-
-
-def geopotential_height(ds: xr.Dataset) -> xr.Dataset:
-    """Convert geopotential (m²/s²) to geopotential height in decameters."""
-    ds["geopotential_height"] = ds["geopotential"] / GEOPOTENTIAL_TO_DAM
-    return ds
-
-
-DERIVED_VARIABLE_REGISTRY: dict[str, callable] = {
-    "dewpoint": dewpoint,
-    "virtual_temperature": virtual_temperature,
-    "relative_humidity": relative_humidity,
-    "equivalent_potential_temperature": theta_e,
-    "geopotential_height": geopotential_height,
-}
-
-
-def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Dataset:
-    """Compute derived meteorological variables and add them to the dataset.
-
-    Variables are computed in the order given.  Dependencies must appear
-    earlier in the list (e.g. "dewpoint" before "virtual_temperature").
-
-    Args:
-        ds: Stacked xr.Dataset with raw ERA5 variables.
-        derived_variables: Ordered list of derived variable names.  Valid
-            names are keys of DERIVED_VARIABLE_REGISTRY.
-    """
-    for name in derived_variables:
-        fn = DERIVED_VARIABLE_REGISTRY.get(name)
-        if fn is None:
-            raise ValueError(
-                f"Unknown derived variable {name!r}. "
-                f"Valid options: {list(DERIVED_VARIABLE_REGISTRY.keys())}"
-            )
-        log.debug("Deriving %s...", name)
-        ds = fn(ds)
-    return ds
 
 
 # Maps ARCO variable names to the legacy short-name prefixes used as keys
@@ -376,7 +288,7 @@ class ERA5PredictorConfig:
 
         # Spatial subset
         log.debug("Applying spatial subset: domain_extent=%s", self.domain_extent)
-        bbox = convert_domain_extent_to_bounding_box(self.domain_extent)
+        bbox = era5.convert_domain_extent_to_bounding_box(self.domain_extent)
         lon_min = _lon_for_store(bbox.lon_min, ds)
         lon_max = _lon_for_store(bbox.lon_max, ds)
         ds = ds.sel(
@@ -398,8 +310,10 @@ class ERA5PredictorConfig:
 
         # Partition variables: raw ones are loaded from the store, derived
         # ones are computed after stacking.
-        raw_vars = [v for v in self.variables if v not in DERIVED_VARIABLE_REGISTRY]
-        to_derive = [v for v in self.variables if v in DERIVED_VARIABLE_REGISTRY]
+        raw_vars = [
+            v for v in self.variables if v not in era5.DERIVED_VARIABLE_REGISTRY
+        ]
+        to_derive = [v for v in self.variables if v in era5.DERIVED_VARIABLE_REGISTRY]
 
         log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
         result = _stack_era5_variables(
@@ -410,7 +324,7 @@ class ERA5PredictorConfig:
 
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
-            result = derive_era5_variables(result, to_derive)
+            result = era5.derive_era5_variables(result, to_derive)
 
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s",
@@ -1017,7 +931,7 @@ class PredictConfig:
 
         # Spatial subset
         log.debug("Applying spatial subset...")
-        bbox = convert_domain_extent_to_bounding_box(self.era5.domain_extent)
+        bbox = data_utils.convert_domain_extent_to_bounding_box(self.era5.domain_extent)
         lon_min = _lon_for_store(bbox.lon_min, ds)
         lon_max = _lon_for_store(bbox.lon_max, ds)
         ds = ds.sel(
@@ -1034,9 +948,11 @@ class PredictConfig:
 
         # Partition variables into raw (load) and derived (compute).
         raw_vars = [
-            v for v in self.era5.variables if v not in DERIVED_VARIABLE_REGISTRY
+            v for v in self.era5.variables if v not in era5.DERIVED_VARIABLE_REGISTRY
         ]
-        to_derive = [v for v in self.era5.variables if v in DERIVED_VARIABLE_REGISTRY]
+        to_derive = [
+            v for v in self.era5.variables if v in era5.DERIVED_VARIABLE_REGISTRY
+        ]
 
         log.debug("Stacking raw variables=%s...", raw_vars)
         stacked = _stack_era5_variables(
@@ -1047,7 +963,7 @@ class PredictConfig:
 
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
-            stacked = derive_era5_variables(stacked, to_derive)
+            stacked = era5.derive_era5_variables(stacked, to_derive)
 
         log.info(
             "PredictConfig.build() — stacking complete. Output vars: %s",
