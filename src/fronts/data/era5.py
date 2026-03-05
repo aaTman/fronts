@@ -1,10 +1,8 @@
 import xarray as xr
 
 import datetime
-
 import dataclasses
-from fronts.utils import calc
-from fronts.utils import data_utils
+from fronts.utils import calc, data_utils
 from typing import Callable
 import logging
 
