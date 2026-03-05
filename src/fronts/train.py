@@ -8,18 +8,14 @@ import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
 import datetime
+import subprocess
 from typing import Literal, Any, TypeVar, Type
 import argparse
 import dacite
 import yaml
 from fronts.model import ModelConfig
-from fronts.data.config import DataConfig, PredictConfig
+from fronts.data.config import DataConfig
 
-# ---------------------------------------------------------------------------
-# Module-level logger — writes to stderr so output appears in Slurm logs even
-# when stdout is redirected. Log level can be overridden by setting the
-# FRONTS_LOG_LEVEL environment variable, e.g. FRONTS_LOG_LEVEL=DEBUG.
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=os.environ.get("FRONTS_LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -191,6 +187,7 @@ class Trainer:
         repeat: bool = True,
         seed: int = 42,
         num_replicas: int = 1,
+        batch_size: int = 1,
     ) -> None:
         """Initialize the Trainer class and maybe build callbacks.
 
@@ -218,9 +215,10 @@ class Trainer:
                 many batches will run per epoch.
             seed: the seed to use for for all of the backend seeds to allow for
                 determinism. Defaults to 42.
-            num_replicas: number of distribution replicas (GPUs). The global batch
-                size is set to this value so each replica receives exactly one
-                complete spatial patch per step. Defaults to 1 (single device).
+            num_replicas: number of distribution replicas (GPUs). Defaults to 1.
+            batch_size: global batch size. MirroredStrategy shards this across
+                replicas (batch_size / num_replicas per GPU). Defaults to 1.
+            augmentation: optional AugmentationConfig for runtime data augmentation.
 
         """
         self.model = model
@@ -235,6 +233,7 @@ class Trainer:
         self.callbacks = callbacks or []
         self.seed = seed
         self.num_replicas = num_replicas
+        self.batch_size = batch_size
 
     def train(self, model: dict) -> None:
         """Triggers a keras training run using model.fit().
@@ -244,27 +243,20 @@ class Trainer:
         """
 
         # Set the seed for fitting the model
+        log.info("Random seed set to %s", self.seed)
         tensorflow.keras.utils.set_random_seed(self.seed)
 
-        # Each saved TF dataset element is a pre-gridded spatial patch
-        # (lat, lon, level, ch) — a single complete sample, not a batch of rows.
-        # Without an explicit .batch() call, Keras treats dim 0 (lat=128) as the
-        # batch size and feeds the model 3D samples (lon, level, ch), which
-        # mismatches the model's Input(shape=(None, None, level, ch)).
-        #
-        # The global batch size is set to num_replicas (number of GPUs) so that
-        # MirroredStrategy distributes exactly one complete patch to each replica
-        # per step. With batch_size=1 and N GPUs, MirroredStrategy would try to
-        # shard 1 sample across N devices (impossible), leaving N-1 replicas with
-        # empty shards [0, ...] and causing an AddN shape mismatch during gradient
-        # aggregation. drop_remainder=True ensures no partial batch is emitted.
+        # Batch and optionally repeat.  MirroredStrategy automatically shards
+        # the global batch across replicas (batch_size / num_replicas per GPU).
+        # drop_remainder=True ensures no partial batch is emitted.
+        log.info("Batching training data...")
+        training_data = self.data.train_data.batch(self.batch_size, drop_remainder=True)
         if self.repeat:
-            training_data = self.data.train_data.batch(self.num_replicas, drop_remainder=True).repeat()
-        else:
-            training_data = self.data.train_data.batch(self.num_replicas, drop_remainder=True)
+            training_data = training_data.repeat()
 
+        log.info("Batching validation data...")
         validation_data = (
-            self.data.validation_data.batch(self.num_replicas, drop_remainder=True)
+            self.data.validation_data.batch(self.batch_size, drop_remainder=True)
             if self.data.validation_data is not None
             else None
         )
@@ -273,6 +265,10 @@ class Trainer:
         # Replicate the target so y_true structure matches y_pred structure.
         n_outputs = len(self.model.outputs)
         if n_outputs > 1:
+            log.info(
+                "Model has %d outputs; replicating targets for deep supervision.",
+                n_outputs,
+            )
             training_data = training_data.map(
                 lambda x, y: (x, (y,) * n_outputs),
                 num_parallel_calls=tf.data.AUTOTUNE,
@@ -299,9 +295,11 @@ class Trainer:
             wandb_init = self.wandb.build_init_config(model)
             with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
                 fit_args["callbacks"] = self.build_callbacks(self.callbacks)
+                log.info("Fitting model with args %s...", fit_args)
                 self.model.fit(**fit_args)
         else:
             fit_args["callbacks"] = self.build_callbacks(self.callbacks)
+            log.info("Fitting model with args %s...", fit_args)
             self.model.fit(**fit_args)
 
     def build_callbacks(self, callbacks: list):
@@ -350,8 +348,9 @@ class TrainConfig:
     """
 
     model: ModelConfig
-    wandb: WandBConfig | None
+    data: DataConfig
     callbacks: CallbacksConfig
+    wandb: WandBConfig | None
     epochs: int
     training_steps_per_epoch: int
     validation_steps_per_epoch: int | None
@@ -359,9 +358,8 @@ class TrainConfig:
     verbose: Literal["auto", 0, 1, 2]
     repeat: bool
     seed: int
-    data: DataConfig | None = None
-    predict: PredictConfig | None = None
     distribution: str | None = None
+    batch_size: int = 1
 
     def build(
         self,
@@ -382,13 +380,9 @@ class TrainConfig:
         callbacks = self.callbacks.build()
         log.debug("Callbacks built: %s", [type(c).__name__ for c in callbacks])
 
-        if self.data is not None:
-            log.info("Building data pipeline (this may take several minutes)...")
-            model_data = self.data.build()
-            log.info("Data pipeline ready.")
-        else:
-            log.warning("No data config provided — trainer will have empty data.")
-            model_data = ""
+        log.info("Building data pipeline (this may take several minutes)...")
+        model_data = self.data.build()
+        log.info("Data pipeline ready.")
 
         # Derive input_shape and num_classes from the training dataset element spec.
         # input_shape: set spatial dims to None for variable-size inference.
@@ -412,7 +406,9 @@ class TrainConfig:
 
         log.info("Building model...")
         with strategy.scope():
-            keras_model = self.model.build(input_shape=input_shape, num_classes=num_classes)
+            keras_model = self.model.build(
+                input_shape=input_shape, num_classes=num_classes
+            )
         keras_model.summary(print_fn=log.info)
         log.info("Model built and compiled.")
 
@@ -430,35 +426,28 @@ class TrainConfig:
             repeat=self.repeat,
             seed=self.seed,
             num_replicas=strategy.num_replicas_in_sync,
+            batch_size=self.batch_size,
         )
         return trainer
 
 
-def open_config_yaml_as_dataclass(
-    path: str, config_class: Type[T], require: bool = False
-) -> T | None:
+def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> T | None:
     """Opens a configuration yaml if exists and returns it as the relevant dataclass.
 
     Args:
         path: the absolute path to the configuration file.
         config_class: the configuration dataclass that the incoming yaml will be
             converted to via dacite.
-        require: If True, code will throw an error if the path is not provided.
-            Defaults to False.
-
     Returns either None or the dataclass if path is provided.
     """
-    if path:
-        with open(file=path) as f:
-            config_yaml = yaml.safe_load(f)
-        _class_instance = dacite.from_dict(
-            data_class=config_class,
-            data=config_yaml,
-            config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
-        )
-        return _class_instance
-    elif require:
-        raise ValueError("Path must be included when require is True.")
+    with open(file=path) as f:
+        config_yaml = yaml.safe_load(f)
+    _class_instance = dacite.from_dict(
+        data_class=config_class,
+        data=config_yaml,
+        config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
+    )
+    return _class_instance
 
 
 if __name__ == "__main__":
@@ -505,8 +494,11 @@ if __name__ == "__main__":
     train_config = open_config_yaml_as_dataclass(
         path=args.train_config_path, config_class=TrainConfig, require=True
     )
-    log.info("Config loaded. epochs=%d, steps_per_epoch=%d",
-             train_config.epochs, train_config.training_steps_per_epoch)
+    log.info(
+        "Config loaded. epochs=%d, steps_per_epoch=%d",
+        train_config.epochs,
+        train_config.training_steps_per_epoch,
+    )
 
     if args.dry_run:
         log.info("=== DRY RUN MODE — skipping WandB init and training ===")
@@ -574,6 +566,18 @@ if __name__ == "__main__":
                     str(lvl) for lvl in data.tf_dataset.levels
                 ]
 
+    # Capture git commit hash and branch for reproducibility tracking
+    try:
+        run_metadata["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+        run_metadata["git_branch"] = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        log.warning("Could not determine git commit/branch — skipping.")
+
     # Trigger training run
+    log.info("Beginning training run with metadata: %s", run_metadata)
     trainer.train(model=run_metadata)
     log.info("Training complete.")

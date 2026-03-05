@@ -1,11 +1,12 @@
-distribution: "mirrored"
 epochs: 5000
-training_steps_per_epoch: 30
-validation_steps_per_epoch:
+training_steps_per_epoch: 10
+validation_steps_per_epoch: 51
 validation_frequency: 1
 verbose: 1
 repeat: true
 seed: 42
+batch_size: 64
+distribution: "mirrored"
 
 model:
   name: "unet_3plus"
@@ -22,6 +23,8 @@ model:
     name: "fractions_skill_score"
     config:
       mask_size: [3, 3]
+      c: 1.0
+      threshold: 0.5
   metric:
     name: "critical_success_index"
     config:
@@ -30,6 +33,7 @@ model:
   optimizer:
     name: "Adam"
     config:
+      learning_rate: 0.0001
       beta_1: 0.9
       beta_2: 0.999
 
@@ -70,19 +74,23 @@ data:
       2015,
       2016,
       2017,
-      2018,
       2020,
-      2021,
-      2022,
-      2024,
     ]
-  val_years: [2023]
-  test_years: []
+  val_years: [2018]
+  test_years: [2019]
   shuffle: true
-  normalization_method: "standard"
+  normalization_method: "min-max"
 
-  # ---- NetCDF pipeline (ERA5 + fronts) ----
-  # Used when tf_dataset is absent or null. Requires era5, fronts, and batch.
+  augmentation:
+    flip_chance_lat: 0.29
+    flip_chance_lon: 0.29
+    u_wind_index: 3   # "u" in the variable ordering [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
+    v_wind_index: 4   # "v" in the variable ordering
+
+  num_classes: 6
+
+  # ---- ERA5 + fronts pipeline ----
+  # Used when tf_dataset is absent or null. Requires era5 and fronts.
   era5:
     domain_extent: [-140.0, -60.0, 20.0, 60.0]
     # Use canonical (pressure-level) names for variables that have both surface
@@ -91,12 +99,22 @@ data:
     # The mapping from pressure-level name to surface name is defined in
     # fronts.data.config.SURFACE_VARIABLE_MAP and applied automatically when
     # "surface" appears in the levels list.
+    # Raw ERA5 variables are loaded from the zarr store.  Derived variables
+    # (registered in DERIVED_VARIABLE_REGISTRY) are auto-detected and computed
+    # after stacking.  Order matters: dependencies first (e.g. dewpoint before
+    # virtual_temperature).
     variables:
-      - "temperature" # surface counterpart: 2m_temperature
-      - "specific_humidity" # surface counterpart: surface_specific_humidity
-      - "u_component_of_wind" # surface counterpart: 10m_u_component_of_wind
-      - "v_component_of_wind" # surface counterpart: 10m_v_component_of_wind
-      - "mean_sea_level_pressure" # surface-only
+      - "temperature"                       # raw — surface: 2m_temperature
+      - "specific_humidity"                 # raw — surface: surface_specific_humidity
+      - "u_component_of_wind"               # raw — surface: 10m_u_component_of_wind
+      - "v_component_of_wind"               # raw — surface: 10m_v_component_of_wind
+      - "geopotential"                      # raw — geopotential (m²/s²)
+      - "mean_sea_level_pressure"           # raw — surface-only
+      - "dewpoint"                          # derived — from specific_humidity + pressure
+      - "virtual_temperature"               # derived — from temperature + dewpoint + pressure
+      - "relative_humidity"                 # derived — from temperature + dewpoint
+      - "equivalent_potential_temperature"  # derived — from temperature + dewpoint + pressure
+      - "geopotential_height"              # derived — geopotential / 98.0665 → dam
     # levels may contain "surface" and/or integer hPa values in any order.
     # "surface" triggers loading of the surface counterpart for each variable.
     levels: ["surface", 1000, 950, 900, 850]
@@ -106,38 +124,14 @@ data:
     consolidated: true
 
   fronts:
-    directory: "/path/to/fronts/netcdf"
-    front_types: "MERGED-ALL"
-
-  batch:
-    input_sizes:
-      time: 1
-      latitude: 128
-      longitude: 128
-    target_sizes:
-      time: 1
-      latitude: 128
-      longitude: 128
-    prefetch_number: 3
-    preload_batch: false
-
-  # ---- TF dataset pipeline (takes priority when present) ----
-  # Load pre-built TF dataset snapshots directly from disk.
-  # Subdirectory naming convention: {year}-{month}_tf  (e.g. 2010-1_tf)
-  # train_years/val_years/test_years from above are injected at build time.
-  tf_dataset:
-    directory: "/ourdisk/hpc/ai2es/fronts/raw_front_data/tf_datasets/5class-7lvl-conus"
-    shuffle: true
-    shuffle_buffer: 1000
-    prefetch: 3
-    # Metadata for WandB logging — not used by the data pipeline itself.
-    variables: [temperature, specific_humidity, u_component_of_wind, v_component_of_wind, mean_sea_level_pressure]
-    levels: ["surface", 1000, 950, 900, 850]
+    directory: "/ourdisk/hpc/ai2es/fronts/raw_front_data/netcdf"
+    front_types: ["CF", "WF", "SF", "OF", "DL"]
+    front_dilation: 1  # configurable — set to N to expand front labels by N pixels
 
 wandb:
   project_name: "fronts"
-  model_run_name: "1702_retrain"
-  wandb_filepath: "/ourdisk/hpc/ai2es/tman/models/1702_retrain.keras"
+  model_run_name: "1702_retrain_era5"
+  wandb_filepath: "/ourdisk/hpc/ai2es/tman/models/1702_retrain_era5.keras"
   # -- Optional parameters --
   # log_frequency:
   # upload_checkpoints:
@@ -149,8 +143,8 @@ callbacks:
   save_best_only: true
   save_weights_only: false
   save_freq: "epoch"
-  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702.keras"
-  csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702.csv"
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/1702_retrain_era5.keras"
+  csv_logger_path: "/ourdisk/hpc/ai2es/tman/logs/1702_retrain_era5.csv"
   patience: 55
 
 # ---- Prediction config ----
@@ -176,7 +170,7 @@ predict:
   #     - "2024-06-01T00:00:00"
   #     - "2024-06-07T18:00:00"
 
-  normalization_method: "standard"
+  normalization_method: "min-max"
 
   era5:
     domain_extent: [-140.0, -60.0, 20.0, 60.0]
@@ -185,7 +179,13 @@ predict:
       - "specific_humidity"
       - "u_component_of_wind"
       - "v_component_of_wind"
+      - "geopotential"
       - "mean_sea_level_pressure"
+      - "dewpoint"
+      - "virtual_temperature"
+      - "relative_humidity"
+      - "equivalent_potential_temperature"
+      - "geopotential_height"
     levels: ["surface", 1000, 950, 900, 850]
     store: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
     chunks:
