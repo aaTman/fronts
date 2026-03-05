@@ -25,6 +25,19 @@ from collections import namedtuple
 BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
 
 
+def maybe_convert_lon(lon: float, da: xr.DataArray) -> float:
+    """Convert a longitude from -180/180 to the convention used by ``ds``.
+
+    The ARCO ERA5 zarr store uses 0-360 longitudes. ``domain_extent`` is
+    specified in the conventional -180/180 range.  When the store's minimum
+    longitude is ≥ 0, shift any negative values by +360 so that slice
+    selection returns the correct grid points.
+    """
+    if float(da.longitude.min()) >= 0 and lon < 0:
+        return lon + 360.0
+    return lon
+
+
 def convert_domain_extent_to_bounding_box(domain_extent: list[float]) -> BoundingBox:
     """Converts a domain extent from constants.py to a BoundingBox namedtuple.
 
