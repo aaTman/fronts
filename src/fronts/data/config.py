@@ -14,7 +14,7 @@ import glob as glob_module
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 import numpy as np
 import tensorflow as tf
 import xarray as xr
@@ -39,13 +39,14 @@ class FrontsDataConfig:
         years: Years to load. Typically injected by DataConfig.build() via
             dataclasses.replace() rather than set directly in YAML.
         front_types: Code(s) passed to reformat_fronts() to regroup front classes.
-            Examples: "MERGED-ALL", "F_BIN", ["CF", "WF"]. None = no reformatting.
+            ["CF", "WF"]. None = no reformatting.
     """
 
     directory: str
-    front_types: str | list[str] | None
-    front_dilation: int = 0
-    years: list[int] = dataclasses.field(default_factory=list)
+    years: list[int]
+    front_types: str | list[str]
+    front_dilation: int
+
 
     def build(self) -> xr.Dataset:
         """Loads and optionally reformats front label data for the given years.
@@ -161,10 +162,10 @@ class AugmentationConfig:
             (last axis). Required for lat flip to negate v-wind. None to skip.
     """
 
-    flip_chance_lat: float = 0.0
-    flip_chance_lon: float = 0.0
-    u_wind_index: int | None = None
-    v_wind_index: int | None = None
+    flip_chance_lat: float
+    flip_chance_lon: float
+    u_wind_index: int | None
+    v_wind_index: int | None
 
     def build(self):
         """Returns a tf.function that randomly flips input/target pairs.
@@ -219,9 +220,9 @@ class ModelData:
         test_data: Optional tf.data.Dataset for testing. None if test_years is empty.
     """
 
-    train_data: Any
-    validation_data: Any
-    test_data: Any | None = None
+    train_data: tf.data.Dataset
+    validation_data: tf.data.Dataset
+    test_data: tf.data.Dataset | None
 
 
 @dataclasses.dataclass
@@ -461,82 +462,6 @@ class DataConfig:
             test_data=test_ds,
         )
 
-
-@dataclasses.dataclass
-class TimeSelection:
-    """Specifies which ERA5 timesteps to load for prediction.
-
-    Exactly one of most_recent, timestamps, or date_range must be set.
-    Validation is performed in __post_init__.
-
-    Attributes:
-        most_recent: If True, selects the single latest timestep available in the
-            store. The zarr store's time dimension is assumed to be sorted ascending
-            (latest last), which is true for ARCO ERA5.
-        timestamps: An explicit list of datetimes, each representing a single
-            analysis time (date + hour). Selection uses method="nearest" to tolerate
-            minor floating-point or timezone differences.
-        date_range: A two-element list [start, end] of datetimes. All timesteps
-            between start and end (inclusive) are selected.
-
-    YAML usage — choose exactly one block:
-
-        # Most recent timestep in the store:
-        time_selection:
-          most_recent: true
-
-        # Explicit individual timesteps (use ISO 8601 with T separator):
-        time_selection:
-          timestamps:
-            - "2024-06-01T12:00:00"
-            - "2024-06-02T00:00:00"
-
-        # Inclusive date range:
-        time_selection:
-          date_range:
-            - "2024-06-01T00:00:00"
-            - "2024-06-07T18:00:00"
-    """
-
-    most_recent: bool = False
-    timestamps: list[datetime.datetime] | None = None
-    date_range: list[datetime.datetime] | None = None  # exactly [start, end]
-
-    def __post_init__(self):
-        modes_set = sum(
-            [
-                bool(self.most_recent),
-                self.timestamps is not None,
-                self.date_range is not None,
-            ]
-        )
-        if modes_set != 1:
-            raise ValueError(
-                "Exactly one of most_recent, timestamps, or date_range must be set "
-                f"in TimeSelection (got {modes_set} modes set)."
-            )
-        if self.date_range is not None and len(self.date_range) != 2:
-            raise ValueError(
-                "date_range must be a list of exactly two datetimes [start, end], "
-                f"got {len(self.date_range)} element(s)."
-            )
-
-    def apply(self, ds: xr.Dataset) -> xr.Dataset:
-        """Applies this time selection to a spatially-subsetted xarray Dataset.
-
-        Args:
-            ds: An xarray Dataset that has already been subsetted spatially.
-
-        Returns the Dataset subsetted to the specified timesteps.
-        """
-        if self.most_recent:
-            return ds.isel(time=[-1])
-        elif self.timestamps is not None:
-            return ds.sel(time=self.timestamps, method="nearest")
-        else:  # date_range
-            return ds.sel(time=slice(self.date_range[0], self.date_range[1]))
-
-
 @dataclasses.dataclass
 class PredictConfig:
     """Configuration for ERA5-based model inference.
@@ -550,16 +475,16 @@ class PredictConfig:
         era5: ERA5PredictorConfig defining the variable source, spatial domain,
             and zarr store. The `years` field on era5 is unused by PredictConfig;
             time selection is fully controlled by time_selection.
-        time_selection: TimeSelection specifying which timesteps to load. Exactly
-            one of most_recent, timestamps, or date_range must be set.
+        time_selection: One or two datetimes specifying which timesteps to load. Two
+            datetimes will select a range of timesteps.
         normalization_method: One of "standard", "standard_weighted", "min-max".
             Should match the normalization used during training. Defaults to
             "standard".
     """
 
     era5_config: era5.ERA5PredictorConfig
-    time_selection: TimeSelection
-    normalization_method: str = "standard"
+    time_selection: list[datetime.datetime]
+    normalization_method: Literal["standard", "standard_weighted", "min-max"]
 
     def build(self) -> xr.DataArray:
         """Loads, stacks, and normalizes ERA5 data for the selected timesteps.
@@ -590,7 +515,15 @@ class PredictConfig:
 
         # Time selection
         log.debug("Applying time selection: %s", self.time_selection)
-        ds = self.time_selection.apply(ds)
+        if len(self.time_selection) == 1:
+            ds = ds.sel(time=self.time_selection[0])
+        elif len(self.time_selection) == 2:
+            ds = ds.sel(
+                time=slice(self.time_selection[0], self.time_selection[1]),
+                method="nearest"
+            )
+        else:
+            raise ValueError(f"Invalid time selection: {self.time_selection}")
         log.info(
             "Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0)
         )

@@ -247,8 +247,8 @@ class ERA5PredictorConfig:
     store: str
     chunks: dict[str, int]
     consolidated: bool
-    years: list[int] = dataclasses.field(default_factory=list)
-
+    years: list[int] 
+    
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
 
