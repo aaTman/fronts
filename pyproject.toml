@@ -3,7 +3,7 @@
 name = "fronts"
 version = "0.2.0"
 description = "FrontFinder AI for finding various frontal and baroclinic boundaries"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 keywords = [
     "weather",
     "weather fronts",
@@ -55,7 +55,6 @@ xarray = ">=2024.3.0,<2025"
 scikit-image = ">=0.22.0"
 h5py = ">=3.11.0"
 xbatcher = ">=0.4.0,<0.5"
-zarr = ">=2.18.3,<3"
 gcsfs = ">=2026.2.0,<2027"
 
 [tool.pixi.feature.train.pypi-dependencies]
@@ -87,7 +86,6 @@ xarray = ">=2024.3.0,<2025"
 scikit-image = ">=0.22.0"
 h5py = ">=3.11.0"
 xbatcher = ">=0.4.0,<0.5"
-zarr = ">=2.18.3,<3"
 # gcsfs omitted — not needed locally (no ARCO zarr store access on Mac)
 
 [tool.pixi.feature.mac.pypi-dependencies]
@@ -141,6 +139,7 @@ test = [
 
 #TODO: swap wget with requests in code
 data = ["cdsapi", "wget"]
+train = ["zarr>=3.1.5,<4", "icechunk>=1.1.20,<2"]
 
 [build-system] 
 requires = ["hatchling"]

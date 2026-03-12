@@ -10,143 +10,16 @@ methods that return runtime objects, loadable from YAML via dacite.
 
 import dataclasses
 import datetime
-import glob as glob_module
 import logging
-import os
-import re
 from typing import Any, Literal
 import numpy as np
 import tensorflow as tf
 import xarray as xr
 
-from fronts.data import era5
+from fronts.data import era5, targets
 from fronts.utils import data_utils
 
 log = logging.getLogger("fronts.data.config")
-
-
-@dataclasses.dataclass
-class FrontsDataConfig:
-    """Configuration for loading front label (truth) data from netCDF files.
-
-    Front files are expected to contain an "identifier" variable with integer class
-    values (0=no front, 1=CF, 2=WF, etc.), following the existing convention in the
-    codebase.
-
-    Attributes:
-        directory: Path to directory containing per-timestep front netCDF files.
-            Files are matched using the glob pattern `{directory}/*{year}*.nc`.
-        years: Years to load. Typically injected by DataConfig.build() via
-            dataclasses.replace() rather than set directly in YAML.
-        front_types: Code(s) passed to reformat_fronts() to regroup front classes.
-            ["CF", "WF"]. None = no reformatting.
-    """
-
-    directory: str
-    years: list[int]
-    front_types: str | list[str]
-    front_dilation: int
-
-
-    def build(self) -> xr.Dataset:
-        """Loads and optionally reformats front label data for the given years.
-
-        Supports two directory layouts automatically:
-        - Flat:  ``{directory}/*{year}*.nc``
-        - Monthly subdirs: ``{directory}/{year}MM/*.nc`` (e.g. ``200701/``)
-
-        Returns an xarray Dataset with the "identifier" variable, optionally
-        reformatted according to self.front_types.
-        """
-        log.info(
-            "FrontsDataConfig.build() — globbing files for years=%s in %r...",
-            self.years,
-            self.directory,
-        )
-        files = sorted(
-            f
-            for year in self.years
-            for f in (
-                # Monthly subdirectory layout: <dir>/<YYYYMM>/*.nc
-                glob_module.glob(f"{self.directory}/{year}*/*.nc")
-                or
-                # Flat layout fallback: <dir>/*<year>*.nc
-                glob_module.glob(f"{self.directory}/*{year}*.nc")
-            )
-        )
-        log.info(
-            "FrontsDataConfig — found %d file(s). Opening with open_mfdataset...",
-            len(files),
-        )
-        ds = xr.open_mfdataset(
-            files,
-            engine="netcdf4",
-            combine="by_coords",
-            coords="minimal",
-            compat="override",
-        )
-        log.info("FrontsDataConfig — dataset opened. Variables: %s", list(ds.data_vars))
-
-        if self.front_types is not None:
-            log.debug("Reformatting fronts with front_types=%s...", self.front_types)
-            ds = data_utils.reformat_fronts(ds, self.front_types)
-            log.debug("reformat_fronts complete.")
-
-        if self.front_dilation > 0:
-            log.debug(
-                "Expanding fronts with %d dilation iteration(s)...", self.front_dilation
-            )
-            ds = data_utils.expand_fronts(ds, iterations=self.front_dilation)
-            log.debug("expand_fronts complete.")
-
-        log.info("FrontsDataConfig.build() complete.")
-        return ds
-
-    def build_index(self) -> dict[str, str]:
-        """Build a {ISO-timestamp-string: filepath} index without opening any files.
-
-        Parses timestamps from filenames matching the pattern
-        ``FrontObjects_YYYYMMDDHH_full.nc`` (e.g.
-        ``FrontObjects_2008010100_full.nc`` → ``"2008-01-01T00:00:00"``).
-
-        This is **much faster** than :meth:`build` for large collections (tens of
-        thousands of files) because it only performs a directory listing — no
-        netCDF file is opened.  The generator in :meth:`DataConfig._build_split`
-        opens individual files on demand as training samples are requested.
-
-        Returns a dict mapping ISO-format timestamp strings
-        (``"YYYY-MM-DDTHH:00:00"``, second precision) to absolute file paths.
-        """
-        files = sorted(
-            f
-            for year in self.years
-            for f in (
-                # Monthly subdirectory layout: <dir>/<YYYYMM>/FrontObjects_*_full.nc
-                # Explicit filename prefix avoids picking up co-located era5_*.nc files.
-                glob_module.glob(f"{self.directory}/{year}*/FrontObjects_*_full.nc")
-                or
-                # Flat layout fallback: <dir>/FrontObjects_*<year>*_full.nc
-                glob_module.glob(f"{self.directory}/*{year}*_full.nc")
-            )
-        )
-        log.info(
-            "FrontsDataConfig.build_index() — found %d file(s) for years=%s.",
-            len(files),
-            self.years,
-        )
-
-        index: dict[str, str] = {}
-        for f in files:
-            m = re.search(r"(\d{10})_full\.nc$", os.path.basename(f))
-            if m is None:
-                log.warning("Could not parse timestamp from filename %r — skipping.", f)
-                continue
-            dt = datetime.datetime.strptime(m.group(1), "%Y%m%d%H")
-            key = dt.strftime("%Y-%m-%dT%H:00:00")
-            index[key] = f
-
-        log.info("FrontsDataConfig.build_index() — indexed %d timestep(s).", len(index))
-        return index
 
 
 @dataclasses.dataclass
@@ -208,7 +81,7 @@ class AugmentationConfig:
 
 
 @dataclasses.dataclass
-class ModelData:
+class ModelTrainingData:
     """Runtime holder for train/validation/test tf.data.Dataset objects.
 
     Returned by DataConfig.build(). Trainer accesses .train_data and
@@ -243,7 +116,7 @@ class DataConfig:
         shuffle: Whether to shuffle the training dataset.
         normalization_method: One of "standard", "standard_weighted", "min-max".
         era5: ERA5PredictorConfig defining the predictor variable source.
-        fronts: FrontsDataConfig defining the front label source.
+        fronts: TargetDataConfig defining the front label source.
         augmentation_config: AugmentationConfig defining runtime data augmentation.
     """
 
@@ -254,13 +127,13 @@ class DataConfig:
     shuffle: bool
     normalization_method: str
     era5_config: era5.ERA5PredictorConfig
-    fronts: FrontsDataConfig
+    fronts: targets.TargetDataConfig
     augmentation: AugmentationConfig | None
 
-    def build(self) -> ModelData:
+    def build(self) -> ModelTrainingData:
         """Builds train, validation, and test tf.data.Dataset objects.
 
-        Returns ModelData with train_data, validation_data, and optionally test_data.
+        Returns ModelTrainingData with train_data, validation_data, and optionally test_data.
         """
         # --- ERA5 + fronts path ---
         log.info(
@@ -456,11 +329,12 @@ class DataConfig:
                 self.augmentation_config,
             )
         log.info("DataConfig.build() complete.")
-        return ModelData(
+        return ModelTrainingData(
             train_data=train_ds,
             validation_data=val_ds,
             test_data=test_ds,
         )
+
 
 @dataclasses.dataclass
 class PredictConfig:
@@ -520,7 +394,7 @@ class PredictConfig:
         elif len(self.time_selection) == 2:
             ds = ds.sel(
                 time=slice(self.time_selection[0], self.time_selection[1]),
-                method="nearest"
+                method="nearest",
             )
         else:
             raise ValueError(f"Invalid time selection: {self.time_selection}")
