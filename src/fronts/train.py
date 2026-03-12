@@ -13,8 +13,8 @@ from typing import Literal, Any, TypeVar, Type
 import argparse
 import dacite
 import yaml
-from fronts.model import ModelConfig
-from fronts.data.config import DataConfig
+from fronts import model
+from fronts.data import config
 
 logging.basicConfig(
     level=os.environ.get("FRONTS_LOG_LEVEL", "INFO"),
@@ -175,8 +175,8 @@ class Trainer:
 
     def __init__(
         self,
-        model,
-        data,
+        model_object: tf.keras.Model,
+        data: config.ModelTrainingData,
         epochs: int,
         validation_frequency: int,
         training_steps_per_epoch: int,
@@ -347,8 +347,8 @@ class TrainConfig:
             Defaults to 42.
     """
 
-    model: ModelConfig
-    data: DataConfig
+    model: model.ModelConfig
+    data: config.DataConfig
     callbacks: CallbacksConfig
     wandb: WandBConfig | None
     epochs: int

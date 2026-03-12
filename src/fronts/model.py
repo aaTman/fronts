@@ -10,6 +10,7 @@ from fronts.utils.keras_builders import (
     LossConfig,
     MetricConfig,
 )
+import tensorflow as tf
 
 
 @dataclasses.dataclass
@@ -43,7 +44,7 @@ class ModelConfig:
     deep_supervision: bool = False
     first_encoder_connections: bool = False
 
-    def build(self, input_shape: tuple, num_classes: int):
+    def build(self, input_shape: tuple, num_classes: int) -> tf.keras.Model:
         """Builds and compiles the UNet model based on the configuration.
 
         Args:
@@ -188,10 +189,12 @@ class Model:
         # defaults (None → derived from filter_num[0] and levels) apply when
         # the keys are absent from the dict.
         if self.name == "unet_3plus":
-            self.config.update({
-                "first_encoder_connections": self.first_encoder_connections,
-                "deep_supervision": self.deep_supervision,
-            })
+            self.config.update(
+                {
+                    "first_encoder_connections": self.first_encoder_connections,
+                    "deep_supervision": self.deep_supervision,
+                }
+            )
         # UNetRegistry.build() instantiates the UNet dataclass; .build() on that
         # dataclass constructs and returns the tf.keras.Model.
         output_model = UNetRegistry(name=self.name, config=self.config).build().build()
