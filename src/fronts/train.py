@@ -9,12 +9,12 @@ from wandb.integration import keras as wandb_keras
 import dataclasses
 import datetime
 import subprocess
-from typing import Literal, Any, TypeVar, Type
+from typing import Literal, Any, TypeVar, Type, Sequence
 import argparse
 import dacite
 import yaml
-from fronts.model import ModelConfig
-from fronts.data.config import DataConfig
+from fronts import model
+from fronts.data import config
 
 logging.basicConfig(
     level=os.environ.get("FRONTS_LOG_LEVEL", "INFO"),
@@ -67,7 +67,7 @@ class WandBConfig:
         if self.api_key:
             wandb.login(key=self.api_key)
 
-    def build_init_config(self, init_config: dict) -> dict:
+    def build_init_config(self, init_config: dict[str, Any]) -> dict[str, Any]:
         """Builds the keyword arguments to apply to wandb.init.
 
         Args:
@@ -100,7 +100,7 @@ class WandBConfig:
 
         return wandb_keras.WandbModelCheckpoint(self.wandb_filepath)
 
-    def build_all_callbacks(self) -> list[Any]:
+    def build_all_callbacks(self) -> Sequence[tensorflow.keras.callbacks.Callback]:
         """Returns both ModelCheckpoint and MetricsLogger callbacks."""
 
         return [
@@ -140,7 +140,7 @@ class CallbacksConfig:
     csv_logger_path: str | None = None
     patience: int | None = None
 
-    def build(self) -> list[tensorflow.keras.callbacks.Callback]:
+    def build(self) -> Sequence[tensorflow.keras.callbacks.Callback]:
         # Initialize list
         callback_list = []
 
@@ -175,24 +175,24 @@ class Trainer:
 
     def __init__(
         self,
-        model,
-        data,
+        model_object: tf.keras.Model,
+        data: config.ModelTrainingData,
         epochs: int,
         validation_frequency: int,
         training_steps_per_epoch: int,
         validation_steps_per_epoch: int,
-        callbacks: list = None,
+        callbacks: Sequence[tensorflow.keras.callbacks.Callback | None],
         verbose: Literal["auto", 0, 1, 2] = "auto",
-        wandb: WandBConfig | None = None,
+        wandb_config: WandBConfig | None = None,
         repeat: bool = True,
         seed: int = 42,
         num_replicas: int = 1,
         batch_size: int = 1,
-    ) -> None:
+    ):
         """Initialize the Trainer class and maybe build callbacks.
 
         Arguments:
-            model: the model to use for training.
+            model_object: the model to use for training.
             data: the ModelDataConfig which holds the prepared train, valid, and test
                 data.
             epochs: number of epochs to run to train the model.
@@ -205,11 +205,11 @@ class Trainer:
                 validation. If validation_steps is specified and only part of the
                 dataset will be consumed, the evaluation will start from the beginning
                 of the dataset at each epoch.
-            callbacks: optional list of callbacks (not including WandB callbacks) to use
-                when training the model.
+            callbacks: list of callbacks (not including WandB callbacks) to use
+                when training the model, or empty list.
             verbose: "auto", 0, 1, or 2. Verbosity mode. 0 = silent, 1 = progress bar,
                 2 = one line per epoch. "auto" ~= 1. Defaults to "auto".
-            wandb: the Weights and Biases configuration object to use, if exists.
+            wandb_config: the Weights and Biases configuration object to use, if exists.
             repeat: whether or not the training dataset will repeat indefinitely.
                 Defaults to True. If True, training_steps_per_epoch will determine how
                 many batches will run per epoch.
@@ -221,21 +221,21 @@ class Trainer:
             augmentation: optional AugmentationConfig for runtime data augmentation.
 
         """
-        self.model = model
-        self.wandb = wandb
+        self.model_object = model_object
         self.data = data
         self.epochs = epochs
         self.validation_frequency = validation_frequency
         self.training_steps_per_epoch = training_steps_per_epoch
         self.validation_steps_per_epoch = validation_steps_per_epoch
         self.verbose = verbose
+        self.wandb_config = wandb_config
         self.repeat = repeat
         self.callbacks = callbacks or []
         self.seed = seed
         self.num_replicas = num_replicas
         self.batch_size = batch_size
 
-    def train(self, model: dict) -> None:
+    def train(self, model: dict[str, Any]):
         """Triggers a keras training run using model.fit().
 
         Args:
@@ -263,7 +263,7 @@ class Trainer:
 
         # Deep supervision produces N outputs; the dataset yields one target.
         # Replicate the target so y_true structure matches y_pred structure.
-        n_outputs = len(self.model.outputs)
+        n_outputs = len(self.model_object.outputs)
         if n_outputs > 1:
             log.info(
                 "Model has %d outputs; replicating targets for deep supervision.",
@@ -291,32 +291,20 @@ class Trainer:
         }
 
         # Use WandB if exists — WandB callbacks must be built AFTER wandb.init()
-        if self.wandb:
-            wandb_init = self.wandb.build_init_config(model)
-            with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
-                fit_args["callbacks"] = self.build_callbacks(self.callbacks)
-                log.info("Fitting model with args %s...", fit_args)
-                self.model.fit(**fit_args)
+        if self.wandb_config:
+            wandb_init_config = self.wandb_config.build_init_config(model)
+            with wandb.init(**wandb_init_config) as _:  # ty: ignore[invalid-context-manager]
+                wandb_callbacks = self.wandb_config.build_all_callbacks()
+                self.callbacks.extend(wandb_callbacks)
+                self._fit_model(fit_args)
         else:
-            fit_args["callbacks"] = self.build_callbacks(self.callbacks)
-            log.info("Fitting model with args %s...", fit_args)
-            self.model.fit(**fit_args)
+            self._fit_model(fit_args)
 
-    def build_callbacks(self, callbacks: list):
-        """Combine all callbacks that exist.
-
-        Acts as a passthrough if WandB is not being used, only including the callbacks
-        provided when initializing the Trainer.
-
-        Args:
-            callbacks: a list of 0 or more callbacks to include when training the model.
-
-        Returns a list of 0 or more callbacks.
-        """
-        # If WandB is being used, add the callbacks in the dataclass.
-        if self.wandb:
-            callbacks.extend(self.wandb.build_all_callbacks())
-        return callbacks
+    def _fit_model(self, fit_args: dict[str, Any]):
+        """Helper method to call model.fit with the provided arguments."""
+        fit_args["callbacks"] = self.callbacks
+        log.info("Fitting model with args %s...", fit_args)
+        self.model_object.fit(**fit_args)
 
 
 @dataclasses.dataclass
@@ -347,10 +335,10 @@ class TrainConfig:
             Defaults to 42.
     """
 
-    model: ModelConfig
-    data: DataConfig
-    callbacks: CallbacksConfig
-    wandb: WandBConfig | None
+    model_config: model.ModelConfig
+    data_config: config.DataConfig
+    callbacks_config: CallbacksConfig
+    wandb_config: WandBConfig | None
     epochs: int
     training_steps_per_epoch: int
     validation_steps_per_epoch: int | None
@@ -370,18 +358,18 @@ class TrainConfig:
             model: the model to use for training.
             data: the ModelDataConfig which holds the prepared train, valid, and test
                 data.
-            wandb: the Weights and Biases configuration object to use, if exists.
+            wandb_config: the Weights and Biases configuration object to use, if exists.
             callbacks: optional list of callbacks (not including WandB callbacks) to use
                 when training the model.
 
         Returns a Trainer object that can be used to instantiate a training run.
         """
         log.info("Building callbacks...")
-        callbacks = self.callbacks.build()
+        callbacks = self.callbacks_config.build()
         log.debug("Callbacks built: %s", [type(c).__name__ for c in callbacks])
 
         log.info("Building data pipeline (this may take several minutes)...")
-        model_data = self.data.build()
+        model_data = self.data_config.build()
         log.info("Data pipeline ready.")
 
         # Derive input_shape and num_classes from the training dataset element spec.
@@ -406,7 +394,7 @@ class TrainConfig:
 
         log.info("Building model...")
         with strategy.scope():
-            keras_model = self.model.build(
+            keras_model = self.model_config.build(
                 input_shape=input_shape, num_classes=num_classes
             )
         keras_model.summary(print_fn=log.info)
@@ -422,7 +410,7 @@ class TrainConfig:
             validation_steps_per_epoch=self.validation_steps_per_epoch,
             callbacks=callbacks,
             verbose=self.verbose,
-            wandb=self.wandb,
+            wandb=self.wandb_config,
             repeat=self.repeat,
             seed=self.seed,
             num_replicas=strategy.num_replicas_in_sync,
