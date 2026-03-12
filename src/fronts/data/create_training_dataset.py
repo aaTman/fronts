@@ -94,7 +94,7 @@ if __name__ == "__main__":
         "--images",
         type=int,
         nargs=2,
-        default=[1, 1],
+        default=[9, 1],
         help="Number of variables/front images along the latitude and longitude dimensions to generate for each timestep. The product of the 2 integers "
         "will be the total number of images generated per timestep.",
     )
@@ -108,7 +108,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--normalization_method",
         type=str,
-        default="standard",
+        default="min-max",
         help="Method for normalizing the datasets. Options are 'standard', 'standard_weighted', 'min-max'.",
     )
     parser.add_argument(
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timestep_fraction",
         type=float,
-        default=1.0,
+        default=0.5,
         help="The fraction of timesteps WITHOUT all necessary front types that will be retained in the dataset. Can be any float 0 <= x <= 1.",
     )
     parser.add_argument(
@@ -590,11 +590,11 @@ if __name__ == "__main__":
                     flip_lon = np.random.random() <= args["flip_chance_lon"]
 
                     # before flipping images, we will apply the necessary changes to the wind components to account for reflections
-                    if flip_lat and "u" in args["variables"]:
+                    if flip_lon and "u" in args["variables"]:
                         new_variables_dataset["u"] = -new_variables_dataset[
                             "u"
                         ]  # need to reverse u-wind component if flipping the longitude axis
-                    if flip_lon and "v" in args["variables"]:
+                    if flip_lat and "v" in args["variables"]:
                         new_variables_dataset["v"] = -new_variables_dataset[
                             "v"
                         ]  # need to reverse v-wind component if flipping the latitude axis

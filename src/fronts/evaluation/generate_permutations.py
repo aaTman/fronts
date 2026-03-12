@@ -11,7 +11,7 @@ TODO:
 import itertools
 import os
 import pandas as pd
-from fronts.model import custom_losses
+from fronts.model import losses
 from fronts.utils.data_utils import combine_datasets
 from fronts.utils import file_manager as fm
 import tensorflow as tf
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     for front_no, front_type in enumerate(front_types):
         class_weights = np.zeros(num_classes)
         class_weights[front_no + 1] = 1
-        metric_functions[front_type] = custom_losses.probability_of_detection(
+        metric_functions[front_type] = losses.probability_of_detection(
             class_weights=class_weights
         )
         metric_functions[front_type]._name = front_type
@@ -186,7 +186,7 @@ if __name__ == "__main__":
     model = fm.load_model(args["model_number"], args["model_dir"])
     model.compile(
         optimizer=optimizer,
-        loss=custom_losses.probability_of_detection(),
+        loss=losses.probability_of_detection(),
         metrics=[metric_functions[func] for func in metric_functions],
     )
 

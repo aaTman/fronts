@@ -16,7 +16,7 @@ import pickle
 import numpy as np
 from fronts.utils import file_manager
 import os
-from fronts.model import unets, custom_metrics, custom_losses
+from fronts.model import unets, metrics, losses
 import datetime
 from fronts.utils import misc, data_utils
 from glob import glob
@@ -33,7 +33,7 @@ class ArgumentParser(argparse.ArgumentParser):
 
 if __name__ == "__main__":
     parser = ArgumentParser(fromfile_prefix_chars="@")
-
+    """
     ### WandB ###
     parser.add_argument(
         "--project",
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         "--name",
         type=str,
         help="WandB name for the current model run. If no name is specified, it will default to the model number (e.g. model_129482).",
-    )
+    )"""
 
     ### General arguments ###
     parser.add_argument(
@@ -69,7 +69,10 @@ if __name__ == "__main__":
         help="Number that the model will be assigned. If no argument is passed, a number will be automatically assigned based "
         "on the current date and time.",
     )
-    parser.add_argument(
+
+    # --------------------- will be created via era5/batch.py
+
+    """    parser.add_argument(
         "--tf_indirs",
         type=str,
         required=True,
@@ -77,8 +80,10 @@ if __name__ == "__main__":
         help="Directories for the TensorFlow datasets. One or two paths can be passed. If only one path is passed, then the "
         "training and validation datasets will be pulled from this path. If two paths are passed, the training dataset "
         "will be pulled from the first path and the validation dataset from the second.",
-    )
-    parser.add_argument(
+    )"""
+    # --------------------- handled in train.py or yaml config
+
+    """    parser.add_argument(
         "--epochs",
         type=int,
         required=True,
@@ -103,7 +108,7 @@ if __name__ == "__main__":
         default=np.random.randint(0, 2**31 - 1),
         help="Seed for the random number generators. If a model is being retrained with the --retrain flag, this argument "
         "will be overriden by the previous seed used to train that model.",
-    )
+    )"""
 
     ### GPU and hardware arguments ###
     parser.add_argument("--gpu_device", type=int, nargs="+", help="GPU device numbers.")
@@ -168,62 +173,62 @@ if __name__ == "__main__":
 
     ### U-Net arguments ###
     parser.add_argument(
-        "--model_type",
+        "--model_type",  # registry
         type=str,
         help="Model type. Options are: unet, unet_ensemble, unet_plus, unet_2plus, unet_3plus, attention_unet.",
     )
     parser.add_argument(
-        "--activation",
+        "--activation",  # core
         type=str,
         help="Activation function to use in the model. Refer to utils.unet_utils.choose_activation_layer to see all available "
         "activation functions.",
     )
     parser.add_argument(
-        "--batch_normalization",
+        "--batch_normalization",  # core
         action="store_true",
         help="Use batch normalization in the model. This will place batch normalization layers after each convolution layer.",
     )
     parser.add_argument(
-        "--deep_supervision",
+        "--deep_supervision",  # plus, 2plus, 3plus
         action="store_true",
         help="Use deep supervision in the model. Deep supervision creates side outputs from the bottom encoder node and each decoder node.",
     )
     parser.add_argument(
-        "--filter_num",
+        "--filter_num",  # core
         type=int,
         nargs="+",
         help="Number of filters in each level of the U-Net. The number of arguments passed to --filter_num must be equal to the "
         "value passed to --levels.",
     )
     parser.add_argument(
-        "--filter_num_aggregate",
+        "--filter_num_aggregate",  # 3plus (as num_aggregate_filters)
         type=int,
         help="Number of filters in aggregated feature maps. This argument is only used in the U-Net 3+.",
     )
     parser.add_argument(
-        "--filter_num_skip",
+        "--filter_num_skip",  # 3plus (as full_scale_skip_connection_filters)
         type=int,
         help="Number of filters in full-scale skip connections in the U-Net 3+.",
     )
     parser.add_argument(
-        "--first_encoder_connections",
+        "--first_encoder_connections",  # 3plus
         action="store_true",
         help="Enable first encoder connections in the U-Net 3+.",
     )
     parser.add_argument(
-        "--kernel_size",
+        "--kernel_size",  # core
         type=int,
         nargs="+",
         help="Size of the convolution kernels. One integer can be passed to make the kernel dimensions have equal length (e.g. "
         "passing 3 has the same effect as passing 3 3 3 for 3-dimensional kernels.)",
     )
     parser.add_argument(
-        "--levels",
+        "--levels",  # core (as depth)
         type=int,
         help="Number of levels in the model, also known as the 'depth' of the model.",
     )
     parser.add_argument(
-        "--loss",
+        "--loss",  # core
         type=str,
         nargs="+",
         help="Loss function for the U-Net (arg 1), with keyword arguments (arg 2). Keyword arguments must be passed as a "
@@ -231,7 +236,7 @@ if __name__ == "__main__":
         "more than 2 arguments are passed.",
     )
     parser.add_argument(
-        "--metric",
+        "--metric",  # core
         type=str,
         nargs="+",
         help="Metric for evaluating the U-Net during training (arg 1), with keyword arguments (arg 2). Keyword arguments "
@@ -239,14 +244,14 @@ if __name__ == "__main__":
         "a ValueError if more than 2 arguments are passed.",
     )
     parser.add_argument(
-        "--modules_per_node",
+        "--modules_per_node",  # core
         type=int,
         default=5,
         help="Number of convolution modules in each node. A convolution module consists of a convolution layer followed by "
         "an optional batch normalization layer and an activation layer. (e.g. Conv3D -> BatchNormalization -> PReLU; Conv3D -> PReLU)",
     )
     parser.add_argument(
-        "--optimizer",
+        "--optimizer",  # core (OptimizerConfig)
         type=str,
         nargs="+",
         default=[
@@ -257,35 +262,35 @@ if __name__ == "__main__":
         "a ValueError if more than 2 arguments are passed.",
     )
     parser.add_argument(
-        "--padding",
+        "--padding",  # core
         type=str,
         default="same",
         help="Padding to use in the convolution layers. If 'same', then zero-padding will be added to the inputs such that the outputs "
         "of the layers will be the same shape as the inputs. If 'valid', no padding will be applied to the layers' inputs.",
     )
     parser.add_argument(
-        "--pool_size",
+        "--pool_size",  # core
         type=int,
         nargs="+",
         help="Pool size for the max pooling layers. One integer can be passed to make the pooling dimensions have equal length "
         "(e.g. passing 2 has the same effect as passing 2 2 2 for 3-dimensional max pooling.)",
     )
     parser.add_argument(
-        "--upsample_size",
+        "--upsample_size",  # core (excluded from attention_unet via excpetion)
         type=int,
         nargs="+",
         help="Upsampling factors for the up-sampling layers. One integer can be passed to make the factors have equal size "
         "(e.g. passing 2 has the same effect as passing 2 2 2 for 3-dimensional up-sampling.)",
     )
     parser.add_argument(
-        "--use_bias",
+        "--use_bias",  # core
         action="store_true",
         help="Use bias parameters in the convolution layers.",
     )
 
     ### Constraints, initializers, and regularizers ###
     parser.add_argument(
-        "--activity_regularizer",
+        "--activity_regularizer",  # ConvOutputConfig
         type=str,
         nargs="+",
         default=[
@@ -295,7 +300,7 @@ if __name__ == "__main__":
         "containing keyword arguments for the regularizer.",
     )
     parser.add_argument(
-        "--bias_constraint",
+        "--bias_constraint",  # BiasVectorConfig
         type=str,
         nargs="+",
         default=[
@@ -305,13 +310,13 @@ if __name__ == "__main__":
         "passed containing keyword arguments for the constraint.",
     )
     parser.add_argument(
-        "--bias_initializer",
+        "--bias_initializer",  # BiasVectorConfig
         type=str,
         default="zeros",
         help="Initializer for the bias vector in the Conv2D/Conv3D layers.",
     )
     parser.add_argument(
-        "--bias_regularizer",
+        "--bias_regularizer",  # BiasVectorConfig
         type=str,
         nargs="+",
         default=[
@@ -321,7 +326,7 @@ if __name__ == "__main__":
         "be passed containing keyword arguments for the regularizer.",
     )
     parser.add_argument(
-        "--kernel_constraint",
+        "--kernel_constraint",  # KernelMatrixConfig
         type=str,
         nargs="+",
         default=[
@@ -331,13 +336,13 @@ if __name__ == "__main__":
         "be passed containing keyword arguments for the constraint.",
     )
     parser.add_argument(
-        "--kernel_initializer",
+        "--kernel_initializer",  # KernelMatrixConfig
         type=str,
         default="glorot_uniform",
         help="Initializer for the kernel weights matrix in the Conv2D/Conv3D layers.",
     )
     parser.add_argument(
-        "--kernel_regularizer",
+        "--kernel_regularizer",  # KernelMatrixConfig
         type=str,
         nargs="+",
         default=[
@@ -398,7 +403,8 @@ if __name__ == "__main__":
     )
 
     args = vars(parser.parse_args())
-
+    # --------------------- Seed in train.py
+    """ 
     # Set the random seed. After a model is trained, the same seed will be used in subsequent retraining sessions for the same model.
     seed = (
         pd.read_pickle(
@@ -409,29 +415,35 @@ if __name__ == "__main__":
         else args["seed"]
     )
     tf.keras.utils.set_random_seed(seed)
-
+    """
+    # --------------------- paths handled by data modules
+    """ 
     assert len(args["tf_indirs"]) < 3, (
         "Only 1 or 2 paths can be passed into --tf_indirs, received %d paths"
         % len(args["tf_indirs"])
     )
-
     if len(args["tf_indirs"]) == 1:
         args["tf_indirs"].append(args["tf_indirs"][0])
-
+    """
+    # --------------------- dataset properties handled dynamically with config
+    """
     train_dataset_properties = pd.read_pickle(
         "%s/dataset_properties.pkl" % args["tf_indirs"][0]
     )
     valid_dataset_properties = pd.read_pickle(
         "%s/dataset_properties.pkl" % args["tf_indirs"][1]
     )
+    """
 
-    if args["shuffle"] != "lazy" and args["shuffle"] != "full":
+    # --------------------- shuffle always happens regardless of arg
+    """    if args["shuffle"] != "lazy" and args["shuffle"] != "full":
         raise ValueError(
             "Unrecognized shuffling method: %s. Valid methods are 'lazy' or 'full'"
             % args["shuffle"]
-        )
+        )"""
 
-    # Check arguments that can only have a maximum length of 2
+    # --------------------- check irrelevant
+    """    # Check arguments that can only have a maximum length of 2   
     for arg in [
         "loss",
         "metric",
@@ -447,9 +459,11 @@ if __name__ == "__main__":
         if args[arg] is None:  # need this line in here because 'steps' can be None
             continue
         elif len(args[arg]) > 2:
-            raise ValueError("--%s can only take up to 2 arguments" % arg)
+            raise ValueError("--%s can only take up to 2 arguments" % arg)"""
 
-    ### Dictionary containing arguments that cannot be used for specific model types ###
+    # --------------------- applied within model building functions
+
+    """    ### Dictionary containing arguments that cannot be used for specific model types ###
     incompatible_args = {
         "unet": dict(deep_supervision=False, first_encoder_connections=False),
         "unet_ensemble": dict(deep_supervision=False, first_encoder_connections=False),
@@ -468,8 +482,11 @@ if __name__ == "__main__":
             raise ValueError(
                 f"--{arg} must be '{incompatible_args_for_model[arg]}' when the model type is {args['model_type']}"
             )
+    """
 
+    # --------------------- everything here should be dataclasses steered by yaml
     ### Convert keyword argument strings to dictionaries ###
+    """
     loss_args = (
         misc.string_arg_to_dict(args["loss"][1]) if len(args["loss"]) > 1 else dict()
     )
@@ -508,6 +525,7 @@ if __name__ == "__main__":
         if len(args["kernel_regularizer"]) > 1
         else dict()
     )
+    """
 
     # learning rate is part of the optimizer
     if args["learning_rate"] is not None:
@@ -895,8 +913,8 @@ if __name__ == "__main__":
     with tf.distribute.MirroredStrategy().scope():
         if not args["retrain"]:
             model = unet_model(input_shape, num_classes, **unet_kwargs)
-            loss_function = getattr(custom_losses, args["loss"][0])(**loss_args)
-            metric_function = getattr(custom_metrics, args["metric"][0])(**metric_args)
+            loss_function = getattr(losses, args["loss"][0])(**loss_args)
+            metric_function = getattr(metrics, args["metric"][0])(**metric_args)
             optimizer = getattr(tf.keras.optimizers, args["optimizer"][0])(
                 **optimizer_args
             )

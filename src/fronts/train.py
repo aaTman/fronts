@@ -1,14 +1,27 @@
 """Train a FrontFinder model with optional Weights and Biases tracking."""
 
+import tensorflow as tf  # ty: ignore[unresolved-import]
 import tensorflow.keras  # ty: ignore[unresolved-import]
+import logging
 import os
 import wandb
 from wandb.integration import keras as wandb_keras
 import dataclasses
-from typing import Literal, Any, Optional, Union, TypeVar, Type
+import datetime
+import subprocess
+from typing import Literal, Any, TypeVar, Type
 import argparse
 import dacite
 import yaml
+from fronts.model import ModelConfig
+from fronts.data.config import DataConfig
+
+logging.basicConfig(
+    level=os.environ.get("FRONTS_LOG_LEVEL", "INFO"),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("fronts.train")
 
 T = TypeVar("T")
 
@@ -28,21 +41,31 @@ class WandBConfig:
             False.
         api_key: the API key for a WandB account. Defaults to the WANDB_KEY environment
             var.
+        wandb_filepath: path for WandbModelCheckpoint. Must end in `.keras`.
+            Defaults to `models/<model_run_name>.keras`.
     """
 
     project_name: str
     model_run_name: str
     log_frequency: int = 1
     upload_checkpoints: bool = False
-    api_key: str = os.environ["WANDB_KEY"]
-    wandb_filepath: str = "models"
+    api_key: str = os.environ.get("WANDB_KEY", "")
+    wandb_filepath: str | None = None
 
     def __post_init__(self):
+        # Default checkpoint path: models/<model_run_name>.keras
+        # WandbModelCheckpoint requires a .keras extension (Keras 3 requirement).
+        if self.wandb_filepath is None:
+            self.wandb_filepath = f"models/{self.model_run_name}.keras"
         self.login()
 
     def login(self):
-        """Helper method to automatically login to WandB."""
-        wandb.login(key=self.api_key)
+        """Helper method to automatically login to WandB.
+
+        Skipped if no API key is configured (e.g. local dry-run without credentials).
+        """
+        if self.api_key:
+            wandb.login(key=self.api_key)
 
     def build_init_config(self, init_config: dict) -> dict:
         """Builds the keyword arguments to apply to wandb.init.
@@ -112,10 +135,10 @@ class CallbacksConfig:
     verbose: int
     save_best_only: bool
     save_weights_only: bool
-    save_freq: Union[Literal["epoch"], int]
-    model_checkpoint_path: Optional[str] = None
-    csv_logger_path: Optional[str] = None
-    patience: Optional[int] = None
+    save_freq: Literal["epoch"] | int
+    model_checkpoint_path: str | None = None
+    csv_logger_path: str | None = None
+    patience: int | None = None
 
     def build(self) -> list[tensorflow.keras.callbacks.Callback]:
         # Initialize list
@@ -135,7 +158,7 @@ class CallbacksConfig:
             callback_list.append(checkpoint_callback)
         if self.csv_logger_path:
             history_logger_callback = tensorflow.keras.callbacks.CSVLogger(
-                filepath=self.csv_logger_path, append=True
+                filename=self.csv_logger_path, append=True
             )
             callback_list.append(history_logger_callback)
         if self.patience:
@@ -158,11 +181,13 @@ class Trainer:
         validation_frequency: int,
         training_steps_per_epoch: int,
         validation_steps_per_epoch: int,
-        callbacks: list = [],
+        callbacks: list = None,
         verbose: Literal["auto", 0, 1, 2] = "auto",
-        wandb_config: Optional[WandBConfig] = None,
+        wandb: WandBConfig | None = None,
         repeat: bool = True,
         seed: int = 42,
+        num_replicas: int = 1,
+        batch_size: int = 1,
     ) -> None:
         """Initialize the Trainer class and maybe build callbacks.
 
@@ -184,17 +209,20 @@ class Trainer:
                 when training the model.
             verbose: "auto", 0, 1, or 2. Verbosity mode. 0 = silent, 1 = progress bar,
                 2 = one line per epoch. "auto" ~= 1. Defaults to "auto".
-            wandb_config: the Weights and Biases configuration object to use, if exists.
+            wandb: the Weights and Biases configuration object to use, if exists.
             repeat: whether or not the training dataset will repeat indefinitely.
                 Defaults to True. If True, training_steps_per_epoch will determine how
                 many batches will run per epoch.
             seed: the seed to use for for all of the backend seeds to allow for
                 determinism. Defaults to 42.
-
+            num_replicas: number of distribution replicas (GPUs). Defaults to 1.
+            batch_size: global batch size. MirroredStrategy shards this across
+                replicas (batch_size / num_replicas per GPU). Defaults to 1.
+            augmentation: optional AugmentationConfig for runtime data augmentation.
 
         """
         self.model = model
-        self.wandb_config = wandb_config
+        self.wandb = wandb
         self.data = data
         self.epochs = epochs
         self.validation_frequency = validation_frequency
@@ -202,43 +230,76 @@ class Trainer:
         self.validation_steps_per_epoch = validation_steps_per_epoch
         self.verbose = verbose
         self.repeat = repeat
-        self.callbacks = self.build_callbacks(callbacks)
+        self.callbacks = callbacks or []
         self.seed = seed
+        self.num_replicas = num_replicas
+        self.batch_size = batch_size
 
-    def train(self, model_config: dict) -> None:
+    def train(self, model: dict) -> None:
         """Triggers a keras training run using model.fit().
 
         Args:
-            model_config: the complete metadata of configuration of the model
+            model: the complete metadata of configuration of the model
         """
 
         # Set the seed for fitting the model
+        log.info("Random seed set to %s", self.seed)
         tensorflow.keras.utils.set_random_seed(self.seed)
 
-        # If indefinite repeat is enabled, instantiate the bound method
+        # Batch and optionally repeat.  MirroredStrategy automatically shards
+        # the global batch across replicas (batch_size / num_replicas per GPU).
+        # drop_remainder=True ensures no partial batch is emitted.
+        log.info("Batching training data...")
+        training_data = self.data.train_data.batch(self.batch_size, drop_remainder=True)
         if self.repeat:
-            training_data = self.data.train_data.repeat()
-        else:
-            training_data = self.data.train_data
+            training_data = training_data.repeat()
+
+        log.info("Batching validation data...")
+        validation_data = (
+            self.data.validation_data.batch(self.batch_size, drop_remainder=True)
+            if self.data.validation_data is not None
+            else None
+        )
+
+        # Deep supervision produces N outputs; the dataset yields one target.
+        # Replicate the target so y_true structure matches y_pred structure.
+        n_outputs = len(self.model.outputs)
+        if n_outputs > 1:
+            log.info(
+                "Model has %d outputs; replicating targets for deep supervision.",
+                n_outputs,
+            )
+            training_data = training_data.map(
+                lambda x, y: (x, (y,) * n_outputs),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+            if validation_data is not None:
+                validation_data = validation_data.map(
+                    lambda x, y: (x, (y,) * n_outputs),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
 
         # Set up the arguments to fit
         fit_args = {
             "x": training_data,
-            "validation_data": self.data.validation_data,
+            "validation_data": validation_data,
             "validation_freq": self.validation_frequency,
             "epochs": self.epochs,
             "steps_per_epoch": self.training_steps_per_epoch,
             "validation_steps": self.validation_steps_per_epoch,
             "verbose": self.verbose,
-            "callbacks": self.callbacks,
         }
 
-        # Use WandB if exists
-        if self.wandb_config:
-            wandb_init_config = self.wandb_config.build_init_config(model_config)
-            with wandb.init(**wandb_init_config) as _:  # ty: ignore[invalid-context-manager]
+        # Use WandB if exists — WandB callbacks must be built AFTER wandb.init()
+        if self.wandb:
+            wandb_init = self.wandb.build_init_config(model)
+            with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
+                fit_args["callbacks"] = self.build_callbacks(self.callbacks)
+                log.info("Fitting model with args %s...", fit_args)
                 self.model.fit(**fit_args)
         else:
+            fit_args["callbacks"] = self.build_callbacks(self.callbacks)
+            log.info("Fitting model with args %s...", fit_args)
             self.model.fit(**fit_args)
 
     def build_callbacks(self, callbacks: list):
@@ -253,8 +314,8 @@ class Trainer:
         Returns a list of 0 or more callbacks.
         """
         # If WandB is being used, add the callbacks in the dataclass.
-        if self.wandb_config:
-            callbacks.extend(self.wandb_config.build_all_callbacks())
+        if self.wandb:
+            callbacks.extend(self.wandb.build_all_callbacks())
         return callbacks
 
 
@@ -286,17 +347,19 @@ class TrainConfig:
             Defaults to 42.
     """
 
-    # model: ModelConfig
-    # data: DataConfig,
-    wandb_config: WandBConfig
-    callbacks_config: CallbacksConfig
+    model: ModelConfig
+    data: DataConfig
+    callbacks: CallbacksConfig
+    wandb: WandBConfig | None
     epochs: int
     training_steps_per_epoch: int
-    validation_steps_per_epoch: int
+    validation_steps_per_epoch: int | None
     validation_frequency: int
-    verbose: Literal["auto", 0, 1, 2] = "auto"
-    repeat: bool = True
-    seed: int = 42
+    verbose: Literal["auto", 0, 1, 2]
+    repeat: bool
+    seed: int
+    distribution: str | None = None
+    batch_size: int = 1
 
     def build(
         self,
@@ -307,51 +370,84 @@ class TrainConfig:
             model: the model to use for training.
             data: the ModelDataConfig which holds the prepared train, valid, and test
                 data.
-            wandb_config: the Weights and Biases configuration object to use, if exists.
+            wandb: the Weights and Biases configuration object to use, if exists.
             callbacks: optional list of callbacks (not including WandB callbacks) to use
                 when training the model.
 
         Returns a Trainer object that can be used to instantiate a training run.
         """
-        callbacks = self.callbacks_config.build()
+        log.info("Building callbacks...")
+        callbacks = self.callbacks.build()
+        log.debug("Callbacks built: %s", [type(c).__name__ for c in callbacks])
+
+        log.info("Building data pipeline (this may take several minutes)...")
+        model_data = self.data.build()
+        log.info("Data pipeline ready.")
+
+        # Derive input_shape and num_classes from the training dataset element spec.
+        # input_shape: set spatial dims to None for variable-size inference.
+        # num_classes: last dim of the target tensor (e.g. 6 for 5 front types + background).
+        log.info("Deriving input_shape and num_classes from training dataset...")
+        train_spec = model_data.train_data.element_spec
+        raw_input_shape = list(train_spec[0].shape)
+        input_shape = tuple([None, None] + raw_input_shape[2:])
+        num_classes = train_spec[1].shape[-1]
+        log.info("  input_shape=%s, num_classes=%d", input_shape, num_classes)
+
+        if self.distribution == "mirrored":
+            strategy = tf.distribute.MirroredStrategy()
+            log.info(
+                "Distribution strategy: MirroredStrategy (%d device(s))",
+                strategy.num_replicas_in_sync,
+            )
+        else:
+            strategy = tf.distribute.get_strategy()  # default single-device no-op scope
+            log.info("Distribution strategy: default (single device)")
+
+        log.info("Building model...")
+        with strategy.scope():
+            keras_model = self.model.build(
+                input_shape=input_shape, num_classes=num_classes
+            )
+        keras_model.summary(print_fn=log.info)
+        log.info("Model built and compiled.")
+
+        log.info("Building Trainer...")
         trainer = Trainer(
-            # TODO: add + build model and data code to TrainConfig
-            model="",
-            data="",
+            model=keras_model,
+            data=model_data,
             epochs=self.epochs,
             validation_frequency=self.validation_frequency,
             training_steps_per_epoch=self.training_steps_per_epoch,
             validation_steps_per_epoch=self.validation_steps_per_epoch,
             callbacks=callbacks,
             verbose=self.verbose,
-            wandb_config=wandb_config,
+            wandb=self.wandb,
             repeat=self.repeat,
             seed=self.seed,
+            num_replicas=strategy.num_replicas_in_sync,
+            batch_size=self.batch_size,
         )
         return trainer
 
 
-def open_config_yaml_as_dataclass(
-    path: str, config_class: Type[T], require: bool = False
-) -> Optional[T]:
+def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> T | None:
     """Opens a configuration yaml if exists and returns it as the relevant dataclass.
 
     Args:
         path: the absolute path to the configuration file.
         config_class: the configuration dataclass that the incoming yaml will be
             converted to via dacite.
-        require: If True, code will throw an error if the path is not provided.
-            Defaults to False.
-
     Returns either None or the dataclass if path is provided.
     """
-    if path and not require:
-        with open(file=path) as f:
-            config_yaml = yaml.safe_load(f)
-        _class_instance = dacite.from_dict(data_class=config_class, data=config_yaml)
-        return _class_instance
-    elif require:
-        raise ValueError("Path must be included when require is True.")
+    with open(file=path) as f:
+        config_yaml = yaml.safe_load(f)
+    _class_instance = dacite.from_dict(
+        data_class=config_class,
+        data=config_yaml,
+        config=dacite.Config(cast=[tuple, datetime.datetime], check_types=False),
+    )
+    return _class_instance
 
 
 if __name__ == "__main__":
@@ -369,38 +465,119 @@ if __name__ == "__main__":
             "for more information on each of these attributes."
         ),
     )
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        default=False,
+        help=(
+            "Validate config parsing, data pipeline construction, and model building "
+            "without running training or initializing WandB. Uses a small local fixture "
+            "dataset instead of the real data directory, so no cluster data or GPU is "
+            "needed. Exits 0 on success. Useful for catching bugs before submitting a "
+            "SLURM job."
+        ),
+    )
+    parser.add_argument(
+        "--fixture_dir",
+        type=str,
+        default="tests/fixtures/dryrun_tf_dataset",
+        help=(
+            "Path to the fixture TF dataset used during --dry_run. "
+            "Generate fixtures once with: python scripts/make_dryrun_data.py. "
+            "Defaults to tests/fixtures/dryrun_tf_dataset."
+        ),
+    )
 
     args = parser.parse_args()
 
-    # Build the training configuration
+    log.info("Loading config from: %s", args.train_config_path)
     train_config = open_config_yaml_as_dataclass(
-        path=args.train_config, config_class=TrainConfig, require=True
+        path=args.train_config_path, config_class=TrainConfig, require=True
+    )
+    log.info(
+        "Config loaded. epochs=%d, steps_per_epoch=%d",
+        train_config.epochs,
+        train_config.training_steps_per_epoch,
     )
 
-    # Maybe build the WandB configuration
-    wandb_config = open_config_yaml_as_dataclass(
-        path=args.wandb_config, config_class=WandBConfig
-    )
+    if args.dry_run:
+        log.info("=== DRY RUN MODE — skipping WandB init and training ===")
+        log.info("  fixture_dir: %s", args.fixture_dir)
 
-    # Maybe build the callback configuration
-    callbacks_config = open_config_yaml_as_dataclass(
-        path=args.callbacks_config, config_class=CallbacksConfig
-    )
+        # Patch the loaded config so it uses the tiny local fixture dataset
+        # instead of the real cluster data path, and runs for a single step.
+        # This lets any production YAML work with --dry_run without a separate
+        # dry-run config file.
+        dry_data = dataclasses.replace(
+            train_config.data,
+            train_years=[2000],
+            val_years=[2001],
+            test_years=[],
+            tf_dataset=dataclasses.replace(
+                train_config.data.tf_dataset,
+                directory=args.fixture_dir,
+            ),
+        )
+        train_config = dataclasses.replace(
+            train_config,
+            data=dry_data,
+            epochs=1,
+            training_steps_per_epoch=2,
+            validation_steps_per_epoch=1,
+            repeat=False,
+            wandb=None,  # skip WandB entirely in dry run
+        )
 
-    # Load the data
-    # TODO: build out training data builder
-    data = ""
+        log.info("Building trainer (data pipeline + model)...")
+        trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
+        log.info("  train_data:      %s", trainer.data.train_data)
+        log.info("  validation_data: %s", trainer.data.validation_data)
+        log.info("  test_data:       %s", trainer.data.test_data)
+        log.info("  model:           %s", trainer.model)
+        log.info("=== DRY RUN complete. No errors. ===")
+        raise SystemExit(0)
 
-    # Load the tensorflow.keras.Model type
-    # TODO: build out model builder
-    model = None
-
-    # Build full dictionary of model config options
-    # TODO: build out the dictionary builder
-    model_config = {}
-
-    # Build trainer
+    log.info("Building trainer (data pipeline + model will be constructed here)...")
     trainer = train_config.build()  # ty:ignore[possibly-missing-attribute]
+    log.info("Trainer ready. Starting training run...")
+
+    # Build WandB run metadata — model architecture plus data/training provenance
+    # to match the fields logged by the legacy pipeline.
+    run_metadata = dataclasses.asdict(train_config.model)
+    if train_config.data is not None:
+        data = train_config.data
+        run_metadata["training_years"] = data.train_years
+        run_metadata["validation_years"] = data.val_years
+        run_metadata["test_years"] = data.test_years
+        run_metadata["steps_per_epoch"] = [
+            train_config.training_steps_per_epoch,
+            train_config.validation_steps_per_epoch,
+        ]
+        # Prefer ERA5 config for variable/level metadata; fall back to optional
+        # metadata fields on TFDatasetConfig when using pre-built datasets.
+        if data.era5 is not None:
+            run_metadata["variables"] = data.era5.variables
+            run_metadata["pressure_levels"] = [str(lvl) for lvl in data.era5.levels]
+        elif data.tf_dataset is not None:
+            if data.tf_dataset.variables is not None:
+                run_metadata["variables"] = data.tf_dataset.variables
+            if data.tf_dataset.levels is not None:
+                run_metadata["pressure_levels"] = [
+                    str(lvl) for lvl in data.tf_dataset.levels
+                ]
+
+    # Capture git commit hash and branch for reproducibility tracking
+    try:
+        run_metadata["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+        run_metadata["git_branch"] = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        log.warning("Could not determine git commit/branch — skipping.")
 
     # Trigger training run
-    trainer.train(model_config=model_config)
+    log.info("Beginning training run with metadata: %s", run_metadata)
+    trainer.train(model=run_metadata)
+    log.info("Training complete.")
