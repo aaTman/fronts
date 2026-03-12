@@ -9,7 +9,7 @@ from wandb.integration import keras as wandb_keras
 import dataclasses
 import datetime
 import subprocess
-from typing import Literal, Any, TypeVar, Type
+from typing import Literal, Any, TypeVar, Type, Sequence
 import argparse
 import dacite
 import yaml
@@ -100,7 +100,7 @@ class WandBConfig:
 
         return wandb_keras.WandbModelCheckpoint(self.wandb_filepath)
 
-    def build_all_callbacks(self) -> list[Any]:
+    def build_all_callbacks(self) -> Sequence[tensorflow.keras.callbacks.Callback]:
         """Returns both ModelCheckpoint and MetricsLogger callbacks."""
 
         return [
@@ -140,7 +140,7 @@ class CallbacksConfig:
     csv_logger_path: str | None = None
     patience: int | None = None
 
-    def build(self) -> list[tensorflow.keras.callbacks.Callback]:
+    def build(self) -> Sequence[tensorflow.keras.callbacks.Callback]:
         # Initialize list
         callback_list = []
 
@@ -181,14 +181,14 @@ class Trainer:
         validation_frequency: int,
         training_steps_per_epoch: int,
         validation_steps_per_epoch: int,
-        callbacks: list = None,
+        callbacks: Sequence[tensorflow.keras.callbacks.Callback | None],
         verbose: Literal["auto", 0, 1, 2] = "auto",
         wandb: WandBConfig | None = None,
         repeat: bool = True,
         seed: int = 42,
         num_replicas: int = 1,
         batch_size: int = 1,
-    ) -> None:
+    ):
         """Initialize the Trainer class and maybe build callbacks.
 
         Arguments:
@@ -235,7 +235,7 @@ class Trainer:
         self.num_replicas = num_replicas
         self.batch_size = batch_size
 
-    def train(self, model: dict) -> None:
+    def train(self, model: dict[str, Any]):
         """Triggers a keras training run using model.fit().
 
         Args:
@@ -294,29 +294,17 @@ class Trainer:
         if self.wandb:
             wandb_init = self.wandb.build_init_config(model)
             with wandb.init(**wandb_init) as _:  # ty: ignore[invalid-context-manager]
-                fit_args["callbacks"] = self.build_callbacks(self.callbacks)
-                log.info("Fitting model with args %s...", fit_args)
-                self.model.fit(**fit_args)
+                wandb_callbacks = self.wandb.build_all_callbacks()
+                self.callbacks.extend(wandb_callbacks)
+                self._fit_model(fit_args)
         else:
-            fit_args["callbacks"] = self.build_callbacks(self.callbacks)
-            log.info("Fitting model with args %s...", fit_args)
-            self.model.fit(**fit_args)
+            self._fit_model(fit_args)
 
-    def build_callbacks(self, callbacks: list):
-        """Combine all callbacks that exist.
-
-        Acts as a passthrough if WandB is not being used, only including the callbacks
-        provided when initializing the Trainer.
-
-        Args:
-            callbacks: a list of 0 or more callbacks to include when training the model.
-
-        Returns a list of 0 or more callbacks.
-        """
-        # If WandB is being used, add the callbacks in the dataclass.
-        if self.wandb:
-            callbacks.extend(self.wandb.build_all_callbacks())
-        return callbacks
+    def _fit_model(self, fit_args: dict[str, Any]):
+        """Helper method to call model.fit with the provided arguments."""
+        fit_args["callbacks"] = self.callbacks
+        log.info("Fitting model with args %s...", fit_args)
+        self.model.fit(**fit_args)
 
 
 @dataclasses.dataclass
