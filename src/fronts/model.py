@@ -10,6 +10,7 @@ from fronts.utils.keras_builders import (
     LossConfig,
     MetricConfig,
 )
+import tensorflow as tf
 
 
 @dataclasses.dataclass
@@ -43,7 +44,7 @@ class ModelConfig:
     deep_supervision: bool = False
     first_encoder_connections: bool = False
 
-    def build(self, input_shape: tuple, num_classes: int):
+    def build(self, input_shape: tuple, num_classes: int) -> tf.keras.Model:
         """Builds and compiles the UNet model based on the configuration.
 
         Args:
@@ -156,7 +157,7 @@ class Model:
         # so the UNet output matches the 2D target shape (lat, lon, classes).
         # For 2D inputs (lat, lon, channels), no squeezing is needed.
         squeeze_axes = determine_squeeze_axes(self.input_shape)
-        shared_axes = determine_shared_axes(self.input_shape)
+        shared_axes = None
 
         self.config = {
             "input_shape": self.input_shape,
@@ -188,10 +189,12 @@ class Model:
         # defaults (None → derived from filter_num[0] and levels) apply when
         # the keys are absent from the dict.
         if self.name == "unet_3plus":
-            self.config.update({
-                "first_encoder_connections": self.first_encoder_connections,
-                "deep_supervision": self.deep_supervision,
-            })
+            self.config.update(
+                {
+                    "first_encoder_connections": self.first_encoder_connections,
+                    "deep_supervision": self.deep_supervision,
+                }
+            )
         # UNetRegistry.build() instantiates the UNet dataclass; .build() on that
         # dataclass constructs and returns the tf.keras.Model.
         output_model = UNetRegistry(name=self.name, config=self.config).build().build()
@@ -225,11 +228,3 @@ def determine_squeeze_axes(input_shape: tuple) -> int | None:
     # input_shape excludes batch dim, e.g. (None, None, 7, 9) = 3D, (None, None, 9) = 2D
     ndims = len(input_shape) - 1  # spatial dims (exclude channel dim)
     return 3 if ndims == 3 else None
-
-
-def determine_shared_axes(input_shape: tuple) -> int | None:
-    """Returns shared axes for learnable activation parameters, or None.
-
-    Following the legacy convention: None (share across all arbitrary dims).
-    """
-    return None
