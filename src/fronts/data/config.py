@@ -150,7 +150,7 @@ class DataConfig:
 
             # Build ERA5 predictor dataset for this split
             log.info("  Building ERA5 predictor dataset for years=%s...", years)
-            era5_cfg = dataclasses.replace(self.era5, years=years)
+            era5_cfg = dataclasses.replace(self.era5_config, years=years)
             inputs_ds = era5_cfg.build()
             log.info("  ERA5 dataset ready.")
 

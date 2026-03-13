@@ -87,6 +87,8 @@ class BatchGeneratorConfig:
         target_dtype: The data type for the target batches. Defaults to tf.float32.
     """
 
+    inputs: xr.Dataset
+    targets: xr.Dataset
     input_sizes: dict[str, int] | None = None
     target_sizes: dict[str, int] | None = None
     prefetch_number: int = 3

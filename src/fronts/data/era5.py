@@ -12,15 +12,6 @@ ARCO_ERA5_GCP_URI = (
     "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 )
 
-
-DERIVED_VARIABLE_REGISTRY: dict[str, callable] = {
-    "dewpoint": calc.dewpoint,
-    "virtual_temperature": calc.virtual_temperature,
-    "relative_humidity": calc.relative_humidity,
-    "equivalent_potential_temperature": calc.theta_e,
-    "geopotential_height": calc.geopotential_height,
-}
-
 SURFACE_VARIABLE_MAP: dict[str, str] = {
     "temperature": "2m_temperature",
     "u_component_of_wind": "10m_u_component_of_wind",
@@ -247,8 +238,8 @@ class ERA5PredictorConfig:
     store: str
     chunks: dict[str, int]
     consolidated: bool
-    years: list[int] 
-    
+    years: list[int]
+
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
 
@@ -271,10 +262,10 @@ class ERA5PredictorConfig:
         log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
         # Spatial subset
-        log.debug("Applying spatial subset: domain_extent=%s", self.domain_extent)
+        log.info("Applying spatial subset: domain_extent=%s", self.domain_extent)
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
-        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.latitude)
-        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.latitude)
+        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
+        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
         ds = ds.sel(
             latitude=slice(bbox.lat_max, bbox.lat_min),
             longitude=slice(lon_min, lon_max),
@@ -294,8 +285,12 @@ class ERA5PredictorConfig:
 
         # Partition variables: raw ones are loaded from the store, derived
         # ones are computed after stacking.
-        raw_vars = [v for v in self.variables if v not in DERIVED_VARIABLE_REGISTRY]
-        to_derive = [v for v in self.variables if v in DERIVED_VARIABLE_REGISTRY]
+        raw_vars = [
+            v for v in self.variables if v not in derived_variable_callable_mapping
+        ]
+        to_derive = [
+            v for v in self.variables if v in derived_variable_callable_mapping
+        ]
 
         log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
         result = stack_variables(
@@ -366,7 +361,11 @@ def subset_arco_era5(
         variables.pop(variables_to_postprocess)
 
     if not any(
-        [n for n in variables_to_postprocess if n in calc.callable_mapping.keys()]
+        [
+            n
+            for n in variables_to_postprocess
+            if n in derived_variable_callable_mapping.keys()
+        ]
     ):
         raise ValueError(
             f"Variables {variables_to_postprocess} not found in dataset and no "
@@ -394,11 +393,11 @@ def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Da
             names are keys of DERIVED_VARIABLE_REGISTRY.
     """
     for name in derived_variables:
-        fn = DERIVED_VARIABLE_REGISTRY.get(name)
+        fn = derived_variable_callable_mapping.get(name)
         if fn is None:
             raise ValueError(
                 f"Unknown derived variable {name!r}. "
-                f"Valid options: {list(DERIVED_VARIABLE_REGISTRY.keys())}"
+                f"Valid options: {list(derived_variable_callable_mapping.keys())}"
             )
         log.debug("Deriving %s...", name)
         ds = fn(ds)
@@ -526,7 +525,12 @@ def relative_humidity_postprocessor(ds: xr.Dataset):
     return ds
 
 
-callable_mapping = {
+def geopotential_height_postprocessor(ds: xr.Dataset):
+    ds["geopotential_height"] = calc.geopotential_height(ds.geopotential)
+    return ds
+
+
+derived_variable_callable_mapping: dict[str, callable] = {
     "dewpoint": dewpoint_postprocessor,
     "potential_temperature": potential_temperature_postprocessor,
     "equivalent_potential_temperature": equivalent_potential_temperature_postprocessor,

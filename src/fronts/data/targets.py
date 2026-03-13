@@ -7,7 +7,7 @@ from fronts.utils import data_utils
 log = logging.getLogger("fronts.data.targets")
 
 
-@dataclasses.dataclasses
+@dataclasses.dataclass
 class TargetDataConfig:
     """Dataclass to hold the information about the target data and build it.
 
