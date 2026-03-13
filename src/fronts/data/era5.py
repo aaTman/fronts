@@ -499,6 +499,12 @@ def equivalent_potential_temperature_postprocessor(ds: xr.Dataset):
     return ds
 
 
+def virtual_temperature_postprocessor(ds: xr.Dataset):
+    ds["virtual_temperature"] = calc.virtual_temperature(
+        ds.temperature, ds.dewpoint, ds.level
+    )
+
+
 def virtual_potential_temperature_postprocessor(ds: xr.Dataset):
     ds["virtual_potential_temperature"] = calc.virtual_potential_temperature(
         ds.level, ds.temperature, ds.dewpoint
@@ -531,9 +537,11 @@ def geopotential_height_postprocessor(ds: xr.Dataset):
 
 
 derived_variable_callable_mapping: dict[str, callable] = {
+    "geopotential_height": geopotential_height_postprocessor,
     "dewpoint": dewpoint_postprocessor,
     "potential_temperature": potential_temperature_postprocessor,
     "equivalent_potential_temperature": equivalent_potential_temperature_postprocessor,
+    "virtual_temperature": virtual_temperature_postprocessor,
     "virtual_potential_temperature": virtual_potential_temperature_postprocessor,
     "wet_bulb_temperature": wet_bulb_temperature_postprocessor,
     "wet_bulb_potential_temperature": wet_bulb_potential_temperature_postprocessor,
