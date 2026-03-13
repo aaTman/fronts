@@ -1,10 +1,11 @@
+import dataclasses
+import datetime
+import logging
+from typing import Callable
+
 import xarray as xr
 
-import datetime
-import dataclasses
-from fronts.utils import calc, data_utils, constants
-from typing import Callable
-import logging
+from fronts.utils import calc, constants, data_utils
 
 log = logging.getLogger("fronts.data.era5")
 
@@ -248,7 +249,7 @@ class ERA5PredictorConfig:
         pressure-level variables).  Time is filtered to ``self.years``.
 
         Variables listed in :data:`DERIVED_VARIABLE_REGISTRY` are computed
-        automatically after stacking the raw variables.  Derived variables
+        elsewhere after stacking the raw variables.  Derived variables
         are processed in the order they appear in ``self.variables``, so
         dependencies must come first (e.g. ``"dewpoint"`` before
         ``"virtual_temperature"``).
@@ -282,32 +283,7 @@ class ERA5PredictorConfig:
         log.info(
             "ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0)
         )
-
-        # Partition variables: raw ones are loaded from the store, derived
-        # ones are computed after stacking.
-        raw_vars = [
-            v for v in self.variables if v not in derived_variable_callable_mapping
-        ]
-        to_derive = [
-            v for v in self.variables if v in derived_variable_callable_mapping
-        ]
-
-        log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
-        result = stack_variables(
-            ds,
-            variables=raw_vars,
-            levels=self.levels,
-        )
-
-        if to_derive:
-            log.info("Deriving variables: %s", to_derive)
-            result = derive_era5_variables(result, to_derive)
-
-        log.info(
-            "ERA5PredictorConfig.build() complete. Output vars: %s",
-            list(result.data_vars),
-        )
-        return result
+        return ds
 
 
 def load_arco_era5(
@@ -403,6 +379,43 @@ def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Da
         ds = fn(ds)
     return ds
 
+def build_era5_derived_variables(
+    ds: xr.Dataset, 
+    variables: list[str], 
+    levels: list[int | str]
+    ) -> xr.Dataset:
+    """Builds the derived variables for the ERA5 dataset.
+
+    Args:
+        ds: The input xarray Dataset containing the ERA5 data.
+        derived_variables: A list of derived variable names to build.
+    """
+
+    # Partition variables: raw ones are loaded from the store, derived
+    # ones are computed after stacking.
+    raw_vars = [
+        v for v in variables if v not in derived_variable_callable_mapping
+    ]
+    to_derive = [
+        v for v in variables if v in derived_variable_callable_mapping
+    ]
+
+    log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, levels)
+    result = stack_variables(
+        ds,
+        variables=raw_vars,
+        levels=levels,
+    )
+
+    if to_derive:
+        log.info("Deriving variables: %s", to_derive)
+        result = derive_era5_variables(result, to_derive)
+
+    log.info(
+        "ERA5PredictorConfig.build() complete. Output vars: %s",
+        list(result.data_vars),
+    )
+    return result
 
 @dataclasses.dataclass
 class ERA5TrainingDataConfig:
@@ -536,7 +549,7 @@ def geopotential_height_postprocessor(ds: xr.Dataset):
     return ds
 
 
-derived_variable_callable_mapping: dict[str, callable] = {
+derived_variable_callable_mapping: dict[str, Callable] = {
     "geopotential_height": geopotential_height_postprocessor,
     "dewpoint": dewpoint_postprocessor,
     "potential_temperature": potential_temperature_postprocessor,
