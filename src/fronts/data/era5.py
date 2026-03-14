@@ -1,7 +1,7 @@
 import dataclasses
 import datetime
 import logging
-from typing import Callable
+from typing import Callable, Sequence
 
 import xarray as xr
 
@@ -34,8 +34,8 @@ SURFACE_ONLY_VARIABLES: set[str] = {
 
 def stack_variables(
     ds: xr.Dataset,
-    variables: list[str],
-    levels: list[str | int],
+    variables: Sequence[str],
+    levels: Sequence[int],
 ) -> xr.Dataset:
     """Stacks ERA5 variables into a unified Dataset with a mixed level coordinate.
 
@@ -236,7 +236,7 @@ class ERA5PredictorConfig:
 
     domain_extent: list[float]
     variables: list[str]
-    levels: list[str | int]
+    levels: list[int]
     store: str
     chunks: dict[str, int]
     consolidated: bool
@@ -287,12 +287,12 @@ class ERA5PredictorConfig:
 
         # Partition variables: raw ones are loaded from the store, derived
         # ones are computed after stacking.
-        raw_vars = [
+        raw_vars = tuple(
             v for v in self.variables if v not in derived_variable_callable_mapping
-        ]
-        to_derive = [
+        )
+        to_derive = tuple(
             v for v in self.variables if v in derived_variable_callable_mapping
-        ]
+        )
 
         log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
         result = stack_variables(
@@ -360,7 +360,7 @@ def subset_arco_era5(
     """
     variables_to_postprocess = [var for var in variables if var not in ds.data_vars]
     if variables_to_postprocess:
-        variables.pop(variables_to_postprocess)
+        variables = [var for var in variables if var not in variables_to_postprocess]
 
     if not any(
         [
@@ -373,17 +373,17 @@ def subset_arco_era5(
             f"Variables {variables_to_postprocess} not found in dataset and no "
             "post-processing functions available for them."
         )
-    ds = ds[variables]
-    ds = ds.sel(
+    subset_ds = ds[variables]
+    subset_ds = subset_ds.sel(
         latitude=slice(bounding_box.lat_max, bounding_box.lat_min),
         longitude=slice(bounding_box.lon_min, bounding_box.lon_max),
     )
-    ds = ds.sel(time=slice(start_date, end_date))
-    ds = ds.sel(level=levels)
-    return ds
+    subset_ds = subset_ds.sel(time=slice(start_date, end_date))
+    subset_ds = subset_ds.sel(level=levels)
+    return subset_ds
 
 
-def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Dataset:
+def derive_era5_variables(ds: xr.Dataset, derived_variables: Sequence[str]) -> xr.Dataset:
     """Compute derived meteorological variables and add them to the dataset.
 
     Variables are computed in the order given.  Dependencies must appear
@@ -402,12 +402,12 @@ def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Da
                 f"Valid options: {list(derived_variable_callable_mapping.keys())}"
             )
         log.debug("Deriving %s...", name)
-        ds = fn(ds)
+        ds[name] = fn(ds)
     return ds
 
 
 def build_era5_derived_variables(
-    ds: xr.Dataset, variables: list[str], levels: list[int | str]
+    ds: xr.Dataset, variables: list[str], levels: list[int]
 ) -> xr.Dataset:
     """Builds the derived variables for the ERA5 dataset.
 
@@ -490,85 +490,40 @@ class ERA5TrainingDataConfig:
         return ds
 
 
-def _default_postprocess(ds: xr.Dataset):
-    """Default postprocessor that passes through data unmodified."""
-    return ds
+def dewpoint_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.dewpoint_from_specific_humidity(ds.level, ds.specific_humidity)
 
 
-def maybe_postprocess_era5(
-    ds: xr.Dataset, postprocess_func: Callable = _default_postprocess, **kwargs
-) -> xr.Dataset:
-    """Applies any necessary post-processing steps to the ERA5 dataset.
-
-    This function is a placeholder for any future post-processing steps that may be
-    required for the ERA5 dataset. Currently, it returns the dataset unchanged.
-
-    Args:
-        ds: The input xarray Dataset containing the ERA5 data.
-        postprocess_func: A callable function that takes an xarray Dataset as input.
-            Defaults to a no-op function that returns the dataset unchanged.
-        **kwargs: Additional keyword arguments to pass to the post-processing function.
-
-    Returns the possibly post-processed Dataset.
-    """
-    ds = postprocess_func(ds, **kwargs)
-    return ds
+def potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.potential_temperature(ds.level, ds.temperature)
 
 
-def dewpoint_postprocessor(ds: xr.Dataset):
-    ds["dewpoint"] = calc.dewpoint_from_specific_humidity(
-        ds.level, ds.specific_humidity
-    )
-    return ds
+def equivalent_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.equivalent_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
 
 
-def potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["potential_temperature"] = calc.potential_temperature(ds.level, ds.temperature)
-    return ds
+def virtual_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.virtual_temperature(ds.temperature, ds.dewpoint, ds.level)
 
 
-def equivalent_potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["equivalent_potential_temperature"] = calc.equivalent_potential_temperature(
-        ds.level, ds.temperature, ds.dewpoint
-    )
-    return ds
+def virtual_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.virtual_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
 
 
-def virtual_temperature_postprocessor(ds: xr.Dataset):
-    ds["virtual_temperature"] = calc.virtual_temperature(
-        ds.temperature, ds.dewpoint, ds.level
-    )
+def wet_bulb_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.wet_bulb_temperature(ds.temperature, ds.dewpoint)
 
 
-def virtual_potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["virtual_potential_temperature"] = calc.virtual_potential_temperature(
-        ds.level, ds.temperature, ds.dewpoint
-    )
-    return ds
+def wet_bulb_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.wet_bulb_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
 
 
-def wet_bulb_temperature_postprocessor(ds: xr.Dataset):
-    ds["wet_bulb_temperature"] = calc.wet_bulb_temperature(ds.temperature, ds.dewpoint)
-    return ds
+def relative_humidity_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.relative_humidity_from_dewpoint(ds.temperature, ds.dewpoint)
 
 
-def wet_bulb_potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["wet_bulb_potential_temperature"] = calc.wet_bulb_potential_temperature(
-        ds.level, ds.temperature, ds.dewpoint
-    )
-    return ds
-
-
-def relative_humidity_postprocessor(ds: xr.Dataset):
-    ds["relative_humidity"] = calc.relative_humidity_from_dewpoint(
-        ds.temperature, ds.dewpoint
-    )
-    return ds
-
-
-def geopotential_height_postprocessor(ds: xr.Dataset):
-    ds["geopotential_height"] = calc.geopotential_height(ds.geopotential)
-    return ds
+def geopotential_height_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return calc.geopotential_height(ds.geopotential)
 
 
 derived_variable_callable_mapping: dict[str, Callable] = {

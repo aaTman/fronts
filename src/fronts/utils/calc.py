@@ -10,11 +10,13 @@ Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2025.5.3
 """
 
+import logging
+
 import numpy as np
-from fronts.utils import data_utils
 import tensorflow as tf
 import xarray as xr
-import logging
+
+from fronts.utils import data_utils
 
 logger = logging.getLogger("fronts.utils.calc")
 
@@ -237,6 +239,10 @@ def mixing_ratio_from_dewpoint(P, Td):
            0.00877413, 0.01153478, 0.01504042, 0.01946563])
     """
     e = saturation_vapor_pressure(Td)
+    logger.info(f"e: {e}")
+    logger.info(f"P: {P}")
+    logger.info(f"epsilon: {epsilon}")
+    logger.info(f"e / (P - e): {e / (P - e)}")
     r = epsilon * e / (P - e)  # mixing ratio
     return r
 
@@ -721,6 +727,7 @@ def virtual_temperature_from_dewpoint(P, T, Td):
            291.15830423, 296.55950086, 302.07923396, 307.74681888,
            313.59758378])
     """
+    logger.info(f"P at virtual_temperature_from_dewpoint: {P}")
     r = mixing_ratio_from_dewpoint(P, Td)
     Tv = virtual_temperature_from_mixing_ratio(T, r)
     return Tv
@@ -771,12 +778,11 @@ def convert_to_pascals(levels: xr.DataArray) -> xr.DataArray:
     Convert surface if exists to 1013.25 hPa and then convert to Pascals for all levels.
 
     Args:
-        levels: Pressure levels in hPa (int) and/or "surface" (str).
+        levels: Pressure levels in hPa (int)
 
     Returns a DataArray of pressure levels in Pascals.
     """
-    levels_hpa = [1013.25 if lv == "surface" else float(lv) for lv in levels.values]
-    levels_pa = levels_hpa * 100
+    levels_pa = levels * 100
     return levels_pa
 
 

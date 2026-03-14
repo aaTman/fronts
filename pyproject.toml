@@ -87,6 +87,10 @@ xarray = ">=2024.3.0,<2025"
 scikit-image = ">=0.22.0"
 h5py = ">=3.11.0"
 xbatcher = ">=0.4.0,<0.5"
+ipykernel = ">=7.2.0,<8"
+icechunk = ">=1.1.20,<2"
+gcsfs = ">=2026.2.0,<2027"
+debugpy = ">=1.8.20,<2"
 # gcsfs omitted — not needed locally (no ARCO zarr store access on Mac)
 
 [tool.pixi.feature.mac.pypi-dependencies]

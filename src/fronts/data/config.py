@@ -12,6 +12,7 @@ import dataclasses
 import datetime
 import logging
 from typing import Any, Literal
+
 import numpy as np
 import tensorflow as tf
 import xarray as xr
@@ -127,8 +128,8 @@ class DataConfig:
     shuffle: bool
     normalization_method: str
     era5_config: era5.ERA5PredictorConfig
-    fronts: targets.TargetDataConfig
-    augmentation: AugmentationConfig | None
+    fronts_config: targets.TargetDataConfig
+    augmentation_config: AugmentationConfig | None
 
     def build(self) -> ModelTrainingData:
         """Builds train, validation, and test tf.data.Dataset objects.
@@ -186,9 +187,9 @@ class DataConfig:
             # NO netCDF files are opened here.  Timestamps are parsed from
             # filenames matching FrontObjects_YYYYMMDDHH_full.nc.
             log.info("  Building fronts file index for years=%s...", years)
-            fronts_cfg = dataclasses.replace(self.fronts, years=years)
-            fronts_index = fronts_cfg.build_index()  # {iso_str: filepath}
-            log.info("  Fronts index ready: %d timestep(s).", len(fronts_index))
+
+            fronts_ds = self.fronts_config.build()  # {iso_str: filepath}
+            log.info("  Fronts index ready: %d timestep(s).", len(fronts_ds.time))
 
             # Align timestamps: keep only times present in BOTH ERA5 and fronts.
             # ERA5 is hourly; fronts exist only at analysis times (00Z/06Z/12Z/18Z).
@@ -199,7 +200,7 @@ class DataConfig:
                 return str(t)[:19]  # "2008-01-01T00:00:00"
 
             era5_time_map: dict[str, Any] = {_iso(t): t for t in inputs_da.time.values}
-            common_keys = sorted(set(era5_time_map.keys()) & set(fronts_index.keys()))
+            common_keys = sorted(set(era5_time_map.keys()) & set(fronts_ds.time.values))
             if not common_keys:
                 raise ValueError(
                     f"No overlapping timestamps between ERA5 and fronts "
@@ -208,7 +209,7 @@ class DataConfig:
             log.info(
                 "  Timestamp alignment: ERA5=%d, fronts=%d → %d common timesteps.",
                 inputs_da.sizes["time"],
-                len(fronts_index),
+                len(fronts_ds.time),
                 len(common_keys),
             )
 
@@ -254,14 +255,14 @@ class DataConfig:
                     x = inputs_da.isel(time=i).values.astype("float32")
 
                     # Front label — open one file, apply transforms, discard
-                    front_ds = xr.open_dataset(fronts_index[iso_key], engine="netcdf4")
-                    if fronts_cfg.front_types is not None:
+                    front_ds = fronts_ds.sel(time=iso_key)
+                    if self.fronts_config.front_types is not None:
                         front_ds = data_utils.reformat_fronts(
-                            front_ds, fronts_cfg.front_types
+                            front_ds, self.fronts_config.front_types
                         )
-                    if fronts_cfg.front_dilation > 0:
+                    if self.fronts_config.front_dilation > 0:
                         front_ds = data_utils.expand_fronts(
-                            front_ds, iterations=fronts_cfg.front_dilation
+                            front_ds, iterations=self.fronts_config.front_dilation
                         )
                     # squeeze() removes any degenerate time dim present in some files
                     identifier = front_ds["identifier"].squeeze(drop=True)
@@ -314,7 +315,7 @@ class DataConfig:
             train_ds = train_ds.shuffle(buffer_size=1000)
 
         log.info("Building val split...")
-        val_ds = _build_split(self.val_years)
+        val_tf_ds = _build_split(self.val_years)
 
         if self.test_years:
             log.info("Building test split...")
@@ -323,15 +324,15 @@ class DataConfig:
             log.info("Building augmentation function...")
             augment_fn = self.augmentation_config.build()
             log.info("Applying augmentation to train dataset...")
-            train_ds = train_ds.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
+            train_tf_ds = train_ds.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
             log.info(
                 "Data augmentation applied to training dataset with config: %s",
                 self.augmentation_config,
             )
         log.info("DataConfig.build() complete.")
         return ModelTrainingData(
-            train_data=train_ds,
-            validation_data=val_ds,
+            train_data=train_tf_ds,
+            validation_data=val_tf_ds,
             test_data=test_ds,
         )
 
@@ -369,17 +370,17 @@ class PredictConfig:
 
         Returns a normalized xarray DataArray ready for model inference.
         """
-        log.info("PredictConfig.build() — opening zarr store: %s", self.era5.store)
+        log.info("PredictConfig.build() — opening zarr store: %s", self.era5_config.store)
         ds = xr.open_zarr(
-            store=self.era5.store,
-            chunks=self.era5.chunks,
-            consolidated=self.era5.consolidated,
+            store=self.era5_config.store,
+            chunks=self.era5_config.chunks,
+            consolidated=self.era5_config.consolidated,
         )
         log.debug("Zarr store opened.")
 
         # Spatial subset
         log.debug("Applying spatial subset...")
-        bbox = data_utils.convert_domain_extent_to_bounding_box(self.era5.domain_extent)
+        bbox = data_utils.convert_domain_extent_to_bounding_box(self.era5_config.domain_extent)
         lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
         lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
         ds = ds.sel(
@@ -404,17 +405,17 @@ class PredictConfig:
 
         # Partition variables into raw (load) and derived (compute).
         raw_vars = [
-            v for v in self.era5.variables if v not in era5.DERIVED_VARIABLE_REGISTRY
+            v for v in self.era5_config.variables if v not in era5.derived_variable_callable_mapping
         ]
         to_derive = [
-            v for v in self.era5.variables if v in era5.DERIVED_VARIABLE_REGISTRY
+            v for v in self.era5_config.variables if v in era5.derived_variable_callable_mapping
         ]
 
         log.debug("Stacking raw variables=%s...", raw_vars)
         stacked = era5.stack_variables(
             ds,
             variables=raw_vars,
-            levels=self.era5.levels,
+            levels=self.era5_config.levels,
         )
 
         if to_derive:
