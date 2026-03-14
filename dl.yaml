@@ -36,7 +36,7 @@ era5_config:
     time: 48
   consolidated: true
   years: [2008]
-fronts:
+target_config:
   store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk/"
   front_types: ["CF", "WF", "SF", "OF", "DL"]
   front_dilation: 1 # configurable — set to N to expand front labels by N pixels

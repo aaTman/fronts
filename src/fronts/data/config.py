@@ -117,7 +117,7 @@ class DataConfig:
         shuffle: Whether to shuffle the training dataset.
         normalization_method: One of "standard", "standard_weighted", "min-max".
         era5: ERA5PredictorConfig defining the predictor variable source.
-        fronts: TargetDataConfig defining the front label source.
+        target_config: TargetDataConfig defining the front label source.
         augmentation_config: AugmentationConfig defining runtime data augmentation.
     """
 
@@ -128,7 +128,7 @@ class DataConfig:
     shuffle: bool
     normalization_method: str
     era5_config: era5.ERA5PredictorConfig
-    fronts_config: targets.TargetDataConfig
+    target_config: targets.TargetDataConfig
     augmentation_config: AugmentationConfig | None
 
     def build(self) -> ModelTrainingData:
@@ -145,9 +145,7 @@ class DataConfig:
             self.test_years,
         )
 
-        def _build_split(years: list[int]) -> Any | None:
-            if not years:
-                return None
+        def _build_split(years: list[int]) -> tf.data.Dataset:
 
             # Build ERA5 predictor dataset for this split
             log.info("  Building ERA5 predictor dataset for years=%s...", years)
@@ -188,7 +186,7 @@ class DataConfig:
             # filenames matching FrontObjects_YYYYMMDDHH_full.nc.
             log.info("  Building fronts file index for years=%s...", years)
 
-            fronts_ds = self.fronts_config.build()  # {iso_str: filepath}
+            fronts_ds = self.target_config.build()  # {iso_str: filepath}
             log.info("  Fronts index ready: %d timestep(s).", len(fronts_ds.time))
 
             # Align timestamps: keep only times present in BOTH ERA5 and fronts.
@@ -256,13 +254,13 @@ class DataConfig:
 
                     # Front label — open one file, apply transforms, discard
                     front_ds = fronts_ds.sel(time=iso_key)
-                    if self.fronts_config.front_types is not None:
+                    if self.target_config.front_types is not None:
                         front_ds = data_utils.reformat_fronts(
-                            front_ds, self.fronts_config.front_types
+                            front_ds, self.target_config.front_types
                         )
-                    if self.fronts_config.front_dilation > 0:
+                    if self.target_config.front_dilation > 0:
                         front_ds = data_utils.expand_fronts(
-                            front_ds, iterations=self.fronts_config.front_dilation
+                            front_ds, iterations=self.target_config.front_dilation
                         )
                     # squeeze() removes any degenerate time dim present in some files
                     identifier = front_ds["identifier"].squeeze(drop=True)
@@ -310,16 +308,19 @@ class DataConfig:
 
         log.info("Building train split...")
         train_ds = _build_split(self.train_years)
-        if self.shuffle and train_ds is not None:
+        if self.shuffle:
             log.debug("Shuffling train dataset.")
             train_ds = train_ds.shuffle(buffer_size=1000)
 
         log.info("Building val split...")
         val_tf_ds = _build_split(self.val_years)
 
+        # Test years are optional - it's simply a way to
+        # keep track of the test years
         if self.test_years:
             log.info("Building test split...")
-        test_ds = _build_split(self.test_years)
+            test_ds = _build_split(self.test_years)
+        
         if self.augmentation_config:
             log.info("Building augmentation function...")
             augment_fn = self.augmentation_config.build()
