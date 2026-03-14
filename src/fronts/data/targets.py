@@ -37,7 +37,7 @@ class TargetDataConfig:
             session.store,
             zarr_format=3,
             consolidated=False,
-            chunks={},
+            chunks="auto",
         )
 
         # Reformat the fronts if front_types is specified.

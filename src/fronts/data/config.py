@@ -50,31 +50,49 @@ class AugmentationConfig:
 
         @tf.function
         def augment(x, y):
-            # Latitude flip
+            # Latitude flip — outer check is Python (trace-time); inner uses tf.cond
             if self.flip_chance_lat > 0:
-                if tf.random.uniform(()) <= self.flip_chance_lat:
-                    x = tf.reverse(x, axis=[0])
-                    y = tf.reverse(y, axis=[0])
-                    # Negate v-wind across all levels
+                def _do_lat_flip():
+                    _x = tf.reverse(x, axis=[0])
+                    _y = tf.reverse(y, axis=[0])
                     if self.v_wind_index is not None:
-                        n_vars = tf.shape(x)[-1]
+                        n_vars = tf.shape(_x)[-1]
                         sign = tf.where(
                             tf.equal(tf.range(n_vars), self.v_wind_index), -1.0, 1.0
                         )
-                        x = x * tf.cast(sign, x.dtype)
+                        _x = _x * tf.cast(sign, _x.dtype)
+                    return _x, _y
 
-            # Longitude flip
+                def _no_lat_flip():
+                    return x, y
+
+                x, y = tf.cond(
+                    tf.random.uniform(()) <= self.flip_chance_lat,
+                    _do_lat_flip,
+                    _no_lat_flip,
+                )
+
+            # Longitude flip — outer check is Python (trace-time); inner uses tf.cond
             if self.flip_chance_lon > 0:
-                if tf.random.uniform(()) <= self.flip_chance_lon:
-                    x = tf.reverse(x, axis=[1])
-                    y = tf.reverse(y, axis=[1])
-                    # Negate u-wind across all levels
+                def _do_lon_flip():
+                    _x = tf.reverse(x, axis=[1])
+                    _y = tf.reverse(y, axis=[1])
                     if self.u_wind_index is not None:
-                        n_vars = tf.shape(x)[-1]
+                        n_vars = tf.shape(_x)[-1]
                         sign = tf.where(
                             tf.equal(tf.range(n_vars), self.u_wind_index), -1.0, 1.0
                         )
-                        x = x * tf.cast(sign, x.dtype)
+                        _x = _x * tf.cast(sign, _x.dtype)
+                    return _x, _y
+
+                def _no_lon_flip():
+                    return x, y
+
+                x, y = tf.cond(
+                    tf.random.uniform(()) <= self.flip_chance_lon,
+                    _do_lon_flip,
+                    _no_lon_flip,
+                )
 
             return x, y
 
@@ -168,7 +186,7 @@ class DataConfig:
             # whole Dataset forces every variable into the dask graph with an
             # explicit chunk spec, so all arrays passed to dask.stack are
             # consistently chunked dask arrays.
-            inputs_ds = inputs_ds.chunk({"latitude": -1, "longitude": -1, "level": -1})
+            inputs_ds = inputs_ds.chunk({"time": 1, "latitude": 90, "longitude": 180, "level": -1})
 
             # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
             # The model expects (lat, lon, level, variable) per timestep.
@@ -247,40 +265,48 @@ class DataConfig:
                 era5_lons_360 > 180, era5_lons_360 - 360, era5_lons_360
             )  # e.g. [-140.0, ..., -60.0]
 
-            def gen():
-                for i, iso_key in enumerate(common_keys):
-                    # ERA5 input — isel by position for speed
-                    x = inputs_da.isel(time=i).values.astype("float32")
+            _GEN_BATCH_SIZE = 8
 
-                    # Front label — open one file, apply transforms, discard
-                    front_ds = fronts_ds.sel(time=iso_key)
-                    if self.target_config.front_types is not None:
-                        front_ds = data_utils.reformat_fronts(
-                            front_ds, self.target_config.front_types
+            def gen():
+                n = len(common_keys)
+                for batch_start in range(0, n, _GEN_BATCH_SIZE):
+                    batch_end = min(batch_start + _GEN_BATCH_SIZE, n)
+                    # Load multiple ERA5 timesteps at once to reduce zarr reads
+                    batch_x = inputs_da.isel(
+                        time=slice(batch_start, batch_end)
+                    ).values.astype("float32")
+                    for j, iso_key in enumerate(common_keys[batch_start:batch_end]):
+                        x = batch_x[j]
+
+                        # Front label — open one file, apply transforms, discard
+                        front_ds = fronts_ds.sel(time=iso_key)
+                        if self.target_config.front_types is not None:
+                            front_ds = data_utils.reformat_fronts(
+                                front_ds, self.target_config.front_types
+                            )
+                        if self.target_config.front_dilation > 0:
+                            front_ds = data_utils.expand_fronts(
+                                front_ds, iterations=self.target_config.front_dilation
+                            )
+                        # squeeze() removes any degenerate time dim present in some files
+                        identifier = front_ds["identifier"].squeeze(drop=True)
+                        # Front files cover a broader domain than the ERA5 subset.
+                        # Detect the longitude convention used by this file and pick the
+                        # matching ERA5 lon array (0-360 or -180/180).
+                        sel_lons = (
+                            era5_lons_360
+                            if float(identifier.longitude.min()) >= 0
+                            else era5_lons_180
                         )
-                    if self.target_config.front_dilation > 0:
-                        front_ds = data_utils.expand_fronts(
-                            front_ds, iterations=self.target_config.front_dilation
+                        identifier = identifier.sel(
+                            latitude=era5_lats,
+                            longitude=sel_lons,
+                            method="nearest",
                         )
-                    # squeeze() removes any degenerate time dim present in some files
-                    identifier = front_ds["identifier"].squeeze(drop=True)
-                    # Front files cover a broader domain than the ERA5 subset.
-                    # Detect the longitude convention used by this file and pick the
-                    # matching ERA5 lon array (0-360 or -180/180).
-                    sel_lons = (
-                        era5_lons_360
-                        if float(identifier.longitude.min()) >= 0
-                        else era5_lons_180
-                    )
-                    identifier = identifier.sel(
-                        latitude=era5_lats,
-                        longitude=sel_lons,
-                        method="nearest",
-                    )
-                    # Guarantee (latitude, longitude) ordering regardless of storage order.
-                    identifier = identifier.transpose("latitude", "longitude")
-                    y = identifier.values.astype("float32")
-                    yield x, y
+                        # Guarantee (latitude, longitude) ordering regardless of storage order.
+                        identifier = identifier.transpose("latitude", "longitude")
+                        y = identifier.values.astype("float32")
+                        yield x, y
 
             tf_ds = tf.data.Dataset.from_generator(
                 gen,
@@ -317,10 +343,12 @@ class DataConfig:
 
         # Test years are optional - it's simply a way to
         # keep track of the test years
+        test_ds = None
         if self.test_years:
             log.info("Building test split...")
             test_ds = _build_split(self.test_years)
-        
+
+        train_tf_ds = train_ds
         if self.augmentation_config:
             log.info("Building augmentation function...")
             augment_fn = self.augmentation_config.build()
@@ -437,7 +465,7 @@ class PredictConfig:
         # Rechunk before to_array() for the same reason as _build_split():
         # outer-join merge fills missing levels with numpy NaN; rechunking ensures
         # all variables are consistently dask-backed before dask.stack is called.
-        stacked = stacked.chunk({"latitude": -1, "longitude": -1, "level": -1})
+        stacked = stacked.chunk({"time": 1, "latitude": 90, "longitude": 180, "level": -1})
 
         # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
         result = stacked.to_array(dim="variable")

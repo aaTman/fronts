@@ -1,9 +1,10 @@
+import dataclasses
+from typing import Any
+
 import tensorflow as tf
 import xarray as xr
-
 import xbatcher as xb
 import xbatcher.loaders.keras
-import dataclasses
 
 
 def create_dataloader(
@@ -13,8 +14,8 @@ def create_dataloader(
     target_sizes: dict[str, int] | None = None,
     prefetch_number: int = 3,
     preload_batch: bool = False,
-    input_dtype: type = tf.float32,
-    target_dtype: type = tf.float32,
+    input_dtype: Any = tf.float32,
+    target_dtype: Any = tf.float32,
 ) -> tf.data.Dataset:
     """Create a tf.data.Dataset DataLoader from xarray Datasets for inputs and targets.
 
@@ -39,17 +40,17 @@ def create_dataloader(
         model. Each batch will have the specified input_shape and target_shape.
     """
     if input_sizes is None:
-        input_sizes = dict(inputs.sizes)
+        input_sizes = dict(inputs.sizes)  # ty: ignore[no-matching-overload]
     if target_sizes is None:
-        target_sizes = dict(targets.sizes)
+        target_sizes = dict(targets.sizes)  # ty: ignore[no-matching-overload]
     # Define batch generators for features (X) and labels (y)
     X_bgen = xb.BatchGenerator(
         inputs,
-        input_dims=input_sizes,
+        input_dims=input_sizes,  # type: ignore[arg-type]
         preload_batch=preload_batch,  # Load each batch dynamically
     )
     y_bgen = xb.BatchGenerator(
-        targets, input_dims=target_sizes, preload_batch=preload_batch
+        targets, input_dims=target_sizes, preload_batch=preload_batch  # type: ignore[arg-type]
     )
 
     # Use xbatcher's MapDataset to wrap the generators
@@ -93,8 +94,8 @@ class BatchGeneratorConfig:
     target_sizes: dict[str, int] | None = None
     prefetch_number: int = 3
     preload_batch: bool = False
-    input_dtype = tf.float32
-    target_dtype = tf.float32
+    input_dtype: Any = dataclasses.field(default_factory=lambda: tf.float32)
+    target_dtype: Any = dataclasses.field(default_factory=lambda: tf.float32)
 
     def build(self) -> tf.data.Dataset:
         """Builds a tf.data.Dataset DataLoader using the provided configuration

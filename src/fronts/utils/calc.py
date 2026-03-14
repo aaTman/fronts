@@ -91,7 +91,7 @@ def dewpoint_from_mixing_ratio(P, r):
 
     log_func = tf.math.log if tf.is_tensor(P) else np.log
 
-    P /= 100  # Pa -> hPa
+    P = P / 100  # Pa -> hPa
 
     e = r * P / (epsilon + r)  # vapor pressure
 
@@ -848,8 +848,7 @@ def theta_e(
     Returns a DataArray of equivalent potential temperature values.
     """
     levels_pa = convert_to_pascals(level)
-    equivalent_potential_temperature = theta_e(levels_pa, temperature, dewpoint)
-    return equivalent_potential_temperature
+    return equivalent_potential_temperature(levels_pa, temperature, dewpoint)
 
 
 def geopotential_height(geopotential: xr.DataArray) -> xr.DataArray:

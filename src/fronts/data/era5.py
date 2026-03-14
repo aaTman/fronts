@@ -163,7 +163,7 @@ def normalize_legacy_arco_era5(
     # return a new Dataset
     result: dict = {}
     for var in list(ds.data_vars):
-        prefix = _ARCO_TO_LEGACY_NORM_KEY.get(var)
+        prefix = _ARCO_TO_LEGACY_NORM_KEY.get(str(var))
         if prefix is None:
             log.warning("No normalization mapping for variable %r — skipping.", var)
             result[var] = ds[var]
@@ -314,7 +314,7 @@ class ERA5PredictorConfig:
 
 def load_arco_era5(
     store: str = ARCO_ERA5_GCP_URI,
-    chunks: dict[str, int] = {"time": 48},
+    chunks: dict[str, int] | str = {"time": 1, "latitude": 90, "longitude": 180, "level": -1},
     consolidated: bool = True,
 ):
     """Opens the Google ARCO ERA5 analysis-ready dataset as an xarray Dataset.

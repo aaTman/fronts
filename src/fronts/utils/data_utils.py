@@ -43,7 +43,7 @@ def convert_domain_extent_to_bounding_box(domain_extent: list[float]) -> Boundin
 
     Args:
         domain_extent: A list of four floats representing the domain extent in the
-            format [lat_min, lat_max, lon_min, lon_max].
+            format [lon_min, lon_max, lat_min, lat_max].
 
     Returns a BoundingBox named tuple with the corresponding values.
     """
@@ -112,9 +112,9 @@ def expand_fronts(
             [0., 0., 2., 2., 2.],
             [0., 0., 2., 2., 2.]]])
     """
-    if type(fronts) in [xr.Dataset, xr.DataArray]:
+    if isinstance(fronts, (xr.Dataset, xr.DataArray)):
         identifier = (
-            fronts["identifier"].values if type(fronts) == xr.Dataset else fronts.values
+            fronts["identifier"].values if isinstance(fronts, xr.Dataset) else fronts.values
         )
 
     elif tf.is_tensor(fronts):
@@ -276,9 +276,9 @@ def expand_fronts(
                 axis=0,
             )
 
-    if type(fronts) == xr.Dataset:
+    if isinstance(fronts, xr.Dataset):
         fronts["identifier"].values = identifier
-    elif type(fronts) == xr.DataArray:
+    elif isinstance(fronts, xr.DataArray):
         fronts.values = identifier
     else:
         fronts = identifier
@@ -502,16 +502,14 @@ def reformat_fronts(fronts, front_types):
         Reformatted dataset based on the provided code(s).
     """
 
-    if type(front_types) == str:
+    if isinstance(front_types, str):
         front_types = [
             front_types,
         ]
 
-    fronts_argument_type = type(fronts)
-
-    if fronts_argument_type == xr.DataArray or fronts_argument_type == xr.Dataset:
+    if isinstance(fronts, (xr.DataArray, xr.Dataset)):
         where_function = xr.where
-    elif fronts_argument_type == np.ndarray:
+    elif isinstance(fronts, np.ndarray):
         where_function = np.where
     else:
         where_function = tf.where
@@ -671,7 +669,7 @@ def reformat_fronts(fronts, front_types):
 
         labels = front_types
 
-    if fronts_argument_type == xr.Dataset or fronts_argument_type == xr.DataArray:
+    if isinstance(fronts, (xr.Dataset, xr.DataArray)):
         fronts.attrs["front_types"] = front_types
         fronts.attrs["num_front_types"] = num_types
         fronts.attrs["labels"] = labels
@@ -704,7 +702,6 @@ def normalize_dataset(
     """
 
     ds_copy = ds.copy()
-    ds.close()
 
     variables = list(ds_copy.keys())
 
@@ -876,21 +873,21 @@ def lambert_conformal_to_cartesian(
     lon_ref = np.radians(lon_ref)
     lat = np.radians(lat)
     lat_ref = np.radians(lat_ref)
-    std_parallels = np.radians(std_parallels)
+    std_parallels_rad = np.radians(std_parallels)
 
-    if std_parallels[0] == std_parallels[1]:
-        n = np.sin(std_parallels[0])
+    if std_parallels_rad[0] == std_parallels_rad[1]:
+        n = np.sin(std_parallels_rad[0])
     else:
         n = np.divide(
-            np.log(np.cos(std_parallels[0]) / np.cos(std_parallels[1])),
+            np.log(np.cos(std_parallels_rad[0]) / np.cos(std_parallels_rad[1])),
             np.log(
-                np.tan(np.pi / 4 + std_parallels[1] / 2)
-                / np.tan(np.pi / 4 + std_parallels[0] / 2)
+                np.tan(np.pi / 4 + std_parallels_rad[1] / 2)
+                / np.tan(np.pi / 4 + std_parallels_rad[0] / 2)
             ),
         )
     F = (
-        np.cos(std_parallels[0])
-        * np.power(np.tan(np.pi / 4 + std_parallels[0] / 2), n)
+        np.cos(std_parallels_rad[0])
+        * np.power(np.tan(np.pi / 4 + std_parallels_rad[0] / 2), n)
         / n
     )
     rho = R * F / np.power(np.tan(np.pi / 4 + lat / 2), n)

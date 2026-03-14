@@ -1,18 +1,20 @@
 """Train a FrontFinder model with optional Weights and Biases tracking."""
 
-import tensorflow as tf  # ty: ignore[unresolved-import]
-import tensorflow.keras  # ty: ignore[unresolved-import]
-import logging
-import os
-import wandb
-from wandb.integration import keras as wandb_keras
+import argparse
 import dataclasses
 import datetime
+import logging
+import os
 import subprocess
-from typing import Literal, Any, TypeVar, Type, Sequence
-import argparse
+from typing import Any, Literal, Sequence, Type, TypeVar
+
 import dacite
+import tensorflow as tf  # ty: ignore[unresolved-import]
+import tensorflow.keras  # ty: ignore[unresolved-import]
+import wandb
 import yaml
+from wandb.integration import keras as wandb_keras
+
 from fronts import model
 from fronts.data import config
 
@@ -98,7 +100,7 @@ class WandBConfig:
         attribute.
         """
 
-        return wandb_keras.WandbModelCheckpoint(self.wandb_filepath)
+        return wandb_keras.WandbModelCheckpoint(self.wandb_filepath)  # type: ignore[arg-type]
 
     def build_all_callbacks(self) -> Sequence[tensorflow.keras.callbacks.Callback]:
         """Returns both ModelCheckpoint and MetricsLogger callbacks."""
@@ -175,12 +177,12 @@ class Trainer:
 
     def __init__(
         self,
-        model_object: tf.keras.Model,
+        model_object: tf.keras.Model, # ty: ignore[unresolved-attribute]
         data: config.ModelTrainingData,
         epochs: int,
         validation_frequency: int,
         training_steps_per_epoch: int,
-        validation_steps_per_epoch: int,
+        validation_steps_per_epoch: int | None,
         callbacks: Sequence[tensorflow.keras.callbacks.Callback | None],
         verbose: Literal["auto", 0, 1, 2] = "auto",
         wandb_config: WandBConfig | None = None,
@@ -295,14 +297,14 @@ class Trainer:
             wandb_init_config = self.wandb_config.build_init_config(model)
             with wandb.init(**wandb_init_config) as _:  # ty: ignore[invalid-context-manager]
                 wandb_callbacks = self.wandb_config.build_all_callbacks()
-                self.callbacks.extend(wandb_callbacks)
-                self._fit_model(fit_args)
+                all_callbacks = list(self.callbacks) + wandb_callbacks  # ty: ignore[unsupported-operator]
+                self._fit_model(fit_args, all_callbacks)
         else:
-            self._fit_model(fit_args)
+            self._fit_model(fit_args, list(self.callbacks))
 
-    def _fit_model(self, fit_args: dict[str, Any]):
+    def _fit_model(self, fit_args: dict[str, Any], callbacks: Sequence[tensorflow.keras.callbacks.Callback]):
         """Helper method to call model.fit with the provided arguments."""
-        fit_args["callbacks"] = self.callbacks
+        fit_args["callbacks"] = callbacks
         log.info("Fitting model with args %s...", fit_args)
         self.model_object.fit(**fit_args)
 
@@ -402,7 +404,7 @@ class TrainConfig:
 
         log.info("Building Trainer...")
         trainer = Trainer(
-            model=keras_model,
+            model_object=keras_model,
             data=model_data,
             epochs=self.epochs,
             validation_frequency=self.validation_frequency,
@@ -410,7 +412,7 @@ class TrainConfig:
             validation_steps_per_epoch=self.validation_steps_per_epoch,
             callbacks=callbacks,
             verbose=self.verbose,
-            wandb=self.wandb_config,
+            wandb_config=self.wandb_config,
             repeat=self.repeat,
             seed=self.seed,
             num_replicas=strategy.num_replicas_in_sync,
@@ -419,14 +421,14 @@ class TrainConfig:
         return trainer
 
 
-def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> T | None:
+def open_config_yaml_as_dataclass(path: str, config_class: Type[T]) -> T:
     """Opens a configuration yaml if exists and returns it as the relevant dataclass.
 
     Args:
         path: the absolute path to the configuration file.
         config_class: the configuration dataclass that the incoming yaml will be
             converted to via dacite.
-    Returns either None or the dataclass if path is provided.
+    Returns the dataclass instance. Raises FileNotFoundError if path does not exist.
     """
     with open(file=path) as f:
         config_yaml = yaml.safe_load(f)
@@ -480,7 +482,7 @@ if __name__ == "__main__":
 
     log.info("Loading config from: %s", args.train_config_path)
     train_config = open_config_yaml_as_dataclass(
-        path=args.train_config_path, config_class=TrainConfig, require=True
+        path=args.train_config_path, config_class=TrainConfig
     )
     log.info(
         "Config loaded. epochs=%d, steps_per_epoch=%d",
@@ -497,23 +499,19 @@ if __name__ == "__main__":
         # This lets any production YAML work with --dry_run without a separate
         # dry-run config file.
         dry_data = dataclasses.replace(
-            train_config.data,
+            train_config.data_config,
             train_years=[2000],
             val_years=[2001],
             test_years=[],
-            tf_dataset=dataclasses.replace(
-                train_config.data.tf_dataset,
-                directory=args.fixture_dir,
-            ),
         )
         train_config = dataclasses.replace(
             train_config,
-            data=dry_data,
+            data_config=dry_data,
             epochs=1,
             training_steps_per_epoch=2,
             validation_steps_per_epoch=1,
             repeat=False,
-            wandb=None,  # skip WandB entirely in dry run
+            wandb_config=None,  # skip WandB entirely in dry run
         )
 
         log.info("Building trainer (data pipeline + model)...")
@@ -521,7 +519,7 @@ if __name__ == "__main__":
         log.info("  train_data:      %s", trainer.data.train_data)
         log.info("  validation_data: %s", trainer.data.validation_data)
         log.info("  test_data:       %s", trainer.data.test_data)
-        log.info("  model:           %s", trainer.model)
+        log.info("  model:           %s", trainer.model_object)
         log.info("=== DRY RUN complete. No errors. ===")
         raise SystemExit(0)
 
@@ -531,9 +529,9 @@ if __name__ == "__main__":
 
     # Build WandB run metadata — model architecture plus data/training provenance
     # to match the fields logged by the legacy pipeline.
-    run_metadata = dataclasses.asdict(train_config.model)
-    if train_config.data is not None:
-        data = train_config.data
+    run_metadata = dataclasses.asdict(train_config.model_config)
+    if train_config.data_config is not None:
+        data = train_config.data_config
         run_metadata["training_years"] = data.train_years
         run_metadata["validation_years"] = data.val_years
         run_metadata["test_years"] = data.test_years
@@ -541,18 +539,8 @@ if __name__ == "__main__":
             train_config.training_steps_per_epoch,
             train_config.validation_steps_per_epoch,
         ]
-        # Prefer ERA5 config for variable/level metadata; fall back to optional
-        # metadata fields on TFDatasetConfig when using pre-built datasets.
-        if data.era5 is not None:
-            run_metadata["variables"] = data.era5.variables
-            run_metadata["pressure_levels"] = [str(lvl) for lvl in data.era5.levels]
-        elif data.tf_dataset is not None:
-            if data.tf_dataset.variables is not None:
-                run_metadata["variables"] = data.tf_dataset.variables
-            if data.tf_dataset.levels is not None:
-                run_metadata["pressure_levels"] = [
-                    str(lvl) for lvl in data.tf_dataset.levels
-                ]
+        run_metadata["variables"] = data.era5_config.variables
+        run_metadata["pressure_levels"] = [str(lvl) for lvl in data.era5_config.levels]
 
     # Capture git commit hash and branch for reproducibility tracking
     try:

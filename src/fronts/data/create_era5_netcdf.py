@@ -71,10 +71,8 @@ if __name__ == "__main__":
     era5_v = xr.open_mfdataset(
         pl_files[4], engine="h5netcdf", chunks="auto", parallel=True
     ).sel(valid_time=args["date"])
-    print(f"{dt.datetime.utcnow()}: Merging datasets (this may take a while)")
-    era5_pl = xr.merge([era5_z, era5_t, era5_q, era5_u, era5_v]).compute(
-        num_workers=args["parallel_threads"], scheduler="processes"
-    )
+    print(f"{dt.datetime.utcnow()}: Merging datasets (lazy)")
+    era5_pl = xr.merge([era5_z, era5_t, era5_q, era5_u, era5_v])
 
     dims = list(era5_pl.coords.dims.mapping.keys())
     keys = list(era5_pl.keys())
@@ -192,6 +190,11 @@ if __name__ == "__main__":
         long_name="Geopotential Height", units="dam"
     )
     era5_pl = era5_pl.assign_attrs(time_created=dt.datetime.utcnow().timestamp())
+
+    print(f"{dt.datetime.utcnow()}: Computing all derived variables")
+    era5_pl = era5_pl.compute(
+        num_workers=args["parallel_threads"], scheduler="processes"
+    )
 
     # output directory for the ERA5 netCDF files (will be stored by month)
     output_folder = f"{args['outdir']}/{yr}{mo}"
