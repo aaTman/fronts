@@ -14,6 +14,9 @@ import numpy as np
 from fronts.utils import data_utils
 import tensorflow as tf
 import xarray as xr
+import logging
+
+logger = logging.getLogger("fronts.utils.calc")
 
 Rd = 287.04  # Gas constant for dry air (J/kg/K)
 Rv = 461.5  # Gas constant for water vapor (J/kg/K)
