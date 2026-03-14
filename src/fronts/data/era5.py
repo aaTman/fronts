@@ -22,7 +22,7 @@ SURFACE_VARIABLE_MAP: dict[str, str] = {
 }
 
 # Variables that exist only at the surface (no pressure-level equivalent)
-# These are included in the output whenever "surface" is in the levels list
+# These are included in the output whenever 1013 is in the levels list
 SURFACE_ONLY_VARIABLES: set[str] = {
     "mean_sea_level_pressure",
     "total_precipitation",
@@ -39,8 +39,8 @@ def stack_variables(
 ) -> xr.Dataset:
     """Stacks ERA5 variables into a unified Dataset with a mixed level coordinate.
 
-    The ``levels`` list may contain the string ``"surface"`` and/or integer hPa
-    values (e.g. ``["surface", 1000, 950, 900, 850]``).  The function handles
+    The ``levels`` list may contain ``1013`` and/or hPa
+    values (e.g. ``[1013, 1000, 950, 900, 850]``).  The function handles
     three categories of variable automatically:
 
     * **Pressure-level-only** — the variable exists only on pressure levels in
@@ -48,11 +48,11 @@ def stack_variables(
       requested integer levels.
     * **Mixed surface + pressure** — the variable has both a surface counterpart
       (looked up via :data:`SURFACE_VARIABLE_MAP`) and pressure-level data.
-      When ``"surface"`` is in ``levels`` the surface array is prepended; the
-      result has a level coordinate of the form ``["surface", 1000, 950, ...]``.
+      When ``1013`` is in ``levels`` the surface array is prepended; the
+      result has a level coordinate of the form ``[1013, 1000, 950, ...]``.
     * **Surface-only** — the variable name appears in :data:`SURFACE_ONLY_VARIABLES`
       *or* is not found as a pressure-level variable in the store.  It is
-      included with ``level=["surface"]`` whenever ``"surface"`` is in ``levels``.
+      included with ``level=[1013]`` whenever ``1013`` is in ``levels``.
 
     Args:
         ds: An xarray Dataset already subsetted spatially and temporally.
@@ -60,13 +60,13 @@ def stack_variables(
             (e.g. ``"temperature"``) for mixed/pressure variables; use the full
             surface name (e.g. ``"mean_sea_level_pressure"``) for surface-only ones.
         levels: Ordered list of levels to select.  May include the string
-            ``"surface"`` and/or integer hPa values.
+            ``1013`` and/or integer hPa values.
 
     Returns an xarray Dataset with a unified ``"level"`` coordinate whose values
-    are a mix of the string ``"surface"`` and integer hPa values.
+    are a mix of the string ``1013`` and integer hPa values.
     """
-    include_surface = "surface" in levels
-    pressure_levels = [lv for lv in levels if lv != "surface"]
+    include_surface = 1013 in levels
+    pressure_levels = [lv for lv in levels if lv != 1013]
 
     result_datasets: list[xr.Dataset] = []
 
@@ -75,9 +75,9 @@ def stack_variables(
         is_surface_only = var in SURFACE_ONLY_VARIABLES
 
         if is_surface_only:
-            # Surface-only variable: always has level=["surface"]
+            # Surface-only variable: always has level=[1013]
             if include_surface:
-                da_sfc = ds[var].expand_dims({"level": ["surface"]})
+                da_sfc = ds[var].expand_dims({"level": [1013]})
                 result_datasets.append(da_sfc.to_dataset(name=var))
         elif surface_var_name is not None:
             # Mixed variable: has a surface counterpart + pressure levels
@@ -87,7 +87,7 @@ def stack_variables(
                 da_pl = None
 
             if include_surface and surface_var_name in ds:
-                da_sfc = ds[surface_var_name].expand_dims({"level": ["surface"]})
+                da_sfc = ds[surface_var_name].expand_dims({"level": [1013]})
                 if da_pl is not None:
                     da = xr.concat([da_sfc, da_pl], dim="level")
                 else:
@@ -105,7 +105,8 @@ def stack_variables(
                 da_pl = ds[var].sel(level=pressure_levels)
                 result_datasets.append(da_pl.to_dataset(name=var))
 
-    return xr.merge(result_datasets, join="outer")
+    stacked_ds = xr.merge(result_datasets, join="outer")
+    return stacked_ds
 
 
 # Maps ARCO variable names to the legacy short-name prefixes used as keys
@@ -140,7 +141,7 @@ def normalize_legacy_arco_era5(
 
     Args:
         ds: Stacked xr.Dataset with ARCO variable names and a ``"level"``
-            coordinate containing ``"surface"`` and/or integer hPa values.
+            coordinate containing ``1013`` and/or integer hPa values.
         method: ``"min-max"``, ``"standard"``, or ``"standard_weighted"``.
         params: Normalization parameter dict. Defaults to
             ``constants.NORMALIZATION_PARAMS``.
@@ -201,17 +202,17 @@ class ERA5PredictorConfig:
 
     Variables are specified as a single ``variables`` list using canonical
     (pressure-level) names.  The ``levels`` list controls which vertical levels
-    are loaded and may contain the string ``"surface"`` in addition to integer
+    are loaded and may contain the string ``1013`` in addition to integer
     hPa values.
 
-    When ``"surface"`` appears in ``levels``, the module-level
+    When ``1013`` appears in ``levels``, the module-level
     :data:`SURFACE_VARIABLE_MAP` is consulted to find each variable's surface
     counterpart (e.g. ``"temperature"`` → ``"2m_temperature"``).  Variables
     listed in :data:`SURFACE_ONLY_VARIABLES` (e.g. ``"mean_sea_level_pressure"``)
-    are included with ``level=["surface"]`` automatically.
+    are included with ``level=[1013]`` automatically.
 
     The resulting xarray Dataset has a unified ``"level"`` coordinate whose
-    values are a mix of the string ``"surface"`` and integer hPa values,
+    values are a mix of the string ``1013`` and integer hPa values,
     following the convention used throughout the codebase.
 
     Attributes:
@@ -223,8 +224,8 @@ class ERA5PredictorConfig:
             loaded from the zarr store; derived variables are computed after
             stacking.  Order matters for derived variables — dependencies must
             appear first (e.g. ``"dewpoint"`` before ``"virtual_temperature"``).
-        levels: Ordered list of levels to include.  May contain ``"surface"``
-            and/or integer hPa values, e.g. ``["surface", 1000, 950, 900, 850]``
+        levels: Ordered list of levels to include.  May contain ``1013``
+            and/or integer hPa values, e.g. ``[1013, 1000, 950, 900, 850]``
             or ``[1000, 900, 750]``.
         years: Years to select data from. Typically injected by DataConfig.build()
             via dataclasses.replace() rather than set directly in YAML.
@@ -245,7 +246,7 @@ class ERA5PredictorConfig:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
 
         Returns an xarray Dataset with a ``"level"`` coordinate that includes
-        ``"surface"`` (for surface variables) and integer hPa values (for
+        ``1013`` (for surface variables) and integer hPa values (for
         pressure-level variables).  Time is filtered to ``self.years``.
 
         Variables listed in :data:`DERIVED_VARIABLE_REGISTRY` are computed
@@ -283,7 +284,32 @@ class ERA5PredictorConfig:
         log.info(
             "ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0)
         )
-        return ds
+
+        # Partition variables: raw ones are loaded from the store, derived
+        # ones are computed after stacking.
+        raw_vars = [
+            v for v in self.variables if v not in derived_variable_callable_mapping
+        ]
+        to_derive = [
+            v for v in self.variables if v in derived_variable_callable_mapping
+        ]
+
+        log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
+        result = stack_variables(
+            ds,
+            variables=raw_vars,
+            levels=self.levels,
+        )
+
+        if to_derive:
+            log.info("Deriving variables: %s", to_derive)
+            result = derive_era5_variables(result, to_derive)
+
+        log.info(
+            "ERA5PredictorConfig.build() complete. Output vars: %s",
+            list(result.data_vars),
+        )
+        return result
 
 
 def load_arco_era5(
@@ -379,11 +405,10 @@ def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Da
         ds = fn(ds)
     return ds
 
+
 def build_era5_derived_variables(
-    ds: xr.Dataset, 
-    variables: list[str], 
-    levels: list[int | str]
-    ) -> xr.Dataset:
+    ds: xr.Dataset, variables: list[str], levels: list[int | str]
+) -> xr.Dataset:
     """Builds the derived variables for the ERA5 dataset.
 
     Args:
@@ -393,12 +418,8 @@ def build_era5_derived_variables(
 
     # Partition variables: raw ones are loaded from the store, derived
     # ones are computed after stacking.
-    raw_vars = [
-        v for v in variables if v not in derived_variable_callable_mapping
-    ]
-    to_derive = [
-        v for v in variables if v in derived_variable_callable_mapping
-    ]
+    raw_vars = [v for v in variables if v not in derived_variable_callable_mapping]
+    to_derive = [v for v in variables if v in derived_variable_callable_mapping]
 
     log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, levels)
     result = stack_variables(
@@ -416,6 +437,7 @@ def build_era5_derived_variables(
         list(result.data_vars),
     )
     return result
+
 
 @dataclasses.dataclass
 class ERA5TrainingDataConfig:
