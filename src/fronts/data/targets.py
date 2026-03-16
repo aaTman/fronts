@@ -17,6 +17,7 @@ class TargetDataConfig:
     """
 
     store_path: str
+    file_path: str
     front_types: str | list[str]
     front_dilation: int
 
@@ -26,16 +27,33 @@ class TargetDataConfig:
         Returns a virtual xarray Dataset of front objects with all timesteps.
         """
 
+        # Set up config and credentials to access virtual store
+        config = icechunk.RepositoryConfig.default()
+
+        # Set the virtual chunk container to the fronts netcdf directory
+        config.set_virtual_chunk_container(
+            icechunk.VirtualChunkContainer(
+                url_prefix=f"file://{self.file_path}",
+                store=icechunk.local_filesystem_store(self.file_path),
+            ),
+        )
+        # Use None for credentials since the local filesystem store does not require 
+        # authentication
+        credentials = icechunk.containers_credentials({f"file://{self.file_path}":None})
+
         # Open the local store as a read-only session
         local_storage = icechunk.local_filesystem_storage(self.store_path)
-        repo = icechunk.Repository.open(local_storage)
+        repo = icechunk.Repository.open(
+            local_storage,
+            config=config,
+            authorize_virtual_chunk_access=credentials,)
         session = repo.readonly_session("main")
 
         # Open the icechunk store with xarray's open_zarr. Chunks are an empty dict but
         # are (1, 360, 920) which represents one netcdf file of front objects.
         ds = xr.open_zarr(
             session.store,
-            zarr_format=3,
+            zarr_version=3,
             consolidated=False,
             chunks="auto",
         )
