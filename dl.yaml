@@ -38,6 +38,7 @@ era5_config:
   years: [2008]
 target_config:
   store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk/"
+  file_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
   front_types: ["CF", "WF", "SF", "OF", "DL"]
   front_dilation: 1 # configurable — set to N to expand front labels by N pixels
 augmentation:
