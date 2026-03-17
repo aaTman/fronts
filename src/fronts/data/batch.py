@@ -8,8 +8,8 @@ import xbatcher.loaders.keras
 
 
 def create_dataloader(
-    inputs: xr.Dataset,
-    targets: xr.Dataset,
+    inputs: xr.Dataset | xr.DataArray,
+    targets: xr.Dataset | xr.DataArray,
     input_sizes: dict[str, int] | None = None,
     target_sizes: dict[str, int] | None = None,
     prefetch_number: int = 3,
@@ -17,15 +17,17 @@ def create_dataloader(
     input_dtype: Any = tf.float32,
     target_dtype: Any = tf.float32,
 ) -> tf.data.Dataset:
-    """Create a tf.data.Dataset DataLoader from xarray Datasets for inputs and targets.
+    """Create a tf.data.Dataset DataLoader from xarray data for inputs and targets.
 
     References https://xbatcher.readthedocs.io/en/latest/user-guide/training-a-neural-network-with-keras-and-xbatcher.html
     for BatchGenerator usage. This function is used primarily to take cloud-based data
     and create a DataLoader that can be used for training a model in TensorFlow/Keras.
 
     Args:
-        inputs: An xarray Dataset containing the input features.
-        targets: An xarray Dataset containing the target labels.
+        inputs: An xarray Dataset or DataArray containing the input features.
+            Datasets are converted to DataArrays (required by xbatcher's keras loader).
+        targets: An xarray Dataset or DataArray containing the target labels.
+            Datasets are converted to DataArrays (required by xbatcher's keras loader).
         input_sizes: Optional dict specifying the dims and sizes of the input batches.
             If not provided, it will be inferred from the inputs dataset.
         target_sizes: Optional dict specifying the dims and sizes of the target batches.
@@ -39,6 +41,19 @@ def create_dataloader(
     Returns a tf.data.Dataset that yields batches of (inputs, targets) for training a
         model. Each batch will have the specified input_shape and target_shape.
     """
+    # xbatcher's keras CustomTFDataset calls .data on batches, which requires
+    # DataArrays. Convert single-variable Datasets to DataArrays.
+    if isinstance(inputs, xr.Dataset):
+        if len(inputs.data_vars) == 1:
+            inputs = inputs[list(inputs.data_vars)[0]]
+        else:
+            inputs = inputs.to_array(dim="variable")
+    if isinstance(targets, xr.Dataset):
+        if len(targets.data_vars) == 1:
+            targets = targets[list(targets.data_vars)[0]]
+        else:
+            targets = targets.to_array(dim="variable")
+
     if input_sizes is None:
         input_sizes = dict(inputs.sizes)  # ty: ignore[no-matching-overload]
     if target_sizes is None:
