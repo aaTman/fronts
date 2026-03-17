@@ -37,16 +37,19 @@ class TargetDataConfig:
                 store=icechunk.local_filesystem_store(self.file_path),
             ),
         )
-        # Use None for credentials since the local filesystem store does not require 
+        # Use None for credentials since the local filesystem store does not require
         # authentication
-        credentials = icechunk.containers_credentials({f"file://{self.file_path}":None})
+        credentials = icechunk.containers_credentials(
+            {f"file://{self.file_path}": None}
+        )
 
         # Open the local store as a read-only session
         local_storage = icechunk.local_filesystem_storage(self.store_path)
         repo = icechunk.Repository.open(
             local_storage,
             config=config,
-            authorize_virtual_chunk_access=credentials,)
+            authorize_virtual_chunk_access=credentials,
+        )
         session = repo.readonly_session("main")
 
         # Open the icechunk store with xarray's open_zarr. Chunks are an empty dict but
@@ -67,7 +70,11 @@ class TargetDataConfig:
             log.info(
                 "Expanding fronts with %d dilation iteration(s)...", self.front_dilation
             )
-            ds = calc.maybe_expand_fronts_parallelized(ds, iterations=self.front_dilation)
+            ds = calc.maybe_expand_fronts_parallelized(
+                ds, iterations=self.front_dilation
+            )
             log.info("expand_fronts complete.")
 
+        # Drop duplicates in time dimension if they exist
+        ds = ds.drop_duplicates(dim="time")
         return ds
