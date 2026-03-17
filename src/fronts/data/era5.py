@@ -291,7 +291,27 @@ class ERA5PredictorConfig:
         )
         log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
-        # Spatial subset
+        # Partition variables: raw ones are loaded from the store, derived
+        # ones are computed after stacking.
+        raw_vars = tuple(
+            v for v in self.variables if v not in derived_variable_callable_mapping
+        )
+        to_derive = tuple(
+            v for v in self.variables if v in derived_variable_callable_mapping
+        )
+
+        # 1. Variable subset
+        log.debug("Subsetting variables=%s at levels=%s...", raw_vars, self.levels)
+        ds = subset_variables(ds, variables=raw_vars, levels=self.levels)
+
+        # 2. Temporal subset
+        log.debug("Applying temporal subset for years=%s...", self.years)
+        ds = ds.isel(time=ds.time.dt.year.isin(self.years))
+        log.info(
+            "ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0)
+        )
+
+        # 3. Spatial subset
         log.info("Applying spatial subset: domain_extent=%s", self.domain_extent)
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
         lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
@@ -306,29 +326,10 @@ class ERA5PredictorConfig:
             ds.longitude.shape,
         )
 
-        # Temporal subset: keep only the requested years
-        log.debug("Applying temporal subset for years=%s...", self.years)
-        ds = ds.isel(time=ds.time.dt.year.isin(self.years))
-        log.info(
-            "ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0)
-        )
+        # 4. Stack surface + pressure levels
+        result = maybe_stack_variables(ds, variables=raw_vars, levels=self.levels)
 
-        # Partition variables: raw ones are loaded from the store, derived
-        # ones are computed after stacking.
-        raw_vars = tuple(
-            v for v in self.variables if v not in derived_variable_callable_mapping
-        )
-        to_derive = tuple(
-            v for v in self.variables if v in derived_variable_callable_mapping
-        )
-
-        log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
-        result = stack_variables(
-            ds,
-            variables=raw_vars,
-            levels=self.levels,
-        )
-
+        # 5. Derive variables
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
             result = derive_era5_variables(result, to_derive)
