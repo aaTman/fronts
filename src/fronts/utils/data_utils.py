@@ -774,20 +774,20 @@ def normalize_dataset(
         )
 
     if method == "min-max":
-        normalized_ds = (ds_copy - norm_params.sel(param="min")) / (
-            norm_params.sel(param="max") - norm_params.sel(param="min")
-        )
+        p_min = norm_params.sel(param="min")
+        p_max = norm_params.sel(param="max")
+        normalized_ds = (ds_copy - p_min) / (p_max - p_min)
     elif method == "standard":
-        normalized_ds = (ds_copy - norm_params.sel(param="mean")) / norm_params.sel(
-            param="std"
-        )
+        p_mean = norm_params.sel(param="mean")
+        p_std = norm_params.sel(param="std")
+        normalized_ds = (ds_copy - p_mean) / p_std
     elif method == "standard_weighted":
-        normalized_ds = (
-            ds_copy - norm_params.sel(param="mean_weighted")
-        ) / norm_params.sel(param="std_weighted")
+        p_mean = norm_params.sel(param="mean_weighted")
+        p_std = norm_params.sel(param="std_weighted")
+        normalized_ds = (ds_copy - p_mean) / p_std
     else:
         raise ValueError(
-            "Unrecognized normalization method: %s. Valid normalization methods are 'min-max', 'standard', 'standard-weighted'."
+            "Unrecognized normalization method: %s. Valid normalization methods are 'min-max', 'standard', 'standard_weighted'."
             % method
         )
 
@@ -940,15 +940,9 @@ def mask_xarray_dataset(ds, mask, lon="longitude", lat="latitude"):
         regions = regionmask.defined_regions.natural_earth_v5_1_2.ocean_basins_50
         indices = ocean_basins[mask]
 
-    region_mask = xr.merge(
-        [
-            (regions.mask(ds[lon], ds[lat]) == i).expand_dims(
-                {"index": np.atleast_1d(i)}
-            )
-            for i in indices
-        ]
-    ).max("index")["mask"]
-    masked_ds = ds.where(region_mask, 1, 0)
+    base_mask = regions.mask(ds[lon], ds[lat])
+    region_mask = base_mask.isin(indices)
+    masked_ds = ds.where(region_mask, other=0)
 
     if region_crosses_prime_meridian:
         lons = masked_ds[lon]

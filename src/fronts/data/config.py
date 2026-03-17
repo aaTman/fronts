@@ -13,6 +13,7 @@ import datetime
 import logging
 from typing import Literal
 
+import numpy as np
 import tensorflow as tf
 import xarray as xr
 
@@ -200,15 +201,22 @@ class DataConfig:
             fronts_ds = self.target_config.build()
             log.info("  Fronts dataset ready: %d timestep(s).", len(fronts_ds.time))
 
-            # Spatially subset fronts to ERA5 grid.
-            # ERA5 (ARCO) uses 0-360 longitude; front files may use -180/180.
+            # Align on time only — avoid xr.align which merges all dims
+            # (lat/lon grids differ between ERA5 and fronts, creating a huge graph).
             era5_lats = inputs_da.latitude.values
             era5_lons = inputs_da.longitude.values
+            common_times = np.intersect1d(fronts_ds.time.values, inputs_da.time.values)
+            if len(common_times) == 0:
+                raise RuntimeError(
+                    f"No common timesteps between ERA5 and fronts for years={years}. "
+                    f"Check time coordinate dtypes: ERA5={inputs_da.time.dtype}, "
+                    f"fronts={fronts_ds.time.dtype}"
+                )
 
-            # Subset fronts to common times, select ERA5 spatial grid, extract identifier
-            fronts_aligned, inputs_aligned = xr.align(fronts_ds, inputs_da)
+            inputs_aligned = inputs_da.sel(time=common_times)
             fronts_da = (
-                fronts_aligned["identifier"]
+                fronts_ds["identifier"]
+                .sel(time=common_times)
                 .sel(
                     latitude=era5_lats,
                     longitude=era5_lons,
@@ -249,7 +257,7 @@ class DataConfig:
 
             tf_ds = batch.create_dataloader(
                 inputs=inputs_aligned,
-                targets=fronts_aligned,
+                targets=fronts_da,
                 input_sizes=input_sizes,
                 target_sizes=target_sizes,
                 preload_batch=False,
@@ -342,33 +350,6 @@ class PredictConfig:
         )
         log.debug("Zarr store opened.")
 
-        # Spatial subset
-        log.debug("Applying spatial subset...")
-        bbox = data_utils.convert_domain_extent_to_bounding_box(
-            self.era5_config.domain_extent
-        )
-        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
-        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
-        ds = ds.sel(
-            latitude=slice(bbox.lat_max, bbox.lat_min),
-            longitude=slice(lon_min, lon_max),
-        )
-
-        # Time selection
-        log.debug("Applying time selection: %s", self.time_selection)
-        if len(self.time_selection) == 1:
-            ds = ds.sel(time=self.time_selection[0])
-        elif len(self.time_selection) == 2:
-            ds = ds.sel(
-                time=slice(self.time_selection[0], self.time_selection[1]),
-                method="nearest",
-            )
-        else:
-            raise ValueError(f"Invalid time selection: {self.time_selection}")
-        log.info(
-            "Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0)
-        )
-
         # Partition variables into raw (load) and derived (compute).
         raw_vars = [
             v
@@ -381,13 +362,45 @@ class PredictConfig:
             if v in era5.derived_variable_callable_mapping
         ]
 
+        # 1. Variable subset (cheapest — narrows the graph immediately)
+        log.debug("Subsetting variables=%s at levels=%s...", raw_vars, self.era5_config.levels)
+        ds = era5.subset_variables(ds, variables=raw_vars, levels=self.era5_config.levels)
+
+        # 2. Time subset
+        log.debug("Applying time selection: %s", self.time_selection)
+        if len(self.time_selection) == 1:
+            ds = ds.sel(time=[self.time_selection[0]])
+        elif len(self.time_selection) == 2:
+            ds = ds.sel(
+                time=slice(self.time_selection[0], self.time_selection[1]),
+            )
+        else:
+            raise ValueError(f"Invalid time selection: {self.time_selection}")
+        log.info(
+            "Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0)
+        )
+
+        # 3. Spatial subset
+        log.debug("Applying spatial subset...")
+        bbox = data_utils.convert_domain_extent_to_bounding_box(
+            self.era5_config.domain_extent
+        )
+        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
+        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
+        ds = ds.sel(
+            latitude=slice(bbox.lat_max, bbox.lat_min),
+            longitude=slice(lon_min, lon_max),
+        )
+
+        # 4. Stack surface + pressure levels
         log.debug("Stacking raw variables=%s...", raw_vars)
-        stacked = era5.stack_variables(
+        stacked = era5.maybe_stack_variables(
             ds,
             variables=raw_vars,
             levels=self.era5_config.levels,
         )
 
+        # 5. Derive variables
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
             stacked = era5.derive_era5_variables(stacked, to_derive)

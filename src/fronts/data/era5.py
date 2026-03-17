@@ -391,24 +391,22 @@ def subset_arco_era5(
     if variables_to_postprocess:
         variables = [var for var in variables if var not in variables_to_postprocess]
 
-    if not any(
-        [
-            n
-            for n in variables_to_postprocess
-            if n in derived_variable_callable_mapping.keys()
-        ]
-    ):
+    unknown = [
+        n
+        for n in variables_to_postprocess
+        if n not in derived_variable_callable_mapping
+    ]
+    if unknown:
         raise ValueError(
-            f"Variables {variables_to_postprocess} not found in dataset and no "
+            f"Variables {unknown} not found in dataset and no "
             "post-processing functions available for them."
         )
-    subset_ds = ds[variables]
-    subset_ds = subset_ds.sel(
+    subset_ds = ds[variables].sel(
         latitude=slice(bounding_box.lat_max, bounding_box.lat_min),
         longitude=slice(bounding_box.lon_min, bounding_box.lon_max),
+        time=slice(start_date, end_date),
+        level=levels,
     )
-    subset_ds = subset_ds.sel(time=slice(start_date, end_date))
-    subset_ds = subset_ds.sel(level=levels)
     return subset_ds
 
 
@@ -450,12 +448,9 @@ def build_era5_derived_variables(
     raw_vars = [v for v in variables if v not in derived_variable_callable_mapping]
     to_derive = [v for v in variables if v in derived_variable_callable_mapping]
 
-    log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, levels)
-    result = stack_variables(
-        ds,
-        variables=raw_vars,
-        levels=levels,
-    )
+    log.debug("Subsetting raw variables=%s at levels=%s...", raw_vars, levels)
+    result = subset_variables(ds, variables=raw_vars, levels=levels)
+    result = maybe_stack_variables(result, variables=raw_vars, levels=levels)
 
     if to_derive:
         log.info("Deriving variables: %s", to_derive)
