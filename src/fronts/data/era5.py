@@ -32,81 +32,109 @@ SURFACE_ONLY_VARIABLES: set[str] = {
 }
 
 
-def stack_variables(
+def subset_variables(
     ds: xr.Dataset,
     variables: Sequence[str],
     levels: Sequence[int],
 ) -> xr.Dataset:
-    """Stacks ERA5 variables into a unified Dataset with a mixed level coordinate.
+    """Subset ERA5 variables from *ds* at the requested levels.
 
-    The ``levels`` list may contain ``1013`` and/or hPa
-    values (e.g. ``[1013, 1000, 950, 900, 850]``).  The function handles
-    three categories of variable automatically:
+    Collects the appropriate variable names (mapping surface counterparts via
+    :data:`SURFACE_VARIABLE_MAP` and checking :data:`SURFACE_ONLY_VARIABLES`)
+    and returns a single ``ds[var_names].sel(level=pressure_levels)`` slice.
 
-    * **Pressure-level-only** — the variable exists only on pressure levels in
-      the zarr store (e.g. ``"specific_humidity"``).  These are selected at the
-      requested integer levels.
-    * **Mixed surface + pressure** — the variable has both a surface counterpart
-      (looked up via :data:`SURFACE_VARIABLE_MAP`) and pressure-level data.
-      When ``1013`` is in ``levels`` the surface array is prepended; the
-      result has a level coordinate of the form ``[1013, 1000, 950, ...]``.
-    * **Surface-only** — the variable name appears in :data:`SURFACE_ONLY_VARIABLES`
-      *or* is not found as a pressure-level variable in the store.  It is
-      included with ``level=[1013]`` whenever ``1013`` is in ``levels``.
+    No stacking or concatenation along ``level`` is performed here; use
+    :func:`maybe_stack_variables` afterwards to unify the level dimension.
 
     Args:
         ds: An xarray Dataset already subsetted spatially and temporally.
-        variables: Canonical variable names to include.  Use pressure-level names
-            (e.g. ``"temperature"``) for mixed/pressure variables; use the full
-            surface name (e.g. ``"mean_sea_level_pressure"``) for surface-only ones.
-        levels: Ordered list of levels to select.  May include the string
-            ``1013`` and/or integer hPa values.
-
-    Returns an xarray Dataset with a unified ``"level"`` coordinate whose values
-    are a mix of the string ``1013`` and integer hPa values.
+        variables: Canonical variable names to include.
+        levels: Ordered list of levels.  May include ``1013`` and/or integer
+            hPa values.
     """
     include_surface = 1013 in levels
     pressure_levels = [lv for lv in levels if lv != 1013]
 
-    result_datasets: list[xr.Dataset] = []
-
+    var_names: list[str] = []
     for var in variables:
         surface_var_name = SURFACE_VARIABLE_MAP.get(var)
         is_surface_only = var in SURFACE_ONLY_VARIABLES
 
         if is_surface_only:
-            # Surface-only variable: always has level=[1013]
             if include_surface:
-                da_sfc = ds[var].expand_dims({"level": [1013]})
-                result_datasets.append(da_sfc.to_dataset(name=var))
+                var_names.append(var)
         elif surface_var_name is not None:
-            # Mixed variable: has a surface counterpart + pressure levels
             if pressure_levels:
-                da_pl = ds[var].sel(level=pressure_levels)
-            else:
-                da_pl = None
-
+                var_names.append(var)
             if include_surface and surface_var_name in ds:
-                da_sfc = ds[surface_var_name].expand_dims({"level": [1013]})
-                if da_pl is not None:
-                    da = xr.concat([da_sfc, da_pl], dim="level")
-                else:
-                    da = da_sfc
-            else:
-                if da_pl is not None:
-                    da = da_pl
-                else:
-                    continue  # nothing to add
-
-            result_datasets.append(da.to_dataset(name=var))
+                var_names.append(surface_var_name)
         else:
-            # Pressure-level-only variable
             if pressure_levels:
-                da_pl = ds[var].sel(level=pressure_levels)
-                result_datasets.append(da_pl.to_dataset(name=var))
+                var_names.append(var)
 
-    stacked_ds = xr.merge(result_datasets, join="outer")
-    return stacked_ds
+    result = ds[var_names]
+    if pressure_levels:
+        result = result.sel(level=pressure_levels)
+    return result
+
+
+def maybe_stack_variables(
+    ds: xr.Dataset,
+    variables: Sequence[str],
+    levels: Sequence[int],
+) -> xr.Dataset:
+    """Stack surface and pressure-level arrays into a unified ``level`` dim.
+
+    Only performed when ``1013`` is in *levels*.  Surface arrays are given
+    ``level=[1013]`` and concatenated with their pressure-level counterparts
+    so every variable shares a single ``level`` coordinate.
+
+    If ``1013`` is **not** in *levels* the dataset is returned unchanged.
+
+    Args:
+        ds: Dataset returned by :func:`subset_variables`.
+        variables: The same canonical variable list passed to
+            :func:`subset_variables`.
+        levels: Ordered list of levels (may include ``1013``).
+    """
+    if 1013 not in levels:
+        return ds
+
+    result: dict[str, xr.DataArray] = {}
+    for var in variables:
+        surface_var_name = SURFACE_VARIABLE_MAP.get(var)
+        is_surface_only = var in SURFACE_ONLY_VARIABLES
+
+        if is_surface_only:
+            if var in ds:
+                result[var] = ds[var].expand_dims({"level": [1013]})
+        elif surface_var_name is not None:
+            pieces: list[xr.DataArray] = []
+            if surface_var_name in ds:
+                pieces.append(ds[surface_var_name].expand_dims({"level": [1013]}))
+            if var in ds and "level" in ds[var].dims:
+                pieces.append(ds[var])
+            if pieces:
+                result[var] = xr.concat(pieces, dim="level") if len(pieces) > 1 else pieces[0]
+        else:
+            if var in ds:
+                result[var] = ds[var]
+
+    return xr.Dataset(result)
+
+
+def stack_variables(
+    ds: xr.Dataset,
+    variables: Sequence[str],
+    levels: Sequence[int],
+) -> xr.Dataset:
+    """Subset and stack ERA5 variables into a unified Dataset.
+
+    Convenience wrapper that calls :func:`subset_variables` followed by
+    :func:`maybe_stack_variables`.
+    """
+    subsetted = subset_variables(ds, variables, levels)
+    return maybe_stack_variables(subsetted, variables, levels)
 
 
 # Maps ARCO variable names to the legacy short-name prefixes used as keys
