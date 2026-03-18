@@ -115,7 +115,9 @@ def maybe_stack_variables(
             if var in ds and "level" in ds[var].dims:
                 pieces.append(ds[var])
             if pieces:
-                result[var] = xr.concat(pieces, dim="level") if len(pieces) > 1 else pieces[0]
+                result[var] = (
+                    xr.concat(pieces, dim="level") if len(pieces) > 1 else pieces[0]
+                )
         else:
             if var in ds:
                 result[var] = ds[var]
@@ -343,7 +345,12 @@ class ERA5PredictorConfig:
 
 def load_arco_era5(
     store: str = ARCO_ERA5_GCP_URI,
-    chunks: dict[str, int] | str = {"time": 1, "latitude": 90, "longitude": 180, "level": -1},
+    chunks: dict[str, int] | str = {
+        "time": 1,
+        "latitude": 90,
+        "longitude": 180,
+        "level": -1,
+    },
     consolidated: bool = True,
 ):
     """Opens the Google ARCO ERA5 analysis-ready dataset as an xarray Dataset.
@@ -410,7 +417,9 @@ def subset_arco_era5(
     return subset_ds
 
 
-def derive_era5_variables(ds: xr.Dataset, derived_variables: Sequence[str]) -> xr.Dataset:
+def derive_era5_variables(
+    ds: xr.Dataset, derived_variables: Sequence[str]
+) -> xr.Dataset:
     """Compute derived meteorological variables and add them to the dataset.
 
     Variables are computed in the order given.  Dependencies must appear

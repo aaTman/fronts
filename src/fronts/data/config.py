@@ -363,8 +363,12 @@ class PredictConfig:
         ]
 
         # 1. Variable subset (cheapest — narrows the graph immediately)
-        log.debug("Subsetting variables=%s at levels=%s...", raw_vars, self.era5_config.levels)
-        ds = era5.subset_variables(ds, variables=raw_vars, levels=self.era5_config.levels)
+        log.debug(
+            "Subsetting variables=%s at levels=%s...", raw_vars, self.era5_config.levels
+        )
+        ds = era5.subset_variables(
+            ds, variables=raw_vars, levels=self.era5_config.levels
+        )
 
         # 2. Time subset
         log.debug("Applying time selection: %s", self.time_selection)

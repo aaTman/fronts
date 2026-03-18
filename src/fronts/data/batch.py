@@ -65,7 +65,9 @@ def create_dataloader(
         preload_batch=preload_batch,  # Load each batch dynamically
     )
     y_bgen = xb.BatchGenerator(
-        targets, input_dims=target_sizes, preload_batch=preload_batch  # type: ignore[arg-type]
+        targets,
+        input_dims=target_sizes,
+        preload_batch=preload_batch,  # type: ignore[arg-type]
     )
 
     # Use xbatcher's MapDataset to wrap the generators
