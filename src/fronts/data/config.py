@@ -182,9 +182,7 @@ class DataConfig:
             )
 
             # Ensure all variables are consistently dask-backed before stacking.
-            inputs_ds = inputs_ds.chunk(
-                {"time": 1, "latitude": 90, "longitude": 180, "level": -1}
-            )
+            inputs_ds = inputs_ds.chunk({"time": 1})
 
             # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
             inputs_da = inputs_ds.to_array(dim="variable")
@@ -243,14 +241,14 @@ class DataConfig:
             )
 
             input_sizes = {
-                "time": 1,
+                "time": 64,
                 "latitude": lat_size,
                 "longitude": lon_size,
                 "level": n_levels,
                 "variable": n_vars,
             }
             target_sizes = {
-                "time": 1,
+                "time": 64,
                 "latitude": lat_size,
                 "longitude": lon_size,
             }
@@ -263,14 +261,14 @@ class DataConfig:
                 preload_batch=False,
             )
 
-            # Squeeze time=1 dim and one-hot encode targets
-            def squeeze_and_encode(x, y):
-                x = tf.squeeze(x, axis=0)  # (1,lat,lon,level,var) → (lat,lon,level,var)
-                y = tf.squeeze(y, axis=0)  # (1,lat,lon) → (lat,lon)
-                y = tf.one_hot(tf.cast(y, tf.int32), depth=self.num_classes)
-                return x, y
+            # # Squeeze time=1 dim and one-hot encode targets
+            # def squeeze_and_encode(x, y):
+            #     x = tf.squeeze(x, axis=0)  # (1,lat,lon,level,var) → (lat,lon,level,var)
+            #     y = tf.squeeze(y, axis=0)  # (1,lat,lon) → (lat,lon)
+            #     y = tf.one_hot(tf.cast(y, tf.int32), depth=self.num_classes)
+            #     return x, y
 
-            tf_ds = tf_ds.map(squeeze_and_encode, num_parallel_calls=tf.data.AUTOTUNE)
+            # tf_ds = tf_ds.map(squeeze_and_encode, num_parallel_calls=tf.data.AUTOTUNE)
 
             log.info("  tf.data.Dataset ready for years=%s.", years)
             return tf_ds
@@ -279,7 +277,7 @@ class DataConfig:
         train_ds = _build_split(self.train_years)
         if self.shuffle:
             log.debug("Shuffling train dataset.")
-            train_ds = train_ds.shuffle(buffer_size=1000)
+            train_ds = train_ds.shuffle(buffer_size=64)
 
         log.info("Building val split...")
         val_tf_ds = _build_split(self.val_years)
