@@ -18,7 +18,7 @@ import tensorflow as tf
 import xarray as xr
 
 from fronts.data import batch, era5, targets
-from fronts.utils import data_utils
+from fronts.utils import calc, data_utils
 
 log = logging.getLogger("fronts.data.config")
 
@@ -147,7 +147,7 @@ class DataConfig:
     num_classes: int
     shuffle: bool
     normalization_method: str
-    era5_config: era5.ERA5PredictorConfig
+    era5_config: era5.ERA5Config
     target_config: targets.TargetDataConfig
     augmentation_config: AugmentationConfig | None
 
@@ -325,7 +325,7 @@ class PredictConfig:
             "standard".
     """
 
-    era5_config: era5.ERA5PredictorConfig
+    era5_config: era5.ERA5Config
     time_selection: list[datetime.datetime]
     normalization_method: Literal["standard", "standard_weighted", "min-max"]
 
@@ -341,9 +341,10 @@ class PredictConfig:
         log.info(
             "PredictConfig.build() — opening zarr store: %s", self.era5_config.store
         )
-        ds = xr.open_zarr(
-            store=self.era5_config.store,
-            chunks=self.era5_config.chunks,
+        ds = xr.open_dataset(
+            self.era5_config.store,
+            chunks=None,
+            engine='zarr',
             consolidated=self.era5_config.consolidated,
         )
         log.debug("Zarr store opened.")
@@ -352,12 +353,12 @@ class PredictConfig:
         raw_vars = [
             v
             for v in self.era5_config.variables
-            if v not in era5.derived_variable_callable_mapping
+            if v not in calc.derived_variable_callable_mapping
         ]
         to_derive = [
             v
             for v in self.era5_config.variables
-            if v in era5.derived_variable_callable_mapping
+            if v in calc.derived_variable_callable_mapping
         ]
 
         # 1. Variable subset (cheapest — narrows the graph immediately)

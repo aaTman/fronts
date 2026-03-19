@@ -339,7 +339,8 @@ class ERA5Config:
             self.years
         )
 
-
+        # 3. Derive if needed
+        ds = maybe_derive_variables(ds, self.variables)
 
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s",

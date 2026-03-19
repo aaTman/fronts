@@ -1,5 +1,27 @@
 import numpy as np
 
+ARCO_ERA5_GCP_URI = (
+    "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+)
+
+SURFACE_VARIABLE_MAP: dict[str, str] = {
+    "temperature": "2m_temperature",
+    "u_component_of_wind": "10m_u_component_of_wind",
+    "v_component_of_wind": "10m_v_component_of_wind",
+    "dewpoint_temperature": "2m_dewpoint_temperature",
+    "specific_humidity": "surface_specific_humidity",
+}
+
+# Variables that exist only at the surface (no pressure-level equivalent)
+# These are included in the output whenever 1013 is in the levels list
+SURFACE_ONLY_VARIABLES: set[str] = {
+    "mean_sea_level_pressure",
+    "total_precipitation",
+    "sea_surface_temperature",
+    "skin_temperature",
+    "10m_wind_speed",
+}
+
 # [min, max, mean, std, mean (lat weighted), std (lat weighted)]
 NORMALIZATION_PARAMS = dict()
 # Surface-level parameters (min/max from AIES-D-24-0043; mean/std approximated from 1000 hPa)
