@@ -73,9 +73,30 @@ def subset_variables(
                 var_names.append(var)
 
     log.info("variables: %s", var_names)
-    result = ds[var_names]
+    ds_var_list = list(ds.data_vars)
+    var_names_subset = [variable for variable in var_names if variable in ds_var_list]
+    result = ds[var_names_subset]
     return result
 
+def maybe_derive_variables(
+    ds: xr.Dataset, variables: Sequence[str]
+) -> xr.Dataset:
+    """Compute derived meteorological variables and add them to the dataset.
+
+    Variables are computed in the order given.  Dependencies must appear
+    earlier in the list (e.g. "dewpoint" before "virtual_temperature").
+
+    Args:
+        ds: Stacked xr.Dataset with raw ERA5 variables.
+        variables: Ordered list of variable names. Valid names are keys of 
+            DERIVED_VARIABLE_REGISTRY.
+    """
+    for name in variables:
+        fn = calc.derived_variable_callable_mapping.get(name, None)
+        if fn:
+            log.info("Deriving %s...", name)
+            ds[name] = fn(ds)
+    return ds
 
 def maybe_stack_variables(
     ds: xr.Dataset,
@@ -292,22 +313,17 @@ class ERA5Config:
         )
         log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
-        # Partition variables: raw ones are loaded from the store, derived
-        # ones are computed after stacking.
-        raw_vars = tuple(
-            v for v in self.variables if v not in calc.derived_variable_callable_mapping
-        )
-        to_derive = tuple(
-            v for v in self.variables if v in calc.derived_variable_callable_mapping
-        )
-
         # 1. Variable subset
-        log.debug("Subsetting variables=%s at levels=%s...", raw_vars, self.levels)
-        ds = subset_variables(ds, variables=raw_vars, levels=self.levels)
+        log.debug(
+            "Subsetting variables=%s at levels=%s...", 
+            self.variables, 
+            self.levels
+            )
+        ds = subset_variables(ds, variables=self.variables, levels=self.levels)
 
 
 
-        # 3. Spatiotemporal subset
+        # 2. Spatiotemporal subset
         log.info("Applying spatiotemporal subset: domain_extent=%s, years=%s", self.domain_extent, self.years)
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
         lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
