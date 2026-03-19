@@ -78,9 +78,8 @@ def subset_variables(
     result = ds[var_names_subset]
     return result
 
-def maybe_derive_variables(
-    ds: xr.Dataset, variables: Sequence[str]
-) -> xr.Dataset:
+
+def maybe_derive_variables(ds: xr.Dataset, variables: Sequence[str]) -> xr.Dataset:
     """Compute derived meteorological variables and add them to the dataset.
 
     Variables are computed in the order given.  Dependencies must appear
@@ -88,7 +87,7 @@ def maybe_derive_variables(
 
     Args:
         ds: Stacked xr.Dataset with raw ERA5 variables.
-        variables: Ordered list of variable names. Valid names are keys of 
+        variables: Ordered list of variable names. Valid names are keys of
             DERIVED_VARIABLE_REGISTRY.
     """
     for name in variables:
@@ -97,6 +96,7 @@ def maybe_derive_variables(
             log.info("Deriving %s...", name)
             ds[name] = fn(ds)
     return ds
+
 
 def maybe_stack_variables(
     ds: xr.Dataset,
@@ -308,35 +308,37 @@ class ERA5Config:
         ds = xr.open_dataset(
             self.store,
             chunks=None,
-            engine='zarr',
-            backend_kwargs={'storage_options': {'anon': True}}
+            engine="zarr",
+            backend_kwargs={"storage_options": {"anon": True}},
         )
         log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
         # 1. Variable subset
         log.debug(
-            "Subsetting variables=%s at levels=%s...", 
-            self.variables, 
-            self.levels
-            )
+            "Subsetting variables=%s at levels=%s...", self.variables, self.levels
+        )
         ds = subset_variables(ds, variables=self.variables, levels=self.levels)
 
-
-
         # 2. Spatiotemporal subset
-        log.info("Applying spatiotemporal subset: domain_extent=%s, years=%s", self.domain_extent, self.years)
+        log.info(
+            "Applying spatiotemporal subset: domain_extent=%s, years=%s",
+            self.domain_extent,
+            self.years,
+        )
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
         lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
         lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
-        ds = ds.sel(time=str(self.years),
+        ds = ds.sel(
+            time=str(self.years),
             latitude=slice(bbox.lat_max, bbox.lat_min),
             longitude=slice(lon_min, lon_max),
+            level=self.levels,
         )
         log.debug(
             "Spatiotemporal subset done. lat shape=%s, lon shape=%s, years=%s",
             ds.latitude.shape,
             ds.longitude.shape,
-            self.years
+            self.years,
         )
 
         # 3. Derive if needed
@@ -347,8 +349,6 @@ class ERA5Config:
             list(ds.data_vars),
         )
         return ds
-
-
 
 
 def subset_arco_era5(
