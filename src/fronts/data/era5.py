@@ -1,10 +1,10 @@
 import dataclasses
 import datetime
 import logging
-from typing import Sequence
-
+from typing import Sequence, Literal, Callable
+import icechunk
 import xarray as xr
-
+import zarr
 from fronts.utils import calc, constants, data_utils
 
 log = logging.getLogger("fronts.data.era5")
@@ -248,22 +248,7 @@ def normalize_legacy_arco_era5(
 
 @dataclasses.dataclass
 class ERA5Config:
-    """Configuration for loading and stacking ERA5 predictor variables.
-
-    Variables are specified as a single ``variables`` list using canonical
-    (pressure-level) names.  The ``levels`` list controls which vertical levels
-    are loaded and may contain the string ``1013`` in addition to integer
-    hPa values.
-
-    When ``1013`` appears in ``levels``, the module-level
-    :data:`SURFACE_VARIABLE_MAP` is consulted to find each variable's surface
-    counterpart (e.g. ``"temperature"`` → ``"2m_temperature"``).  Variables
-    listed in :data:`SURFACE_ONLY_VARIABLES` (e.g. ``"mean_sea_level_pressure"``)
-    are included with ``level=[1013]`` automatically.
-
-    The resulting xarray Dataset has a unified ``"level"`` coordinate whose
-    values are a mix of the string ``1013`` and integer hPa values,
-    following the convention used throughout the codebase.
+    """Configuration to load ERA5 from the ARCO ERA5 store (ideally).
 
     Attributes:
         domain_extent: [lon_min, lon_max, lat_min, lat_max] geographic extent.
@@ -276,9 +261,9 @@ class ERA5Config:
             appear first (e.g. ``"dewpoint"`` before ``"virtual_temperature"``).
         levels: Ordered list of levels to include.  May contain ``1013``
             and/or integer hPa values, e.g. ``[1013, 1000, 950, 900, 850]``
-            or ``[1000, 900, 750]``.
-        years: Years to select data from. Typically injected by DataConfig.build()
-            via dataclasses.replace() rather than set directly in YAML.
+            or ``[1000, 900, 750]``. 1013 refers to surface variables in the
+            scenario that stacking them into the pressure-level variables is
+            desired.
         store: URI of the zarr store to open.
         chunks: Chunk sizes for lazy loading, e.g. {"time": 48}.
         consolidated: Whether to use consolidated zarr metadata.
@@ -289,7 +274,6 @@ class ERA5Config:
     levels: list[int]
     store: str
     consolidated: bool
-    years: list[int]
 
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
@@ -323,7 +307,6 @@ class ERA5Config:
         log.info(
             "Applying spatiotemporal subset: domain_extent=%s, years=%s",
             self.domain_extent,
-            self.years,
         )
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
         lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
@@ -341,9 +324,6 @@ class ERA5Config:
             self.years,
         )
 
-        # 3. Derive if needed
-        ds = maybe_derive_variables(ds, self.variables)
-
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s",
             list(ds.data_vars),
@@ -351,44 +331,62 @@ class ERA5Config:
         return ds
 
 
-def subset_arco_era5(
-    ds: xr.Dataset,
-    variables: list[str],
-    start_date: datetime.datetime,
-    end_date: datetime.datetime,
-    bounding_box: data_utils.BoundingBox,
-    levels: list[int],
-):
-    """Subsets the ARCO ERA5 dataset by variables, specific time range, and geographic bounding box.
+def create_icechunk_session(icechunk_path: str):
+    # Initialize local storage
+    local_storage = icechunk.local_filesystem_storage(icechunk_path)
+    # Build the RepositoryConfig with default config settings
+    config = icechunk.RepositoryConfig.default()
 
-    Args:
-        ds: The input xarray Dataset containing the ARCO ERA5 data.
-        variables: A list of variable names to subset from the dataset.
-        start_date: The start date of the time range to subset (inclusive).
-        end_date: The end date of the time range to subset (inclusive).
-        bounding_box: A BoundingBox named tuple defining the geographic bounding box
-            for subsetting. Defaults to a bounding box covering the contiguous United
-            States.
-        levels: A list of pressure levels to subset from the dataset.
-    """
-    variables_to_postprocess = [var for var in variables if var not in ds.data_vars]
-    if variables_to_postprocess:
-        variables = [var for var in variables if var not in variables_to_postprocess]
+    # Create icechunk repository and session using "main" branch
+    repo = icechunk.Repository.create(local_storage, config)
+    session = repo.writable_session("main")
 
-    unknown = [
-        n
-        for n in variables_to_postprocess
-        if n not in calc.derived_variable_callable_mapping
-    ]
-    if unknown:
-        raise ValueError(
-            f"Variables {unknown} not found in dataset and no "
-            "post-processing functions available for them."
+    return session
+
+
+@dataclasses.dataclass
+class ERA5IcechunkConfig:
+    """Configuration for processing ARCO ERA5 to an icechunk store."""
+
+    era5_config: ERA5Config
+    repo_name: str
+    group: Literal["raw", "derived", "raw_and_derived_normalized"]
+    start_date: datetime.datetime
+    end_date: datetime.datetime
+
+    def generate(self):
+        """Process and generate the icechunk store and group."""
+        self.era5 = self.era5_config.build(
+            start_date=self.start_date, end_date=self.end_date
         )
-    subset_ds = ds[variables].sel(
-        latitude=slice(bounding_box.lat_max, bounding_box.lat_min),
-        longitude=slice(bounding_box.lon_min, bounding_box.lon_max),
-        time=slice(start_date, end_date),
-        level=levels,
-    )
-    return subset_ds
+        self.generate_icechunk_store(
+            self.era5, repo_name=self.repo_name, group=self.group
+        )
+
+    def arco_era5_to_raw_group(self, session: icechunk.Session) -> icechunk.Session:
+        store = session.store
+        group = zarr.group(store=store, path="raw", overwrite=True)
+        return group
+
+    def raw_group_to_derived_group(self, session: icechunk.Session) -> icechunk.Session:
+        pass
+
+    def raw_and_derived_to_normalized_group(
+        self, session: icechunk.Session
+    ) -> icechunk.Session:
+        pass
+
+    def generate_icechunk_store(
+        self,
+        repo_name: str,
+        group: Literal["raw", "derived", "raw_and_derived_normalized"],
+    ):
+        group_callable_mapping: dict[str, Callable] = {
+            "raw": self.arco_era5_to_raw_group,
+            "derived": self.raw_group_to_derived_group,
+            "raw_and_derived_normalized": self.raw_and_derived_to_normalized_group,
+        }
+
+        session = create_icechunk_session(self.repo_name)
+        fork_session = session.fork()
+        group_callable_mapping[group](fork_session)

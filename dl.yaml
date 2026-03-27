@@ -23,14 +23,14 @@ era5_config:
     - "v_component_of_wind" # raw — surface: 10m_v_component_of_wind
     - "geopotential" # raw — geopotential (m²/s²)
     - "mean_sea_level_pressure" # raw — surface-only
-    - "dewpoint" # derived — from specific_humidity + pressure
-    - "virtual_temperature" # derived — from temperature + dewpoint + pressure
-    - "relative_humidity" # derived — from temperature + dewpoint
-    - "equivalent_potential_temperature" # derived — from temperature + dewpoint + pressure
-    - "geopotential_height" # derived — geopotential / 98.0665 → dam
+    # - "dewpoint" # derived — from specific_humidity + pressure
+    # - "virtual_temperature" # derived — from temperature + dewpoint + pressure
+    # - "relative_humidity" # derived — from temperature + dewpoint
+    # - "equivalent_potential_temperature" # derived — from temperature + dewpoint + pressure
+    # - "geopotential_height" # derived — geopotential / 98.0665 → dam
   # levels may contain "surface" and/or integer hPa values in any order.
   # 1013 triggers loading of the surface counterpart for each variable.
-  levels: [1013, 1000, 950, 900, 850]
+  levels: [1000, 950, 900, 850]
   store: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
   chunks:
     time: 48

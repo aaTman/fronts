@@ -27,7 +27,7 @@ levels: [1000, 950, 900, 850]
 store: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 consolidated: true
 chunks:
-years: [2008]
+years: 2008
 target_config:
 store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk/"
 file_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
