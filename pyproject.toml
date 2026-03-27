@@ -40,6 +40,7 @@ preview = ["pixi-build"]
 numpy = ">=1.26.4,<2"
 dacite = ">=1.9.2,<2"
 ipykernel = ">=7.2.0,<8"
+dask-jobqueue = ">=0.9.0,<0.10"
 
 [tool.pixi.feature.train]
 platforms = ["linux-64"]
