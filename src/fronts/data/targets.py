@@ -2,12 +2,12 @@ import icechunk
 import xarray as xr
 import dataclasses
 import logging
-from fronts.utils import data_utils
+from fronts.utils import data_utils, calc
 
 log = logging.getLogger("fronts.data.targets")
 
 
-@dataclasses.dataclasses
+@dataclasses.dataclass
 class TargetDataConfig:
     """Dataclass to hold the information about the target data and build it.
 
@@ -17,6 +17,7 @@ class TargetDataConfig:
     """
 
     store_path: str
+    file_path: str
     front_types: str | list[str]
     front_dilation: int
 
@@ -26,32 +27,54 @@ class TargetDataConfig:
         Returns a virtual xarray Dataset of front objects with all timesteps.
         """
 
+        # Set up config and credentials to access virtual store
+        config = icechunk.RepositoryConfig.default()
+
+        # Set the virtual chunk container to the fronts netcdf directory
+        config.set_virtual_chunk_container(
+            icechunk.VirtualChunkContainer(
+                url_prefix=f"file://{self.file_path}",
+                store=icechunk.local_filesystem_store(self.file_path),
+            ),
+        )
+        # Use None for credentials since the local filesystem store does not require
+        # authentication
+        credentials = icechunk.containers_credentials(
+            {f"file://{self.file_path}": None}
+        )
+
         # Open the local store as a read-only session
         local_storage = icechunk.local_filesystem_storage(self.store_path)
-        repo = icechunk.Repository.open(local_storage)
+        repo = icechunk.Repository.open(
+            local_storage,
+            config=config,
+            authorize_virtual_chunk_access=credentials,
+        )
         session = repo.readonly_session("main")
 
         # Open the icechunk store with xarray's open_zarr. Chunks are an empty dict but
         # are (1, 360, 920) which represents one netcdf file of front objects.
         ds = xr.open_zarr(
             session.store,
-            zarr_format=3,
+            zarr_version=3,
             consolidated=False,
-            chunks={},
+            chunks="auto",
         )
-
-        # Reformat the fronts if front_types is specified.
-        if self.front_types is not None:
-            log.debug("Reformatting fronts with front_types=%s...", self.front_types)
-            ds = data_utils.reformat_fronts(ds, self.front_types)
-            log.debug("reformat_fronts complete.")
+        log.info("Opened fronts icechunk store.")
+        log.info("Reformatting fronts with front_types=%s...", self.front_types)
+        ds = data_utils.reformat_fronts(ds, self.front_types)
+        log.info("reformat_fronts complete.")
 
         # Dilate the fronts if set to > 0
         if self.front_dilation > 0:
-            log.debug(
+            log.info(
                 "Expanding fronts with %d dilation iteration(s)...", self.front_dilation
             )
-            ds = data_utils.expand_fronts(ds, iterations=self.front_dilation)
-            log.debug("expand_fronts complete.")
+            ds = calc.maybe_expand_fronts_parallelized(
+                ds, iterations=self.front_dilation
+            )
+            log.info("expand_fronts complete.")
 
+        # Drop duplicates in time dimension if they exist
+        ds = ds.drop_duplicates(dim="time")
         return ds

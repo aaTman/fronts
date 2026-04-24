@@ -11,13 +11,14 @@ methods that return runtime objects, loadable from YAML via dacite.
 import dataclasses
 import datetime
 import logging
-from typing import Any, Literal
+from typing import Literal
+
 import numpy as np
 import tensorflow as tf
 import xarray as xr
 
-from fronts.data import era5, targets
-from fronts.utils import data_utils
+from fronts.data import batch, era5, targets
+from fronts.utils import calc, data_utils
 
 log = logging.getLogger("fronts.data.config")
 
@@ -49,31 +50,51 @@ class AugmentationConfig:
 
         @tf.function
         def augment(x, y):
-            # Latitude flip
+            # Latitude flip — outer check is Python (trace-time); inner uses tf.cond
             if self.flip_chance_lat > 0:
-                if tf.random.uniform(()) <= self.flip_chance_lat:
-                    x = tf.reverse(x, axis=[0])
-                    y = tf.reverse(y, axis=[0])
-                    # Negate v-wind across all levels
+
+                def _do_lat_flip():
+                    _x = tf.reverse(x, axis=[0])
+                    _y = tf.reverse(y, axis=[0])
                     if self.v_wind_index is not None:
-                        n_vars = tf.shape(x)[-1]
+                        n_vars = tf.shape(_x)[-1]
                         sign = tf.where(
                             tf.equal(tf.range(n_vars), self.v_wind_index), -1.0, 1.0
                         )
-                        x = x * tf.cast(sign, x.dtype)
+                        _x = _x * tf.cast(sign, _x.dtype)
+                    return _x, _y
 
-            # Longitude flip
+                def _no_lat_flip():
+                    return x, y
+
+                x, y = tf.cond(
+                    tf.random.uniform(()) <= self.flip_chance_lat,
+                    _do_lat_flip,
+                    _no_lat_flip,
+                )
+
+            # Longitude flip — outer check is Python (trace-time); inner uses tf.cond
             if self.flip_chance_lon > 0:
-                if tf.random.uniform(()) <= self.flip_chance_lon:
-                    x = tf.reverse(x, axis=[1])
-                    y = tf.reverse(y, axis=[1])
-                    # Negate u-wind across all levels
+
+                def _do_lon_flip():
+                    _x = tf.reverse(x, axis=[1])
+                    _y = tf.reverse(y, axis=[1])
                     if self.u_wind_index is not None:
-                        n_vars = tf.shape(x)[-1]
+                        n_vars = tf.shape(_x)[-1]
                         sign = tf.where(
                             tf.equal(tf.range(n_vars), self.u_wind_index), -1.0, 1.0
                         )
-                        x = x * tf.cast(sign, x.dtype)
+                        _x = _x * tf.cast(sign, _x.dtype)
+                    return _x, _y
+
+                def _no_lon_flip():
+                    return x, y
+
+                x, y = tf.cond(
+                    tf.random.uniform(()) <= self.flip_chance_lon,
+                    _do_lon_flip,
+                    _no_lon_flip,
+                )
 
             return x, y
 
@@ -116,7 +137,7 @@ class DataConfig:
         shuffle: Whether to shuffle the training dataset.
         normalization_method: One of "standard", "standard_weighted", "min-max".
         era5: ERA5PredictorConfig defining the predictor variable source.
-        fronts: TargetDataConfig defining the front label source.
+        target_config: TargetDataConfig defining the front label source.
         augmentation_config: AugmentationConfig defining runtime data augmentation.
     """
 
@@ -126,31 +147,31 @@ class DataConfig:
     num_classes: int
     shuffle: bool
     normalization_method: str
-    era5_config: era5.ERA5PredictorConfig
-    fronts: targets.TargetDataConfig
-    augmentation: AugmentationConfig | None
+    era5_config: era5.ERA5Config
+    target_config: targets.TargetDataConfig
+    augmentation_config: AugmentationConfig | None
 
     def build(self) -> ModelTrainingData:
         """Builds train, validation, and test tf.data.Dataset objects.
 
+        Uses xbatcher BatchGenerator via batch.create_dataloader() for efficient
+        lazy-loading from cloud-backed xarray Datasets with prefetching.
+
         Returns ModelTrainingData with train_data, validation_data, and optionally test_data.
         """
-        # --- ERA5 + fronts path ---
         log.info(
-            "DataConfig.build() — using ERA5+fronts path. "
+            "DataConfig.build() — using xbatcher path. "
             "train_years=%s, val_years=%s, test_years=%s",
             self.train_years,
             self.val_years,
             self.test_years,
         )
 
-        def _build_split(years: list[int]) -> Any | None:
-            if not years:
-                return None
+        def _build_split(years: list[int]) -> tf.data.Dataset:
 
             # Build ERA5 predictor dataset for this split
             log.info("  Building ERA5 predictor dataset for years=%s...", years)
-            era5_cfg = dataclasses.replace(self.era5, years=years)
+            era5_cfg = dataclasses.replace(self.era5_config, years=years)
             inputs_ds = era5_cfg.build()
             log.info("  ERA5 dataset ready.")
 
@@ -161,18 +182,9 @@ class DataConfig:
             )
 
             # Ensure all variables are consistently dask-backed before stacking.
-            # xr.merge(join="outer") fills missing coordinate slots (e.g. MSLP at
-            # pressure levels) with numpy NaN rather than dask arrays.  When
-            # to_array() calls dask.stack() on a mix of dask + numpy arrays it
-            # falls through to dask.asarray(chunks="auto"), which triggers a
-            # ZeroDivisionError in auto_chunks on dask 2023.3.x.  Rechunking the
-            # whole Dataset forces every variable into the dask graph with an
-            # explicit chunk spec, so all arrays passed to dask.stack are
-            # consistently chunked dask arrays.
-            inputs_ds = inputs_ds.chunk({"latitude": -1, "longitude": -1, "level": -1})
+            inputs_ds = inputs_ds.chunk({"time": 1})
 
             # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
-            # The model expects (lat, lon, level, variable) per timestep.
             inputs_da = inputs_ds.to_array(dim="variable")
             inputs_da = inputs_da.transpose(
                 "time", "latitude", "longitude", "level", "variable"
@@ -182,56 +194,44 @@ class DataConfig:
                 dict(inputs_da.sizes),
             )
 
-            # Build fronts file index for this split — O(n_files glob) only,
-            # NO netCDF files are opened here.  Timestamps are parsed from
-            # filenames matching FrontObjects_YYYYMMDDHH_full.nc.
-            log.info("  Building fronts file index for years=%s...", years)
-            fronts_cfg = dataclasses.replace(self.fronts, years=years)
-            fronts_index = fronts_cfg.build_index()  # {iso_str: filepath}
-            log.info("  Fronts index ready: %d timestep(s).", len(fronts_index))
+            # Build fronts target dataset (reformat + dilation already applied)
+            log.info("  Building fronts dataset for years=%s...", years)
+            fronts_ds = self.target_config.build()
+            log.info("  Fronts dataset ready: %d timestep(s).", len(fronts_ds.time))
 
-            # Align timestamps: keep only times present in BOTH ERA5 and fronts.
-            # ERA5 is hourly; fronts exist only at analysis times (00Z/06Z/12Z/18Z).
-            # Use ISO second-precision strings as the common key to avoid
-            # numpy datetime64 precision mismatches (zarr uses ns, filenames give s).
-            def _iso(t) -> str:
-                """Truncate a numpy datetime64 scalar to second-precision ISO."""
-                return str(t)[:19]  # "2008-01-01T00:00:00"
-
-            era5_time_map: dict[str, Any] = {_iso(t): t for t in inputs_da.time.values}
-            common_keys = sorted(set(era5_time_map.keys()) & set(fronts_index.keys()))
-            if not common_keys:
-                raise ValueError(
-                    f"No overlapping timestamps between ERA5 and fronts "
-                    f"for years={years}."
+            # Align on time only — avoid xr.align which merges all dims
+            # (lat/lon grids differ between ERA5 and fronts, creating a huge graph).
+            era5_lats = inputs_da.latitude.values
+            era5_lons = inputs_da.longitude.values
+            common_times = np.intersect1d(fronts_ds.time.values, inputs_da.time.values)
+            if len(common_times) == 0:
+                raise RuntimeError(
+                    f"No common timesteps between ERA5 and fronts for years={years}. "
+                    f"Check time coordinate dtypes: ERA5={inputs_da.time.dtype}, "
+                    f"fronts={fronts_ds.time.dtype}"
                 )
-            log.info(
-                "  Timestamp alignment: ERA5=%d, fronts=%d → %d common timesteps.",
-                inputs_da.sizes["time"],
-                len(fronts_index),
-                len(common_keys),
+
+            inputs_aligned = inputs_da.sel(time=common_times)
+            fronts_da = (
+                fronts_ds["identifier"]
+                .sel(time=common_times)
+                .sel(
+                    latitude=era5_lats,
+                    longitude=era5_lons,
+                    method="nearest",
+                )
+                .transpose("time", "latitude", "longitude")
             )
 
-            # Subset ERA5 DataArray to aligned timestamps.
-            aligned_era5_times = [era5_time_map[k] for k in common_keys]
-            inputs_da = inputs_da.sel(time=aligned_era5_times)
-
-            # Build tf.data.Dataset via generator.
-            # For each timestep the generator:
-            #   1. Reads the ERA5 slice (triggers one dask chunk load from zarr).
-            #   2. Opens the corresponding front netCDF file (one file, one timestep).
-            #   3. Applies reformat_fronts + expand_fronts per-file — avoids loading
-            #      all 67k+ files with open_mfdataset at startup.
-            n_times = len(common_keys)
-            lat_size = inputs_da.sizes["latitude"]
-            lon_size = inputs_da.sizes["longitude"]
-            n_levels = inputs_da.sizes["level"]
-            n_vars = inputs_da.sizes["variable"]
+            lat_size = inputs_aligned.sizes["latitude"]
+            lon_size = inputs_aligned.sizes["longitude"]
+            n_levels = inputs_aligned.sizes["level"]
+            n_vars = inputs_aligned.sizes["variable"]
 
             log.info(
-                "  Building tf.data.Dataset from generator: "
+                "  Building xbatcher DataLoader: "
                 "%d timesteps, input=(%d,%d,%d,%d), target=(%d,%d).",
-                n_times,
+                len(fronts_da),
                 lat_size,
                 lon_size,
                 n_levels,
@@ -240,98 +240,67 @@ class DataConfig:
                 lon_size,
             )
 
-            # Coordinate arrays used inside gen() to subset each front file.
-            # inputs_da uses ARCO's 0-360 longitude; front files typically use -180/180.
-            era5_lats = inputs_da.latitude.values  # e.g. [60.0, 59.75, ..., 20.0]
-            era5_lons_360 = inputs_da.longitude.values  # e.g. [220.0, ..., 300.0]
-            era5_lons_180 = np.where(
-                era5_lons_360 > 180, era5_lons_360 - 360, era5_lons_360
-            )  # e.g. [-140.0, ..., -60.0]
+            input_sizes = {
+                "time": 64,
+                "latitude": lat_size,
+                "longitude": lon_size,
+                "level": n_levels,
+                "variable": n_vars,
+            }
+            target_sizes = {
+                "time": 64,
+                "latitude": lat_size,
+                "longitude": lon_size,
+            }
 
-            def gen():
-                for i, iso_key in enumerate(common_keys):
-                    # ERA5 input — isel by position for speed
-                    x = inputs_da.isel(time=i).values.astype("float32")
-
-                    # Front label — open one file, apply transforms, discard
-                    front_ds = xr.open_dataset(fronts_index[iso_key], engine="netcdf4")
-                    if fronts_cfg.front_types is not None:
-                        front_ds = data_utils.reformat_fronts(
-                            front_ds, fronts_cfg.front_types
-                        )
-                    if fronts_cfg.front_dilation > 0:
-                        front_ds = data_utils.expand_fronts(
-                            front_ds, iterations=fronts_cfg.front_dilation
-                        )
-                    # squeeze() removes any degenerate time dim present in some files
-                    identifier = front_ds["identifier"].squeeze(drop=True)
-                    # Front files cover a broader domain than the ERA5 subset.
-                    # Detect the longitude convention used by this file and pick the
-                    # matching ERA5 lon array (0-360 or -180/180).
-                    sel_lons = (
-                        era5_lons_360
-                        if float(identifier.longitude.min()) >= 0
-                        else era5_lons_180
-                    )
-                    identifier = identifier.sel(
-                        latitude=era5_lats,
-                        longitude=sel_lons,
-                        method="nearest",
-                    )
-                    # Guarantee (latitude, longitude) ordering regardless of storage order.
-                    identifier = identifier.transpose("latitude", "longitude")
-                    y = identifier.values.astype("float32")
-                    yield x, y
-
-            tf_ds = tf.data.Dataset.from_generator(
-                gen,
-                output_signature=(
-                    tf.TensorSpec(
-                        shape=(lat_size, lon_size, n_levels, n_vars),
-                        dtype=tf.float32,
-                    ),
-                    tf.TensorSpec(
-                        shape=(lat_size, lon_size),
-                        dtype=tf.float32,
-                    ),
-                ),
+            tf_ds = batch.create_dataloader(
+                inputs=inputs_aligned,
+                targets=fronts_da,
+                input_sizes=input_sizes,
+                target_sizes=target_sizes,
+                preload_batch=False,
             )
 
-            # One-hot encode targets: (lat, lon) int → (lat, lon, num_classes)
-            def encode_targets(x, y):
-                y = tf.one_hot(tf.cast(y, tf.int32), depth=self.num_classes)
-                return x, y
+            # # Squeeze time=1 dim and one-hot encode targets
+            # def squeeze_and_encode(x, y):
+            #     x = tf.squeeze(x, axis=0)  # (1,lat,lon,level,var) → (lat,lon,level,var)
+            #     y = tf.squeeze(y, axis=0)  # (1,lat,lon) → (lat,lon)
+            #     y = tf.one_hot(tf.cast(y, tf.int32), depth=self.num_classes)
+            #     return x, y
 
-            tf_ds = tf_ds.map(encode_targets, num_parallel_calls=tf.data.AUTOTUNE)
+            # tf_ds = tf_ds.map(squeeze_and_encode, num_parallel_calls=tf.data.AUTOTUNE)
 
             log.info("  tf.data.Dataset ready for years=%s.", years)
             return tf_ds
 
         log.info("Building train split...")
         train_ds = _build_split(self.train_years)
-        if self.shuffle and train_ds is not None:
+        if self.shuffle:
             log.debug("Shuffling train dataset.")
-            train_ds = train_ds.shuffle(buffer_size=1000)
+            train_ds = train_ds.shuffle(buffer_size=64)
 
         log.info("Building val split...")
-        val_ds = _build_split(self.val_years)
+        val_tf_ds = _build_split(self.val_years)
 
+        test_ds = None
         if self.test_years:
             log.info("Building test split...")
-        test_ds = _build_split(self.test_years)
+            test_ds = _build_split(self.test_years)
+
+        train_tf_ds = train_ds
         if self.augmentation_config:
             log.info("Building augmentation function...")
             augment_fn = self.augmentation_config.build()
             log.info("Applying augmentation to train dataset...")
-            train_ds = train_ds.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
+            train_tf_ds = train_ds.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
             log.info(
                 "Data augmentation applied to training dataset with config: %s",
                 self.augmentation_config,
             )
         log.info("DataConfig.build() complete.")
         return ModelTrainingData(
-            train_data=train_ds,
-            validation_data=val_ds,
+            train_data=train_tf_ds,
+            validation_data=val_tf_ds,
             test_data=test_ds,
         )
 
@@ -356,7 +325,7 @@ class PredictConfig:
             "standard".
     """
 
-    era5_config: era5.ERA5PredictorConfig
+    era5_config: era5.ERA5Config
     time_selection: list[datetime.datetime]
     normalization_method: Literal["standard", "standard_weighted", "min-max"]
 
@@ -369,32 +338,44 @@ class PredictConfig:
 
         Returns a normalized xarray DataArray ready for model inference.
         """
-        log.info("PredictConfig.build() — opening zarr store: %s", self.era5.store)
-        ds = xr.open_zarr(
-            store=self.era5.store,
-            chunks=self.era5.chunks,
-            consolidated=self.era5.consolidated,
+        log.info(
+            "PredictConfig.build() — opening zarr store: %s", self.era5_config.store
+        )
+        ds = xr.open_dataset(
+            self.era5_config.store,
+            chunks=None,
+            engine='zarr',
+            consolidated=self.era5_config.consolidated,
         )
         log.debug("Zarr store opened.")
 
-        # Spatial subset
-        log.debug("Applying spatial subset...")
-        bbox = data_utils.convert_domain_extent_to_bounding_box(self.era5.domain_extent)
-        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
-        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
-        ds = ds.sel(
-            latitude=slice(bbox.lat_max, bbox.lat_min),
-            longitude=slice(lon_min, lon_max),
+        # Partition variables into raw (load) and derived (compute).
+        raw_vars = [
+            v
+            for v in self.era5_config.variables
+            if v not in calc.derived_variable_callable_mapping
+        ]
+        to_derive = [
+            v
+            for v in self.era5_config.variables
+            if v in calc.derived_variable_callable_mapping
+        ]
+
+        # 1. Variable subset (cheapest — narrows the graph immediately)
+        log.debug(
+            "Subsetting variables=%s at levels=%s...", raw_vars, self.era5_config.levels
+        )
+        ds = era5.subset_variables(
+            ds, variables=raw_vars, levels=self.era5_config.levels
         )
 
-        # Time selection
+        # 2. Time subset
         log.debug("Applying time selection: %s", self.time_selection)
         if len(self.time_selection) == 1:
-            ds = ds.sel(time=self.time_selection[0])
+            ds = ds.sel(time=[self.time_selection[0]])
         elif len(self.time_selection) == 2:
             ds = ds.sel(
                 time=slice(self.time_selection[0], self.time_selection[1]),
-                method="nearest",
             )
         else:
             raise ValueError(f"Invalid time selection: {self.time_selection}")
@@ -402,21 +383,27 @@ class PredictConfig:
             "Time selection done. %d timestep(s) selected.", ds.sizes.get("time", 0)
         )
 
-        # Partition variables into raw (load) and derived (compute).
-        raw_vars = [
-            v for v in self.era5.variables if v not in era5.DERIVED_VARIABLE_REGISTRY
-        ]
-        to_derive = [
-            v for v in self.era5.variables if v in era5.DERIVED_VARIABLE_REGISTRY
-        ]
-
-        log.debug("Stacking raw variables=%s...", raw_vars)
-        stacked = era5.stack_variables(
-            ds,
-            variables=raw_vars,
-            levels=self.era5.levels,
+        # 3. Spatial subset
+        log.debug("Applying spatial subset...")
+        bbox = data_utils.convert_domain_extent_to_bounding_box(
+            self.era5_config.domain_extent
+        )
+        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
+        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
+        ds = ds.sel(
+            latitude=slice(bbox.lat_max, bbox.lat_min),
+            longitude=slice(lon_min, lon_max),
         )
 
+        # 4. Stack surface + pressure levels
+        log.debug("Stacking raw variables=%s...", raw_vars)
+        stacked = era5.maybe_stack_variables(
+            ds,
+            variables=raw_vars,
+            levels=self.era5_config.levels,
+        )
+
+        # 5. Derive variables
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
             stacked = era5.derive_era5_variables(stacked, to_derive)
@@ -435,7 +422,9 @@ class PredictConfig:
         # Rechunk before to_array() for the same reason as _build_split():
         # outer-join merge fills missing levels with numpy NaN; rechunking ensures
         # all variables are consistently dask-backed before dask.stack is called.
-        stacked = stacked.chunk({"latitude": -1, "longitude": -1, "level": -1})
+        stacked = stacked.chunk(
+            {"time": 1, "latitude": 90, "longitude": 180, "level": -1}
+        )
 
         # Convert to 4D DataArray: (time, latitude, longitude, level, variable)
         result = stacked.to_array(dim="variable")

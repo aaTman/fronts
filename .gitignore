@@ -142,3 +142,6 @@ wandb/
 
 # dry run files
 fixtures/
+
+# top level jupyter notebooks
+*.ipynb

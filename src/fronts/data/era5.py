@@ -1,25 +1,17 @@
-import xarray as xr
-
-import datetime
 import dataclasses
-from fronts.utils import calc, data_utils, constants
-from typing import Callable
+import datetime
 import logging
+from typing import Sequence, Literal, Callable
+import icechunk
+import xarray as xr
+import zarr
+from fronts.utils import calc, constants, data_utils
 
 log = logging.getLogger("fronts.data.era5")
 
 ARCO_ERA5_GCP_URI = (
     "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 )
-
-
-DERIVED_VARIABLE_REGISTRY: dict[str, callable] = {
-    "dewpoint": calc.dewpoint,
-    "virtual_temperature": calc.virtual_temperature,
-    "relative_humidity": calc.relative_humidity,
-    "equivalent_potential_temperature": calc.theta_e,
-    "geopotential_height": calc.geopotential_height,
-}
 
 SURFACE_VARIABLE_MAP: dict[str, str] = {
     "temperature": "2m_temperature",
@@ -30,7 +22,7 @@ SURFACE_VARIABLE_MAP: dict[str, str] = {
 }
 
 # Variables that exist only at the surface (no pressure-level equivalent)
-# These are included in the output whenever "surface" is in the levels list
+# These are included in the output whenever 1013 is in the levels list
 SURFACE_ONLY_VARIABLES: set[str] = {
     "mean_sea_level_pressure",
     "total_precipitation",
@@ -40,80 +32,131 @@ SURFACE_ONLY_VARIABLES: set[str] = {
 }
 
 
-def stack_variables(
+def subset_variables(
     ds: xr.Dataset,
-    variables: list[str],
-    levels: list[str | int],
+    variables: Sequence[str],
+    levels: Sequence[int],
 ) -> xr.Dataset:
-    """Stacks ERA5 variables into a unified Dataset with a mixed level coordinate.
+    """Subset ERA5 variables from *ds* at the requested levels.
 
-    The ``levels`` list may contain the string ``"surface"`` and/or integer hPa
-    values (e.g. ``["surface", 1000, 950, 900, 850]``).  The function handles
-    three categories of variable automatically:
+    Collects the appropriate variable names (mapping surface counterparts via
+    :data:`SURFACE_VARIABLE_MAP` and checking :data:`SURFACE_ONLY_VARIABLES`)
+    and returns a single ``ds[var_names].sel(level=pressure_levels)`` slice.
 
-    * **Pressure-level-only** — the variable exists only on pressure levels in
-      the zarr store (e.g. ``"specific_humidity"``).  These are selected at the
-      requested integer levels.
-    * **Mixed surface + pressure** — the variable has both a surface counterpart
-      (looked up via :data:`SURFACE_VARIABLE_MAP`) and pressure-level data.
-      When ``"surface"`` is in ``levels`` the surface array is prepended; the
-      result has a level coordinate of the form ``["surface", 1000, 950, ...]``.
-    * **Surface-only** — the variable name appears in :data:`SURFACE_ONLY_VARIABLES`
-      *or* is not found as a pressure-level variable in the store.  It is
-      included with ``level=["surface"]`` whenever ``"surface"`` is in ``levels``.
+    No stacking or concatenation along ``level`` is performed here; use
+    :func:`maybe_stack_variables` afterwards to unify the level dimension.
 
     Args:
         ds: An xarray Dataset already subsetted spatially and temporally.
-        variables: Canonical variable names to include.  Use pressure-level names
-            (e.g. ``"temperature"``) for mixed/pressure variables; use the full
-            surface name (e.g. ``"mean_sea_level_pressure"``) for surface-only ones.
-        levels: Ordered list of levels to select.  May include the string
-            ``"surface"`` and/or integer hPa values.
-
-    Returns an xarray Dataset with a unified ``"level"`` coordinate whose values
-    are a mix of the string ``"surface"`` and integer hPa values.
+        variables: Canonical variable names to include.
+        levels: Ordered list of levels.  May include ``1013`` and/or integer
+            hPa values.
     """
-    include_surface = "surface" in levels
-    pressure_levels = [lv for lv in levels if lv != "surface"]
+    include_surface = 1013 in levels
+    pressure_levels = [lv for lv in levels if lv != 1013]
 
-    result_datasets: list[xr.Dataset] = []
-
+    var_names: list[str] = []
     for var in variables:
         surface_var_name = SURFACE_VARIABLE_MAP.get(var)
         is_surface_only = var in SURFACE_ONLY_VARIABLES
 
         if is_surface_only:
-            # Surface-only variable: always has level=["surface"]
             if include_surface:
-                da_sfc = ds[var].expand_dims({"level": ["surface"]})
-                result_datasets.append(da_sfc.to_dataset(name=var))
+                var_names.append(var)
         elif surface_var_name is not None:
-            # Mixed variable: has a surface counterpart + pressure levels
             if pressure_levels:
-                da_pl = ds[var].sel(level=pressure_levels)
-            else:
-                da_pl = None
-
+                var_names.append(var)
             if include_surface and surface_var_name in ds:
-                da_sfc = ds[surface_var_name].expand_dims({"level": ["surface"]})
-                if da_pl is not None:
-                    da = xr.concat([da_sfc, da_pl], dim="level")
-                else:
-                    da = da_sfc
-            else:
-                if da_pl is not None:
-                    da = da_pl
-                else:
-                    continue  # nothing to add
-
-            result_datasets.append(da.to_dataset(name=var))
+                var_names.append(surface_var_name)
         else:
-            # Pressure-level-only variable
             if pressure_levels:
-                da_pl = ds[var].sel(level=pressure_levels)
-                result_datasets.append(da_pl.to_dataset(name=var))
+                var_names.append(var)
 
-    return xr.merge(result_datasets, join="outer")
+    log.info("variables: %s", var_names)
+    ds_var_list = list(ds.data_vars)
+    var_names_subset = [variable for variable in var_names if variable in ds_var_list]
+    result = ds[var_names_subset]
+    return result
+
+
+def maybe_derive_variables(ds: xr.Dataset, variables: Sequence[str]) -> xr.Dataset:
+    """Compute derived meteorological variables and add them to the dataset.
+
+    Variables are computed in the order given.  Dependencies must appear
+    earlier in the list (e.g. "dewpoint" before "virtual_temperature").
+
+    Args:
+        ds: Stacked xr.Dataset with raw ERA5 variables.
+        variables: Ordered list of variable names. Valid names are keys of
+            DERIVED_VARIABLE_REGISTRY.
+    """
+    for name in variables:
+        fn = calc.derived_variable_callable_mapping.get(name, None)
+        if fn:
+            log.info("Deriving %s...", name)
+            ds[name] = fn(ds)
+    return ds
+
+
+def maybe_stack_variables(
+    ds: xr.Dataset,
+    variables: Sequence[str],
+    levels: Sequence[int],
+) -> xr.Dataset:
+    """Stack surface and pressure-level arrays into a unified ``level`` dim.
+
+    Only performed when ``1013`` is in *levels*.  Surface arrays are given
+    ``level=[1013]`` and concatenated with their pressure-level counterparts
+    so every variable shares a single ``level`` coordinate.
+
+    If ``1013`` is **not** in *levels* the dataset is returned unchanged.
+
+    Args:
+        ds: Dataset returned by :func:`subset_variables`.
+        variables: The same canonical variable list passed to
+            :func:`subset_variables`.
+        levels: Ordered list of levels (may include ``1013``).
+    """
+    if 1013 not in levels:
+        return ds
+
+    result: dict[str, xr.DataArray] = {}
+    for var in variables:
+        surface_var_name = SURFACE_VARIABLE_MAP.get(var)
+        is_surface_only = var in SURFACE_ONLY_VARIABLES
+
+        if is_surface_only:
+            if var in ds:
+                result[var] = ds[var].expand_dims({"level": [1013]})
+        elif surface_var_name is not None:
+            pieces: list[xr.DataArray] = []
+            if surface_var_name in ds:
+                pieces.append(ds[surface_var_name].expand_dims({"level": [1013]}))
+            if var in ds and "level" in ds[var].dims:
+                pieces.append(ds[var])
+            if pieces:
+                result[var] = (
+                    xr.concat(pieces, dim="level") if len(pieces) > 1 else pieces[0]
+                )
+        else:
+            if var in ds:
+                result[var] = ds[var]
+
+    return xr.Dataset(result)
+
+
+def stack_variables(
+    ds: xr.Dataset,
+    variables: Sequence[str],
+    levels: Sequence[int],
+) -> xr.Dataset:
+    """Subset and stack ERA5 variables into a unified Dataset.
+
+    Convenience wrapper that calls :func:`subset_variables` followed by
+    :func:`maybe_stack_variables`.
+    """
+    subsetted = subset_variables(ds, variables, levels)
+    return maybe_stack_variables(subsetted, variables, levels)
 
 
 # Maps ARCO variable names to the legacy short-name prefixes used as keys
@@ -148,7 +191,7 @@ def normalize_legacy_arco_era5(
 
     Args:
         ds: Stacked xr.Dataset with ARCO variable names and a ``"level"``
-            coordinate containing ``"surface"`` and/or integer hPa values.
+            coordinate containing ``1013`` and/or integer hPa values.
         method: ``"min-max"``, ``"standard"``, or ``"standard_weighted"``.
         params: Normalization parameter dict. Defaults to
             ``constants.NORMALIZATION_PARAMS``.
@@ -170,7 +213,7 @@ def normalize_legacy_arco_era5(
     # return a new Dataset
     result: dict = {}
     for var in list(ds.data_vars):
-        prefix = _ARCO_TO_LEGACY_NORM_KEY.get(var)
+        prefix = _ARCO_TO_LEGACY_NORM_KEY.get(str(var))
         if prefix is None:
             log.warning("No normalization mapping for variable %r — skipping.", var)
             result[var] = ds[var]
@@ -204,23 +247,8 @@ def normalize_legacy_arco_era5(
 
 
 @dataclasses.dataclass
-class ERA5PredictorConfig:
-    """Configuration for loading and stacking ERA5 predictor variables.
-
-    Variables are specified as a single ``variables`` list using canonical
-    (pressure-level) names.  The ``levels`` list controls which vertical levels
-    are loaded and may contain the string ``"surface"`` in addition to integer
-    hPa values.
-
-    When ``"surface"`` appears in ``levels``, the module-level
-    :data:`SURFACE_VARIABLE_MAP` is consulted to find each variable's surface
-    counterpart (e.g. ``"temperature"`` → ``"2m_temperature"``).  Variables
-    listed in :data:`SURFACE_ONLY_VARIABLES` (e.g. ``"mean_sea_level_pressure"``)
-    are included with ``level=["surface"]`` automatically.
-
-    The resulting xarray Dataset has a unified ``"level"`` coordinate whose
-    values are a mix of the string ``"surface"`` and integer hPa values,
-    following the convention used throughout the codebase.
+class ERA5Config:
+    """Configuration to load ERA5 from the ARCO ERA5 store (ideally).
 
     Attributes:
         domain_extent: [lon_min, lon_max, lat_min, lat_max] geographic extent.
@@ -231,11 +259,11 @@ class ERA5PredictorConfig:
             loaded from the zarr store; derived variables are computed after
             stacking.  Order matters for derived variables — dependencies must
             appear first (e.g. ``"dewpoint"`` before ``"virtual_temperature"``).
-        levels: Ordered list of levels to include.  May contain ``"surface"``
-            and/or integer hPa values, e.g. ``["surface", 1000, 950, 900, 850]``
-            or ``[1000, 900, 750]``.
-        years: Years to select data from. Typically injected by DataConfig.build()
-            via dataclasses.replace() rather than set directly in YAML.
+        levels: Ordered list of levels to include.  May contain ``1013``
+            and/or integer hPa values, e.g. ``[1013, 1000, 950, 900, 850]``
+            or ``[1000, 900, 750]``. 1013 refers to surface variables in the
+            scenario that stacking them into the pressure-level variables is
+            desired.
         store: URI of the zarr store to open.
         chunks: Chunk sizes for lazy loading, e.g. {"time": 48}.
         consolidated: Whether to use consolidated zarr metadata.
@@ -243,295 +271,122 @@ class ERA5PredictorConfig:
 
     domain_extent: list[float]
     variables: list[str]
-    levels: list[str | int]
+    levels: list[int]
     store: str
-    chunks: dict[str, int]
     consolidated: bool
-    years: list[int] 
-    
+
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
 
         Returns an xarray Dataset with a ``"level"`` coordinate that includes
-        ``"surface"`` (for surface variables) and integer hPa values (for
+        ``1013`` (for surface variables) and integer hPa values (for
         pressure-level variables).  Time is filtered to ``self.years``.
 
         Variables listed in :data:`DERIVED_VARIABLE_REGISTRY` are computed
-        automatically after stacking the raw variables.  Derived variables
+        elsewhere after stacking the raw variables.  Derived variables
         are processed in the order they appear in ``self.variables``, so
         dependencies must come first (e.g. ``"dewpoint"`` before
         ``"virtual_temperature"``).
         """
         log.info("ERA5PredictorConfig.build() — opening zarr store: %s", self.store)
-        ds = xr.open_zarr(
-            store=self.store,
-            chunks=self.chunks,
-            consolidated=self.consolidated,
+        ds = xr.open_dataset(
+            self.store,
+            chunks=None,
+            engine="zarr",
+            backend_kwargs={"storage_options": {"anon": True}},
         )
         log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
-        # Spatial subset
-        log.debug("Applying spatial subset: domain_extent=%s", self.domain_extent)
+        # 1. Variable subset
+        log.debug(
+            "Subsetting variables=%s at levels=%s...", self.variables, self.levels
+        )
+        ds = subset_variables(ds, variables=self.variables, levels=self.levels)
+
+        # 2. Spatiotemporal subset
+        log.info(
+            "Applying spatiotemporal subset: domain_extent=%s, years=%s",
+            self.domain_extent,
+        )
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
-        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.latitude)
-        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.latitude)
+        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
+        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
         ds = ds.sel(
+            time=str(self.years),
             latitude=slice(bbox.lat_max, bbox.lat_min),
             longitude=slice(lon_min, lon_max),
+            level=self.levels,
         )
         log.debug(
-            "Spatial subset done. lat shape=%s, lon shape=%s",
+            "Spatiotemporal subset done. lat shape=%s, lon shape=%s, years=%s",
             ds.latitude.shape,
             ds.longitude.shape,
+            self.years,
         )
-
-        # Temporal subset: keep only the requested years
-        log.debug("Applying temporal subset for years=%s...", self.years)
-        ds = ds.isel(time=ds.time.dt.year.isin(self.years))
-        log.info(
-            "ERA5 temporal subset done. %d timesteps selected.", ds.sizes.get("time", 0)
-        )
-
-        # Partition variables: raw ones are loaded from the store, derived
-        # ones are computed after stacking.
-        raw_vars = [v for v in self.variables if v not in DERIVED_VARIABLE_REGISTRY]
-        to_derive = [v for v in self.variables if v in DERIVED_VARIABLE_REGISTRY]
-
-        log.debug("Stacking raw variables=%s at levels=%s...", raw_vars, self.levels)
-        result = stack_variables(
-            ds,
-            variables=raw_vars,
-            levels=self.levels,
-        )
-
-        if to_derive:
-            log.info("Deriving variables: %s", to_derive)
-            result = derive_era5_variables(result, to_derive)
 
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s",
-            list(result.data_vars),
-        )
-        return result
-
-
-def load_arco_era5(
-    store: str = ARCO_ERA5_GCP_URI,
-    chunks: dict[str, int] = {"time": 48},
-    consolidated: bool = True,
-):
-    """Opens the Google ARCO ERA5 analysis-ready dataset as an xarray Dataset.
-
-    Args:
-        store: The URI of the zarr store to open. Defaults to the Google ARCO ERA5
-            analysis-ready dataset link.
-        chunks: The chunk sizes to use when opening the dataset. Defaults to chunking
-            the time dimension into 48-hour chunks.
-        consolidated: Whether to use consolidated metadata when opening the dataset.
-            Defaults to True.
-
-    Returns an xarray Dataset containing the ERA5 analysis-ready data.
-    """
-    era5_ds = xr.open_zarr(
-        store=store,
-        chunks=chunks,
-        consolidated=consolidated,
-    )
-
-    return era5_ds
-
-
-def subset_arco_era5(
-    ds: xr.Dataset,
-    variables: list[str],
-    start_date: datetime.datetime,
-    end_date: datetime.datetime,
-    bounding_box: data_utils.BoundingBox,
-    levels: list[int],
-):
-    """Subsets the ARCO ERA5 dataset by variables, specific time range, and geographic bounding box.
-
-    Args:
-        ds: The input xarray Dataset containing the ARCO ERA5 data.
-        variables: A list of variable names to subset from the dataset.
-        start_date: The start date of the time range to subset (inclusive).
-        end_date: The end date of the time range to subset (inclusive).
-        bounding_box: A BoundingBox named tuple defining the geographic bounding box
-            for subsetting. Defaults to a bounding box covering the contiguous United
-            States.
-        levels: A list of pressure levels to subset from the dataset.
-    """
-    variables_to_postprocess = [var for var in variables if var not in ds.data_vars]
-    if variables_to_postprocess:
-        variables.pop(variables_to_postprocess)
-
-    if not any(
-        [n for n in variables_to_postprocess if n in calc.callable_mapping.keys()]
-    ):
-        raise ValueError(
-            f"Variables {variables_to_postprocess} not found in dataset and no "
-            "post-processing functions available for them."
-        )
-    ds = ds[variables]
-    ds = ds.sel(
-        latitude=slice(bounding_box.lat_max, bounding_box.lat_min),
-        longitude=slice(bounding_box.lon_min, bounding_box.lon_max),
-    )
-    ds = ds.sel(time=slice(start_date, end_date))
-    ds = ds.sel(level=levels)
-    return ds
-
-
-def derive_era5_variables(ds: xr.Dataset, derived_variables: list[str]) -> xr.Dataset:
-    """Compute derived meteorological variables and add them to the dataset.
-
-    Variables are computed in the order given.  Dependencies must appear
-    earlier in the list (e.g. "dewpoint" before "virtual_temperature").
-
-    Args:
-        ds: Stacked xr.Dataset with raw ERA5 variables.
-        derived_variables: Ordered list of derived variable names.  Valid
-            names are keys of DERIVED_VARIABLE_REGISTRY.
-    """
-    for name in derived_variables:
-        fn = DERIVED_VARIABLE_REGISTRY.get(name)
-        if fn is None:
-            raise ValueError(
-                f"Unknown derived variable {name!r}. "
-                f"Valid options: {list(DERIVED_VARIABLE_REGISTRY.keys())}"
-            )
-        log.debug("Deriving %s...", name)
-        ds = fn(ds)
-    return ds
-
-
-@dataclasses.dataclass
-class ERA5TrainingDataConfig:
-    """A dataclass for generating data from the ARCO ERA5 dataset.
-
-    This class provides methods for loading and subsetting the variables, spatial
-        bounds, and time of the ARCO ERA5 dataset.
-
-    Attributes:
-        domain_extent: A list of four floats representing the geographic domain extent
-            in the format [lon_min, lon_max, lat_min, lat_max].
-        variables: A list of variable names to subset from the dataset.
-        start_date: The start date of the time range to subset (inclusive).
-        end_date: The end date of the time range to subset (inclusive).
-        store: The URI of the zarr store to open.
-        chunks: The chunk sizes to use when opening the dataset.
-        consolidated: Whether to use consolidated metadata when opening the dataset.
-    """
-
-    domain_extent: list[float]
-    variables: list[str]
-    start_date: datetime.datetime
-    end_date: datetime.datetime
-    levels: list[int]
-    store: str
-    chunks: dict[str, int]
-    consolidated: bool
-
-    def build(self) -> xr.Dataset:
-        """Builds the training dataset by loading and subsetting the ARCO ERA5 dataset.
-
-        Returns an xarray Dataset containing the subset ARCO ERA5 data.
-        """
-        # Load the ARCO ERA5 dataset with default params
-        ds = load_arco_era5(
-            store=self.store, chunks=self.chunks, consolidated=self.consolidated
-        )
-
-        # Subset the dataset by variables, time range, and geographic bounding box
-        ds = subset_arco_era5(
-            ds,
-            variables=self.variables,
-            start_date=self.start_date,
-            end_date=self.end_date,
-            bounding_box=data_utils.convert_domain_extent_to_bounding_box(
-                self.domain_extent
-            ),
-            levels=self.levels,
+            list(ds.data_vars),
         )
         return ds
 
 
-def _default_postprocess(ds: xr.Dataset):
-    """Default postprocessor that passes through data unmodified."""
-    return ds
+def create_icechunk_session(icechunk_path: str):
+    # Initialize local storage
+    local_storage = icechunk.local_filesystem_storage(icechunk_path)
+    # Build the RepositoryConfig with default config settings
+    config = icechunk.RepositoryConfig.default()
+
+    # Create icechunk repository and session using "main" branch
+    repo = icechunk.Repository.create(local_storage, config)
+    session = repo.writable_session("main")
+
+    return session
 
 
-def maybe_postprocess_era5(
-    ds: xr.Dataset, postprocess_func: Callable = _default_postprocess, **kwargs
-) -> xr.Dataset:
-    """Applies any necessary post-processing steps to the ERA5 dataset.
+@dataclasses.dataclass
+class ERA5IcechunkConfig:
+    """Configuration for processing ARCO ERA5 to an icechunk store."""
 
-    This function is a placeholder for any future post-processing steps that may be
-    required for the ERA5 dataset. Currently, it returns the dataset unchanged.
+    era5_config: ERA5Config
+    repo_name: str
+    group: Literal["raw", "derived", "raw_and_derived_normalized"]
+    start_date: datetime.datetime
+    end_date: datetime.datetime
 
-    Args:
-        ds: The input xarray Dataset containing the ERA5 data.
-        postprocess_func: A callable function that takes an xarray Dataset as input.
-            Defaults to a no-op function that returns the dataset unchanged.
-        **kwargs: Additional keyword arguments to pass to the post-processing function.
+    def generate(self):
+        """Process and generate the icechunk store and group."""
+        self.era5 = self.era5_config.build(
+            start_date=self.start_date, end_date=self.end_date
+        )
+        self.generate_icechunk_store(
+            self.era5, repo_name=self.repo_name, group=self.group
+        )
 
-    Returns the possibly post-processed Dataset.
-    """
-    ds = postprocess_func(ds, **kwargs)
-    return ds
+    def arco_era5_to_raw_group(self, session: icechunk.Session) -> icechunk.Session:
+        store = session.store
+        group = zarr.group(store=store, path="raw", overwrite=True)
+        return group
 
+    def raw_group_to_derived_group(self, session: icechunk.Session) -> icechunk.Session:
+        pass
 
-def dewpoint_postprocessor(ds: xr.Dataset):
-    ds["dewpoint"] = calc.dewpoint_from_specific_humidity(
-        ds.level, ds.specific_humidity
-    )
-    return ds
+    def raw_and_derived_to_normalized_group(
+        self, session: icechunk.Session
+    ) -> icechunk.Session:
+        pass
 
+    def generate_icechunk_store(
+        self,
+        repo_name: str,
+        group: Literal["raw", "derived", "raw_and_derived_normalized"],
+    ):
+        group_callable_mapping: dict[str, Callable] = {
+            "raw": self.arco_era5_to_raw_group,
+            "derived": self.raw_group_to_derived_group,
+            "raw_and_derived_normalized": self.raw_and_derived_to_normalized_group,
+        }
 
-def potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["potential_temperature"] = calc.potential_temperature(ds.level, ds.temperature)
-    return ds
-
-
-def equivalent_potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["equivalent_potential_temperature"] = calc.equivalent_potential_temperature(
-        ds.level, ds.temperature, ds.dewpoint
-    )
-    return ds
-
-
-def virtual_potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["virtual_potential_temperature"] = calc.virtual_potential_temperature(
-        ds.level, ds.temperature, ds.dewpoint
-    )
-    return ds
-
-
-def wet_bulb_temperature_postprocessor(ds: xr.Dataset):
-    ds["wet_bulb_temperature"] = calc.wet_bulb_temperature(ds.temperature, ds.dewpoint)
-    return ds
-
-
-def wet_bulb_potential_temperature_postprocessor(ds: xr.Dataset):
-    ds["wet_bulb_potential_temperature"] = calc.wet_bulb_potential_temperature(
-        ds.level, ds.temperature, ds.dewpoint
-    )
-    return ds
-
-
-def relative_humidity_postprocessor(ds: xr.Dataset):
-    ds["relative_humidity"] = calc.relative_humidity_from_dewpoint(
-        ds.temperature, ds.dewpoint
-    )
-    return ds
-
-
-callable_mapping = {
-    "dewpoint": dewpoint_postprocessor,
-    "potential_temperature": potential_temperature_postprocessor,
-    "equivalent_potential_temperature": equivalent_potential_temperature_postprocessor,
-    "virtual_potential_temperature": virtual_potential_temperature_postprocessor,
-    "wet_bulb_temperature": wet_bulb_temperature_postprocessor,
-    "wet_bulb_potential_temperature": wet_bulb_potential_temperature_postprocessor,
-    "relative_humidity": relative_humidity_postprocessor,
-}
+        session = create_icechunk_session(self.repo_name)
+        fork_session = session.fork()
+        group_callable_mapping[group](fork_session)

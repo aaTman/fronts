@@ -1,0 +1,48 @@
+train_years: [2008]
+val_years: [2018]
+test_years: [2019]
+num_classes: 6
+shuffle: true
+normalization_method: "min-max"
+era5_config:
+  domain_extent: [-140.0, -60.0, 20.0, 60.0]
+  # Use canonical (pressure-level) names for variables that have both surface
+  # and pressure-level representations.  Surface-only variables (e.g.
+  # "mean_sea_level_pressure") are listed here directly.
+  # The mapping from pressure-level name to surface name is defined in
+  # fronts.data.config.SURFACE_VARIABLE_MAP and applied automatically when
+  # "surface" appears in the levels list.
+  # Raw ERA5 variables are loaded from the zarr store.  Derived variables
+  # (registered in DERIVED_VARIABLE_REGISTRY) are auto-detected and computed
+  # after stacking.  Order matters: dependencies first (e.g. dewpoint before
+  # virtual_temperature).
+  variables:
+    - "temperature" # raw — surface: 2m_temperature
+    - "specific_humidity" # raw — surface: surface_specific_humidity
+    - "u_component_of_wind" # raw — surface: 10m_u_component_of_wind
+    - "v_component_of_wind" # raw — surface: 10m_v_component_of_wind
+    - "geopotential" # raw — geopotential (m²/s²)
+    - "mean_sea_level_pressure" # raw — surface-only
+    # - "dewpoint" # derived — from specific_humidity + pressure
+    # - "virtual_temperature" # derived — from temperature + dewpoint + pressure
+    # - "relative_humidity" # derived — from temperature + dewpoint
+    # - "equivalent_potential_temperature" # derived — from temperature + dewpoint + pressure
+    # - "geopotential_height" # derived — geopotential / 98.0665 → dam
+  # levels may contain "surface" and/or integer hPa values in any order.
+  # 1013 triggers loading of the surface counterpart for each variable.
+  levels: [1000, 950, 900, 850]
+  store: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+  chunks:
+    time: 48
+  consolidated: true
+  years: [2008]
+target_config:
+  store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk/"
+  file_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  front_types: ["CF", "WF", "SF", "OF", "DL"]
+  front_dilation: 1 # configurable — set to N to expand front labels by N pixels
+augmentation:
+  flip_chance_lat: 0.29
+  flip_chance_lon: 0.29
+  u_wind_index: 3 # "u" in the variable ordering [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
+  v_wind_index: 4 # "v" in the variable ordering
