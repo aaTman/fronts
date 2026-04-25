@@ -30,30 +30,31 @@ SURFACE_ONLY_VARIABLES: set[str] = {
     "skin_temperature",
     "10m_wind_speed",
 }
-
+# Helper function to check if a level is a surface level
+def _surface_level(level: int | str) -> bool:
+    return level == 1013 or level == "surface"
 
 def subset_variables(
     ds: xr.Dataset,
     variables: Sequence[str],
     levels: Sequence[int],
-) -> xr.Dataset:
-    """Subset ERA5 variables from *ds* at the requested levels.
+) -> list[str]:
+    """Subset a list of variable names from *ds* at the requested levels.
 
     Collects the appropriate variable names (mapping surface counterparts via
     :data:`SURFACE_VARIABLE_MAP` and checking :data:`SURFACE_ONLY_VARIABLES`)
-    and returns a single ``ds[var_names].sel(level=pressure_levels)`` slice.
-
-    No stacking or concatenation along ``level`` is performed here; use
-    :func:`maybe_stack_variables` afterwards to unify the level dimension.
 
     Args:
         ds: An xarray Dataset already subsetted spatially and temporally.
         variables: Canonical variable names to include.
-        levels: Ordered list of levels.  May include ``1013`` and/or integer
-            hPa values.
+        levels: Ordered list of levels.  May include ``1013``, "surface", and/or 
+            integer hPa values.
+    
+    Returns a list of variable names that are subset from *ds*.
     """
-    include_surface = 1013 in levels
-    pressure_levels = [lv for lv in levels if lv != 1013]
+
+    include_surface = any(_surface_level(lv) for lv in levels)
+    pressure_levels = [lv for lv in levels if not _surface_level(lv)]
 
     var_names: list[str] = []
     for var in variables:
@@ -75,8 +76,7 @@ def subset_variables(
     log.info("variables: %s", var_names)
     ds_var_list = list(ds.data_vars)
     var_names_subset = [variable for variable in var_names if variable in ds_var_list]
-    result = ds[var_names_subset]
-    return result
+    return var_names_subset
 
 
 def maybe_derive_variables(ds: xr.Dataset, variables: Sequence[str]) -> xr.Dataset:
@@ -116,8 +116,10 @@ def maybe_stack_variables(
         variables: The same canonical variable list passed to
             :func:`subset_variables`.
         levels: Ordered list of levels (may include ``1013``).
+    
+    Returns a Dataset with the variables stacked into a unified "level" dimension.
     """
-    if 1013 not in levels:
+    if not any(_surface_level(lv) for lv in levels):
         return ds
 
     result: dict[str, xr.DataArray] = {}
@@ -143,20 +145,6 @@ def maybe_stack_variables(
                 result[var] = ds[var]
 
     return xr.Dataset(result)
-
-
-def stack_variables(
-    ds: xr.Dataset,
-    variables: Sequence[str],
-    levels: Sequence[int],
-) -> xr.Dataset:
-    """Subset and stack ERA5 variables into a unified Dataset.
-
-    Convenience wrapper that calls :func:`subset_variables` followed by
-    :func:`maybe_stack_variables`.
-    """
-    subsetted = subset_variables(ds, variables, levels)
-    return maybe_stack_variables(subsetted, variables, levels)
 
 
 # Maps ARCO variable names to the legacy short-name prefixes used as keys
@@ -267,6 +255,8 @@ class ERA5Config:
         store: URI of the zarr store to open.
         chunks: Chunk sizes for lazy loading, e.g. {"time": 48}.
         consolidated: Whether to use consolidated zarr metadata.
+        years: The years to include in the dataset.
+        local_zarr_path: The path to the local zarr store.
     """
 
     domain_extent: list[float]
@@ -274,6 +264,8 @@ class ERA5Config:
     levels: list[int]
     store: str
     consolidated: bool
+    years: list[str] | None
+    local_zarr_path: str
 
     def build(self) -> xr.Dataset:
         """Loads and stacks ERA5 data into a unified xarray Dataset.
@@ -301,34 +293,42 @@ class ERA5Config:
         log.debug(
             "Subsetting variables=%s at levels=%s...", self.variables, self.levels
         )
-        ds = subset_variables(ds, variables=self.variables, levels=self.levels)
-
+        subset_variables_list = subset_variables(ds, variables=self.variables, levels=self.levels)
+        subset_variables_ds = ds[subset_variables_list]
         # 2. Spatiotemporal subset
         log.info(
             "Applying spatiotemporal subset: domain_extent=%s, years=%s",
             self.domain_extent,
         )
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
-        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, ds.longitude)
-        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, ds.longitude)
-        ds = ds.sel(
-            time=str(self.years),
+        lon_min = data_utils.maybe_convert_lon(bbox.lon_min, subset_variables_ds.longitude)
+        lon_max = data_utils.maybe_convert_lon(bbox.lon_max, subset_variables_ds.longitude)
+
+        # Drop surface levels from the levels list; already loaded if provided via subset_variables
+        non_surface_levels = [lv for lv in self.levels if not _surface_level(lv)]
+        subset_variables_ds = subset_variables_ds.sel(
+            time=self.years,
             latitude=slice(bbox.lat_max, bbox.lat_min),
             longitude=slice(lon_min, lon_max),
-            level=self.levels,
-        )
+            level=non_surface_levels,
+            )
+            
+        # 3. Stack surface and pressure levels
+        log.debug("Stacking raw variables=%s...", subset_variables_list)
+        subset_stacked_variables_ds = maybe_stack_variables(subset_variables_ds, variables=subset_variables_list, levels=self.levels)
+
         log.debug(
             "Spatiotemporal subset done. lat shape=%s, lon shape=%s, years=%s",
-            ds.latitude.shape,
-            ds.longitude.shape,
+            subset_stacked_variables_ds.latitude.shape,
+            subset_stacked_variables_ds.longitude.shape,
             self.years,
         )
 
         log.info(
             "ERA5PredictorConfig.build() complete. Output vars: %s",
-            list(ds.data_vars),
+            list(subset_stacked_variables_ds.data_vars),
         )
-        return ds
+        return subset_stacked_variables_ds
 
 
 def create_icechunk_session(icechunk_path: str):

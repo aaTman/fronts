@@ -6,17 +6,33 @@ from fronts.utils import data_utils, calc
 
 log = logging.getLogger("fronts.data.targets")
 
+def _add_slash_to_end_if_not_present(path: str) -> str:
+    """Add a slash to the end of a path if it is not present.
+
+    Args:
+        path: The path to add a slash to.
+
+    Returns:
+        The path with a slash added to the end, or the original path if it 
+            already ends with a slash.
+    """
+    if not path.endswith("/"):
+        return path + "/"
+    return path
 
 @dataclasses.dataclass
 class TargetDataConfig:
     """Dataclass to hold the information about the target data and build it.
 
     Attributes:
-        store_path: The path to the top level of icechunk store where the data is
+        icechunk_store_path: The path to the top level of icechunk store where the data is
             located.
+        file_path: The path to the netcdf files containing the target data.
+        front_types: The types of fronts to include in the dataset.
+        front_dilation: The number of dilation iterations to apply to the fronts.
     """
 
-    store_path: str
+    icechunk_store_path: str
     file_path: str
     front_types: str | list[str]
     front_dilation: int
@@ -33,8 +49,8 @@ class TargetDataConfig:
         # Set the virtual chunk container to the fronts netcdf directory
         config.set_virtual_chunk_container(
             icechunk.VirtualChunkContainer(
-                url_prefix=f"file://{self.file_path}",
-                store=icechunk.local_filesystem_store(self.file_path),
+                url_prefix=_add_slash_to_end_if_not_present(f"file://{self.file_path}"),
+                store=icechunk.local_filesystem_store(_add_slash_to_end_if_not_present(self.file_path)),
             ),
         )
         # Use None for credentials since the local filesystem store does not require
@@ -44,7 +60,7 @@ class TargetDataConfig:
         )
 
         # Open the local store as a read-only session
-        local_storage = icechunk.local_filesystem_storage(self.store_path)
+        local_storage = icechunk.local_filesystem_storage(self.icechunk_store_path)
         repo = icechunk.Repository.open(
             local_storage,
             config=config,

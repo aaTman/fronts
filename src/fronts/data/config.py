@@ -171,6 +171,9 @@ class DataConfig:
 
             # Build ERA5 predictor dataset for this split
             log.info("  Building ERA5 predictor dataset for years=%s...", years)
+
+            # Convert years to strings for xarray sel compatibility
+            years = [str(year) for year in years]
             era5_cfg = dataclasses.replace(self.era5_config, years=years)
             inputs_ds = era5_cfg.build()
             log.info("  ERA5 dataset ready.")
