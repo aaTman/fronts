@@ -3,7 +3,7 @@
 name = "fronts"
 version = "0.2.0"
 description = "FrontFinder AI for finding various frontal and baroclinic boundaries"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 keywords = [
     "weather",
     "weather fronts",
@@ -38,32 +38,90 @@ tf-keras = "*"
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-arm64"]
 preview = ["pixi-build"]
 
 [tool.pixi.dependencies]
-fronts = { path = "." }
 numpy = ">=1.26.4,<2"
+dacite = ">=1.9.2,<2"
+ipykernel = ">=7.2.0,<8"
+dask-jobqueue = ">=0.9.0,<0.10"
+
+[tool.pixi.feature.train]
+platforms = ["linux-64"]
+
+[tool.pixi.feature.train.dependencies]
+fronts = { path = "." }
 pandas = ">=2.3.3,<3"
 shapely = ">=2.0.1,<3"
 regionmask = ">=0.13.0,<0.14"
 wandb = ">=0.24"
 netcdf4 = ">=1.6.2,<2"
-dask = ">=2023.3.0,<2024"
-distributed = ">=2023.3.0,<2024"
-xarray = ">=2024.3.0,<2025"
-dacite = ">=1.9.2,<2"
+dask = ">=2023.3.0"
+distributed = ">=2023.3.0"
+xarray = ">=2025.07.1"
 scikit-image = ">=0.22.0"
 h5py = ">=3.11.0"
 cuda-version = "12.4.*"
 protobuf = ">=4.21.5,<6"
+xbatcher = ">=0.4.0,<0.5"
+gcsfs = ">=2026.2.0,<2027"
+
+[tool.pixi.feature.train.pypi-dependencies]
+tensorflow = { extras = ["and-cuda"] }
+obstore = "*"
+s3fs = ">=2024.6.0"
+
+# ---------------------------------------------------------------------------
+# mac feature: same deps as train but with CPU-only TensorFlow for osx-arm64.
+# Use this environment for local dry-run testing on Apple Silicon.
+# ---------------------------------------------------------------------------
+[tool.pixi.feature.mac]
+platforms = ["osx-arm64"]
+
+[tool.pixi.feature.mac.dependencies]
+python = ">=3.10,<3.13"
+numpy = ">=1.26.4,<2"
+protobuf = ">=3.20,<5"
+dacite = ">=1.9.2,<2"
+fronts = { path = "." }
+pandas = ">=2.3.3,<3"
+shapely = ">=2.0.1,<3"
+regionmask = ">=0.13.0,<0.14"
+wandb = ">=0.24"
+netcdf4 = ">=1.6.2,<2"
+dask = ">=2023.3.0"
+distributed = ">=2023.3.0"
+xarray = ">=2025.07.1"
+scikit-image = ">=0.22.0"
+h5py = ">=3.11.0"
+xbatcher = ">=0.4.0,<0.5"
+# gcsfs omitted — not needed locally (no ARCO zarr store access on Mac)
+
+[tool.pixi.feature.mac.pypi-dependencies]
+# Plain tensorflow works on macOS ARM since TF 2.13 (unified with tensorflow-macos).
+# Pinned to 2.16.* — well-tested on ARM macOS, compatible with numpy<2.
+tensorflow = ">=2.16,<2.17"
+obstore = "*"
+s3fs = ">=2024.6.0"
+
+[tool.pixi.feature.test.dependencies]
+python = ">=3.10,<3.14"
+dacite = ">=1.9.2,<2"
+pyyaml = ">=6.0"
+numpy = ">=1.26.4,<2"
+
+[tool.pixi.feature.test.tasks]
+test = "PYTHONPATH=src python -m pytest tests/ -v"
 
 [tool.pixi.system-requirements]
 libc = "2.17"
-cuda = "12.4"
 
 [tool.pixi.environments]
-dev = { features = ["dev"], solve-group = "default" }
+default = { features = ["train"], solve-group = "default" }
+dev = { features = ["dev", "train"], solve-group = "default" }
+test = { features = ["test"], solve-group = "test", no-default-feature = true }
+mac = { features = ["mac"], solve-group = "mac", no-default-feature = true }
 
 [dependency-groups]
 dev = [
@@ -83,8 +141,15 @@ dev = [
     "twine>=5.1.1",
 ]
 
+test = [
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+]
+
 #TODO: swap wget with requests in code
 data = ["cdsapi", "wget"]
+train = ["zarr>=3.1.5,<4", "icechunk>=1.1.21,<2"]
 
 [build-system] 
 requires = ["hatchling"]
@@ -110,7 +175,9 @@ backend = { name = "pixi-build-python", version = "0.4.*" }
 [tool.ruff]
 line-length = 88
 indent-width = 4
-lint.ignore = []
+
+[tool.ruff.lint]
+ignore = []
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.

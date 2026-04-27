@@ -10,9 +10,17 @@ Author: Andrew Justin (andrewjustinwx@gmail.com)
 Script version: 2025.5.3
 """
 
+import logging
+from typing import Callable
+
 import numpy as np
-from fronts.utils import data_utils
 import tensorflow as tf
+import xarray as xr
+from scipy.ndimage import maximum_filter
+
+from fronts.utils import data_utils
+
+logger = logging.getLogger("fronts.utils.calc")
 
 Rd = 287.04  # Gas constant for dry air (J/kg/K)
 Rv = 461.5  # Gas constant for water vapor (J/kg/K)
@@ -85,7 +93,7 @@ def dewpoint_from_mixing_ratio(P, r):
 
     log_func = tf.math.log if tf.is_tensor(P) else np.log
 
-    P /= 100  # Pa -> hPa
+    P = P / 100  # Pa -> hPa
 
     e = r * P / (epsilon + r)  # vapor pressure
 
@@ -757,3 +765,194 @@ def advection(field, u, v, lons, lats):
     )
 
     return advect
+
+
+GEOPOTENTIAL_TO_DAM = 98.0665  # geopotential (m²/s²) → geopotential height (dam)
+
+
+def convert_to_pascals(levels: xr.DataArray) -> xr.DataArray:
+    """Convert pressure levels from hPa (int) or "surface" (str) to Pa.
+    Convert surface if exists to 1013.25 hPa and then convert to Pascals for all levels.
+
+    Args:
+        levels: Pressure levels in hPa (int)
+
+    Returns a DataArray of pressure levels in Pascals.
+    """
+    levels_pa = levels * 100
+    return levels_pa
+
+
+def dewpoint(specific_humidity: xr.DataArray, level: xr.DataArray) -> xr.DataArray:
+    """Derive dewpoint temperature from specific_humidity and pressure.
+
+    Args:
+        specific_humidity: Specific humidity in kg/kg.
+        level: Pressure level in hPa (int) and/or "surface" (str).
+
+    Returns a DataArray of dewpoint temperatures.
+    """
+    # Build a pressure array matching the data shape from the level coordinate.
+    # Level values are hPa (int) or "surface" (str).  For "surface" we
+    # approximate with 1013.25 hPa.
+    levels_pa = convert_to_pascals(level)
+    dewpoint = dewpoint_from_specific_humidity(levels_pa, specific_humidity)
+    return dewpoint
+
+
+def virtual_temperature(
+    temperature: xr.DataArray, dewpoint: xr.DataArray, level: xr.DataArray
+) -> xr.DataArray:
+    """Derive virtual temperature from temperature, dewpoint, and pressure.
+
+    Args:
+        temperature: Air temperature in K.
+        dewpoint: Dewpoint temperature in K.
+        level: Pressure level in hPa (int) and/or "surface" (str).
+    """
+    levels_pa = convert_to_pascals(level)
+    virtual_temperature = virtual_temperature_from_dewpoint(
+        levels_pa, temperature, dewpoint
+    )
+    return virtual_temperature
+
+
+def relative_humidity(
+    temperature: xr.DataArray, dewpoint: xr.DataArray
+) -> xr.DataArray:
+    """Derive relative humidity from temperature and dewpoint.
+
+    Args:
+        temperature: Air temperature in K.
+        dewpoint: Dewpoint temperature in K.
+
+    Returns a DataArray of relative humidity values.
+    """
+    relative_humidity = relative_humidity_from_dewpoint(temperature, dewpoint)
+    return relative_humidity
+
+
+def theta_e(
+    temperature: xr.DataArray, dewpoint: xr.DataArray, level: xr.DataArray
+) -> xr.DataArray:
+    """Derive equivalent potential temperature from temperature, dewpoint, and pressure.
+
+    Args:
+        temperature: Air temperature in K.
+        dewpoint: Dewpoint temperature in K.
+        level: Pressure level in hPa (int) and/or "surface" (str).
+
+    Returns a DataArray of equivalent potential temperature values.
+    """
+    levels_pa = convert_to_pascals(level)
+    return equivalent_potential_temperature(levels_pa, temperature, dewpoint)
+
+
+def geopotential_height(geopotential: xr.DataArray) -> xr.DataArray:
+    """Convert geopotential (m²/s²) to geopotential height in decameters.
+
+    Args:
+        geopotential: Geopotential in m²/s².
+
+    Returns a DataArray of geopotential height in decameters.
+    """
+    geopotential_height = geopotential / GEOPOTENTIAL_TO_DAM
+    return geopotential_height
+
+def _expand_2d(arr_2d: np.ndarray, iterations: int) -> np.ndarray:
+    size = 2 * iterations + 1
+    zero_mask = arr_2d == 0
+    result = np.zeros_like(arr_2d)
+    for label in np.unique(arr_2d[arr_2d > 0]):
+        dilated = maximum_filter(arr_2d == label, size=size)
+        result = np.where(dilated & zero_mask & (result < label), label, result)
+    return np.where(arr_2d > 0, arr_2d, result)
+
+
+def _expand_block(block: np.ndarray, iterations: int) -> np.ndarray:
+    return np.stack([_expand_2d(block[t], iterations) for t in range(block.shape[0])])
+
+
+def _expand_dataarray(data: xr.DataArray, iterations: int) -> xr.DataArray:
+    is_2d = data.ndim == 2
+    if is_2d:
+        data = data.expand_dims("time", axis=0)
+
+    result = xr.apply_ufunc(
+        _expand_block,
+        data,
+        kwargs={"iterations": iterations},
+        dask="parallelized",
+        output_dtypes=[data.dtype],
+        dask_gufunc_kwargs={"allow_rechunk": False},
+    )
+
+    if is_2d:
+        result = result.squeeze("time")
+
+    return result
+
+
+def maybe_expand_fronts_parallelized(
+    fronts: np.ndarray | xr.Dataset | xr.DataArray, iterations: int = 1
+):
+    if isinstance(fronts, xr.Dataset):
+        fronts["identifier"] = _expand_dataarray(fronts["identifier"], iterations)
+        return fronts
+    elif isinstance(fronts, xr.DataArray):
+        return _expand_dataarray(fronts, iterations)
+    else:
+        identifier = fronts
+        is_2d = identifier.ndim == 2
+        if is_2d:
+            identifier = np.expand_dims(identifier, axis=0)
+        return np.stack([_expand_2d(identifier[t], iterations) for t in range(identifier.shape[0])])
+
+
+def dewpoint_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return dewpoint_from_specific_humidity(ds.level, ds.specific_humidity)
+
+
+def potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return potential_temperature(ds.level, ds.temperature)
+
+
+def equivalent_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return equivalent_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
+
+
+def virtual_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return virtual_temperature(ds.temperature, ds.dewpoint, ds.level)
+
+
+def virtual_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return virtual_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
+
+
+def wet_bulb_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return wet_bulb_temperature(ds.temperature, ds.dewpoint)
+
+
+def wet_bulb_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return wet_bulb_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
+
+
+def relative_humidity_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return relative_humidity_from_dewpoint(ds.temperature, ds.dewpoint)
+
+
+def geopotential_height_postprocessor(ds: xr.Dataset) -> xr.DataArray:
+    return geopotential_height(ds.geopotential)
+
+
+derived_variable_callable_mapping: dict[str, Callable] = {
+    "geopotential_height": geopotential_height_postprocessor,
+    "dewpoint": dewpoint_postprocessor,
+    "potential_temperature": potential_temperature_postprocessor,
+    "equivalent_potential_temperature": equivalent_potential_temperature_postprocessor,
+    "virtual_temperature": virtual_temperature_postprocessor,
+    "virtual_potential_temperature": virtual_potential_temperature_postprocessor,
+    "wet_bulb_temperature": wet_bulb_temperature_postprocessor,
+    "wet_bulb_potential_temperature": wet_bulb_potential_temperature_postprocessor,
+    "relative_humidity": relative_humidity_postprocessor,
+}

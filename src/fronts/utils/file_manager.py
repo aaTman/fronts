@@ -516,8 +516,9 @@ def load_model(model_number: int, model_dir: str):
     ####################################################################################################################
 
     import tensorflow.keras  # ty: ignore[unresolved-import]
+    from tensorflow.keras.models import load_model as lm
+    from fronts.model import custom_activations, losses, metrics
 
-    from fronts.model import custom_activations, custom_losses, custom_metrics
 
     model_path = f"{model_dir}/model_{model_number}/model_{model_number}.h5"
     model_properties = pd.read_pickle(
@@ -535,10 +536,8 @@ def load_model(model_number: int, model_dir: str):
     metric_child_string = model_properties["metric_child_string"]
 
     # add the loss and metric functions to the custom_objects dictionary
-    custom_objects[loss_child_string] = getattr(custom_losses, loss_parent_string)(
-        **loss_args
-    )
-    custom_objects[metric_child_string] = getattr(custom_metrics, metric_parent_string)(
+    custom_objects[loss_child_string] = getattr(losses, loss_parent_string)(**loss_args)
+    custom_objects[metric_child_string] = getattr(metrics, metric_parent_string)(
         **metric_args
     )
 

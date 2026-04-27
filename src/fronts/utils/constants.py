@@ -1,7 +1,46 @@
 import numpy as np
 
+ARCO_ERA5_GCP_URI = (
+    "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+)
+
+SURFACE_VARIABLE_MAP: dict[str, str] = {
+    "temperature": "2m_temperature",
+    "u_component_of_wind": "10m_u_component_of_wind",
+    "v_component_of_wind": "10m_v_component_of_wind",
+    "dewpoint_temperature": "2m_dewpoint_temperature",
+    "specific_humidity": "surface_specific_humidity",
+}
+
+# Variables that exist only at the surface (no pressure-level equivalent)
+# These are included in the output whenever 1013 is in the levels list
+SURFACE_ONLY_VARIABLES: set[str] = {
+    "mean_sea_level_pressure",
+    "total_precipitation",
+    "sea_surface_temperature",
+    "skin_temperature",
+    "10m_wind_speed",
+}
+
 # [min, max, mean, std, mean (lat weighted), std (lat weighted)]
 NORMALIZATION_PARAMS = dict()
+# Surface-level parameters (min/max from AIES-D-24-0043; mean/std approximated from 1000 hPa)
+NORMALIZATION_PARAMS["q_surface"] = [0.0, 24.0, 7.0913, 5.9191, 9.4306, 5.7912]
+NORMALIZATION_PARAMS["RH_surface"] = [0.0, 1.0, 0.659, 0.2457, 0.6897, 0.2104]
+NORMALIZATION_PARAMS["r_surface"] = [0.0, 25.0, 7.0913, 5.9191, 9.4306, 5.7912]
+NORMALIZATION_PARAMS["sp_z_surface"] = [620.0, 1075.0, 7.4702, 11.1432, 9.6184, 9.3651]
+NORMALIZATION_PARAMS["mslp_z_surface"] = [960.0, 1050.0, 7.4702, 11.1432, 9.6184, 9.3651]
+NORMALIZATION_PARAMS["T_surface"] = [212.0, 323.0, 281.4339, 16.9643, 288.7020, 13.3128]
+NORMALIZATION_PARAMS["Td_surface"] = [207.0, 304.0, 274.0599, 19.37, 281.9399, 14.3432]
+NORMALIZATION_PARAMS["Tv_surface"] = [211.0, 324.0, 282.6972, 17.8702, 290.3930, 14.1572]
+NORMALIZATION_PARAMS["Tw_surface"] = [212.0, 305.0, 281.4339, 16.9643, 288.7020, 13.3128]
+NORMALIZATION_PARAMS["theta_surface"] = [213.0, 331.0, 281.4339, 16.9643, 288.7020, 13.3128]
+NORMALIZATION_PARAMS["theta_e_surface"] = [213.0, 375.0, 298.7088, 30.2554, 311.7681, 26.1548]
+NORMALIZATION_PARAMS["theta_v_surface"] = [212.0, 324.0, 282.6972, 17.8702, 290.3930, 14.1572]
+NORMALIZATION_PARAMS["theta_w_surface"] = [212.0, 304.0, 281.4339, 16.9643, 288.7020, 13.3128]
+NORMALIZATION_PARAMS["u_surface"] = [-35.0, 36.0, -0.0452, 6.1942, -0.4278, 6.1954]
+NORMALIZATION_PARAMS["v_surface"] = [-35.0, 30.0, 0.1949, 5.3437, 0.1984, 5.1694]
+# Pressure-level parameters
 NORMALIZATION_PARAMS["q_300"] = [0.0, 2.25, 0.1484, 0.1701, 0.1854, 0.1957]
 NORMALIZATION_PARAMS["q_500"] = [0.0, 9.375, 0.8906, 1.1321, 1.1552, 1.2790]
 NORMALIZATION_PARAMS["q_700"] = [0.0, 16.0, 2.4991, 2.6180, 3.2535, 2.8386]
@@ -175,7 +214,7 @@ NORMALIZATION_PARAMS["u_500"] = [-51.6, 82.4, 6.5193, 12.0255, 6.6043, 12.0727]
 NORMALIZATION_PARAMS["u_700"] = [-50.4, 58.4, 3.3234, 9.24, 3.1705, 9.2717]
 NORMALIZATION_PARAMS["u_850"] = [-55.2, 53.2, 1.4020, 8.2607, 1.0348, 8.2607]
 NORMALIZATION_PARAMS["u_900"] = [-55.6, 50.8, 0.8581, 8.1317, 0.4330, 8.1176]
-NORMALIZATION_PARAMS["u_950"] = [-47.6, 43.2, 7.6961, -0.0558, 7.6638]
+NORMALIZATION_PARAMS["u_950"] = [-47.6, 43.2, -0.0558, 7.6961, -0.4278, 7.6638]
 NORMALIZATION_PARAMS["u_1000"] = [-33.6, 30.4, -0.0452, 6.1942, -0.4278, 6.1954]
 NORMALIZATION_PARAMS["v_300"] = [-80.0, 94.0, -0.0227, 13.3571, -0.0253, 12.6938]
 NORMALIZATION_PARAMS["v_500"] = [-65.6, 70.0, -0.0251, 9.2148, -0.0366, 8.5501]
