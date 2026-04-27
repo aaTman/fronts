@@ -32,7 +32,7 @@ if __name__ == "__main__":
         help="Year and month for which to make predictions.",
     )
     parser.add_argument("--model_dir", type=str, help="Directory for the models.")
-    parser.add_argument("--model_number", type=int, help="Model number.")
+    parser.add_argument("--model_number", type=str, help="Model name.")
     parser.add_argument(
         "--tf_indir",
         type=str,
@@ -61,6 +61,11 @@ if __name__ == "__main__":
         "--overwrite",
         action="store_true",
         help="Overwrite any existing prediction files.",
+    )
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        help="Dry run, will not make predictions.",
     )
     args = vars(parser.parse_args())
 
@@ -155,6 +160,10 @@ if __name__ == "__main__":
         hrrr_coords = xr.open_dataset("%s/coordinates/hrrr.nc" % os.getcwd())
         lats = hrrr_coords["latitude"][:1056, :1728].to_numpy()
         lons = hrrr_coords["longitude"][:1056, :1728].to_numpy()
+
+    if args["dry_run"]:
+        print("Dry run, will not make predictions.")
+        exit()
 
     model = fm.load_model(args["model_number"], args["model_dir"])
 
