@@ -939,6 +939,10 @@ def mask_xarray_dataset(ds, mask, lon="longitude", lat="latitude"):
     if region_is_ocean_basin:
         regions = regionmask.defined_regions.natural_earth_v5_1_2.ocean_basins_50
         indices = ocean_basins[mask]
+    else:
+        raise ValueError(
+            f"Unsupported mask {mask!r}. Valid options: {list(ocean_basins.keys())}"
+        )
 
     base_mask = regions.mask(ds[lon], ds[lat])
     region_mask = base_mask.isin(indices)

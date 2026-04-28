@@ -199,12 +199,20 @@ def fractions_skill_score(
         O_n = pool(y_true)  # observed fractions (Eq. 2 in RL2008)
         M_n = pool(y_pred)  # model forecast fractions (Eq. 3 in RL2008)
 
-        MSE_n = tf.reduce_mean(
-            tf.square(O_n * class_weights - M_n * class_weights)
-        )  # MSE for model forecast fractions (Eq. 5 in RL2008)
-        MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(
-            tf.square(M_n * class_weights)
-        )  # reference forecast (Eq. 7 in RL2008)
+        if class_weights is not None:
+            MSE_n = tf.reduce_mean(
+                tf.square(O_n * class_weights - M_n * class_weights)
+            )  # MSE for model forecast fractions (Eq. 5 in RL2008)
+            MSE_ref = tf.reduce_mean(tf.square(O_n * class_weights)) + tf.reduce_mean(
+                tf.square(M_n * class_weights)
+            )  # reference forecast (Eq. 7 in RL2008)
+        else:
+            MSE_n = tf.reduce_mean(
+                tf.square(O_n - M_n)
+            )  # MSE for model forecast fractions (Eq. 5 in RL2008)
+            MSE_ref = tf.reduce_mean(tf.square(O_n)) + tf.reduce_mean(
+                tf.square(M_n)
+            )  # reference forecast (Eq. 7 in RL2008)
 
         FSS = 1 - MSE_n / (MSE_ref + 1e-10)  # fractions skill score (Eq. 6 in RL2008)
 

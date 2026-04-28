@@ -149,7 +149,7 @@ class DataConfig:
     normalization_method: str
     era5_config: era5.ERA5Config
     target_config: targets.TargetDataConfig
-    augmentation_config: AugmentationConfig | None
+    augmentation_config: AugmentationConfig | None = None
 
     def build(self) -> ModelTrainingData:
         """Builds train, validation, and test tf.data.Dataset objects.
@@ -409,7 +409,7 @@ class PredictConfig:
         # 5. Derive variables
         if to_derive:
             log.info("Deriving variables: %s", to_derive)
-            stacked = era5.derive_era5_variables(stacked, to_derive)
+            stacked = era5.maybe_derive_variables(stacked, to_derive)
 
         log.info(
             "PredictConfig.build() — stacking complete. Output vars: %s",

@@ -910,15 +910,15 @@ def maybe_expand_fronts_parallelized(
 
 
 def dewpoint_postprocessor(ds: xr.Dataset) -> xr.DataArray:
-    return dewpoint_from_specific_humidity(ds.level, ds.specific_humidity)
+    return dewpoint_from_specific_humidity(convert_to_pascals(ds.level), ds.specific_humidity)
 
 
 def potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
-    return potential_temperature(ds.level, ds.temperature)
+    return potential_temperature(convert_to_pascals(ds.level), ds.temperature)
 
 
 def equivalent_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
-    return equivalent_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
+    return equivalent_potential_temperature(convert_to_pascals(ds.level), ds.temperature, ds.dewpoint)
 
 
 def virtual_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
@@ -926,7 +926,7 @@ def virtual_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
 
 
 def virtual_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
-    return virtual_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
+    return virtual_potential_temperature(convert_to_pascals(ds.level), ds.temperature, ds.dewpoint)
 
 
 def wet_bulb_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
@@ -934,7 +934,7 @@ def wet_bulb_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
 
 
 def wet_bulb_potential_temperature_postprocessor(ds: xr.Dataset) -> xr.DataArray:
-    return wet_bulb_potential_temperature(ds.level, ds.temperature, ds.dewpoint)
+    return wet_bulb_potential_temperature(convert_to_pascals(ds.level), ds.temperature, ds.dewpoint)
 
 
 def relative_humidity_postprocessor(ds: xr.Dataset) -> xr.DataArray:

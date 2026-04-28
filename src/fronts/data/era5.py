@@ -6,6 +6,7 @@ import icechunk
 import xarray as xr
 import zarr
 from fronts.utils import calc, constants, data_utils
+from fronts.utils.calc import derived_variable_callable_mapping
 
 log = logging.getLogger("fronts.data.era5")
 
@@ -289,16 +290,22 @@ class ERA5Config:
         )
         log.debug("Zarr store opened. Variables available: %s", list(ds.data_vars))
 
-        # 1. Variable subset
+        # Partition into raw (in zarr store) and derived (computed after stacking)
+        raw_vars = [v for v in self.variables if v not in derived_variable_callable_mapping]
+        to_derive = [v for v in self.variables if v in derived_variable_callable_mapping]
+
+        # 1. Variable subset — use canonical raw names only
         log.debug(
-            "Subsetting variables=%s at levels=%s...", self.variables, self.levels
+            "Subsetting variables=%s at levels=%s...", raw_vars, self.levels
         )
-        subset_variables_list = subset_variables(ds, variables=self.variables, levels=self.levels)
+        subset_variables_list = subset_variables(ds, variables=raw_vars, levels=self.levels)
         subset_variables_ds = ds[subset_variables_list]
+
         # 2. Spatiotemporal subset
         log.info(
             "Applying spatiotemporal subset: domain_extent=%s, years=%s",
             self.domain_extent,
+            self.years,
         )
         bbox = data_utils.convert_domain_extent_to_bounding_box(self.domain_extent)
         lon_min = data_utils.maybe_convert_lon(bbox.lon_min, subset_variables_ds.longitude)
@@ -311,11 +318,20 @@ class ERA5Config:
             latitude=slice(bbox.lat_max, bbox.lat_min),
             longitude=slice(lon_min, lon_max),
             level=non_surface_levels,
+        )
+
+        # 3. Stack surface and pressure levels — pass canonical raw names
+        log.debug("Stacking raw variables=%s...", raw_vars)
+        subset_stacked_variables_ds = maybe_stack_variables(
+            subset_variables_ds, variables=raw_vars, levels=self.levels
+        )
+
+        # 4. Compute derived variables (e.g. dewpoint, virtual_temperature)
+        if to_derive:
+            log.info("Deriving variables: %s", to_derive)
+            subset_stacked_variables_ds = maybe_derive_variables(
+                subset_stacked_variables_ds, to_derive
             )
-            
-        # 3. Stack surface and pressure levels
-        log.debug("Stacking raw variables=%s...", subset_variables_list)
-        subset_stacked_variables_ds = maybe_stack_variables(subset_variables_ds, variables=subset_variables_list, levels=self.levels)
 
         log.debug(
             "Spatiotemporal subset done. lat shape=%s, lon shape=%s, years=%s",
@@ -356,12 +372,8 @@ class ERA5IcechunkConfig:
 
     def generate(self):
         """Process and generate the icechunk store and group."""
-        self.era5 = self.era5_config.build(
-            start_date=self.start_date, end_date=self.end_date
-        )
-        self.generate_icechunk_store(
-            self.era5, repo_name=self.repo_name, group=self.group
-        )
+        self.era5 = self.era5_config.build()
+        self.generate_icechunk_store(repo_name=self.repo_name, group=self.group)
 
     def arco_era5_to_raw_group(self, session: icechunk.Session) -> icechunk.Session:
         store = session.store

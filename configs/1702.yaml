@@ -81,7 +81,7 @@ data_config:
   shuffle: true
   normalization_method: "min-max"
 
-  augmentation:
+  augmentation_config:
     flip_chance_lat: 0.29
     flip_chance_lon: 0.29
     u_wind_index: 3   # "u" in the variable ordering [T, Td, Tv, u, v, q, RH, sp_z, theta_e]
