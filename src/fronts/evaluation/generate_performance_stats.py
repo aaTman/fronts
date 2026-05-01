@@ -11,8 +11,9 @@ import pandas as pd
 import tensorflow as tf
 import xarray as xr
 import os
+import regionmask
 from fronts.utils import data_utils
-from fronts.utils.data_utils import DOMAIN_EXTENTS
+from fronts.utils.constants import DOMAIN_EXTENTS
 
 
 if __name__ == "__main__":
@@ -20,7 +21,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_dir", type=str, required=True, help="Directory for the models."
     )
-    parser.add_argument("--model_number", type=int, required=True, help="Model number.")
+    parser.add_argument("--model_number", type=str, required=True, help="Model name/number string (e.g. 1702_retrain).")
     parser.add_argument(
         "--tf_indir",
         type=str,
@@ -47,38 +48,90 @@ if __name__ == "__main__":
         action="store_true",
         help="Overwrite any existing statistics files.",
     )
+    parser.add_argument(
+        "--front_types",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Front type names (e.g. CF WF SF OF DL). Required when no model properties pkl exists.",
+    )
+    parser.add_argument(
+        "--prediction_file",
+        type=str,
+        default=None,
+        help=(
+            "Path to the predictions NetCDF (output of predict_from_tf_shards.py). "
+            "When provided, overrides the auto-computed path from --model_dir/--model_number."
+        ),
+    )
+    parser.add_argument(
+        "--fronts_file",
+        type=str,
+        default=None,
+        help=(
+            "Path to a single truth fronts NetCDF file (e.g. fronts_subset.nc). "
+            "When provided, bypasses the legacy front_files_YYYYMM.pkl lookup and "
+            "reads truth labels directly from this file."
+        ),
+    )
+    parser.add_argument(
+        "--mask",
+        type=str,
+        default=None,
+        choices=["land", "ocean"],
+        help=(
+            "Restrict statistics to land or ocean grid points only. "
+            "Uses the Natural Earth 110m land mask via regionmask. "
+            "Omit for full-domain statistics."
+        ),
+    )
     args = vars(parser.parse_args())
 
-    model_properties = pd.read_pickle(
-        "%s/model_%d/model_%d_properties.pkl"
-        % (args["model_dir"], args["model_number"], args["model_number"])
-    )
     domain = args["domain"]
 
-    variables = model_properties["dataset_properties"]["variables"]
-
-    # Some older models do not have the 'dataset_properties' dictionary
-    try:
-        front_types = model_properties["dataset_properties"]["front_types"]
-        num_dims = model_properties["dataset_properties"]["num_dims"]
-    except KeyError:
-        front_types = model_properties["front_types"]
-        if args["model_number"] in [6846496, 7236500, 7507525]:
-            num_dims = (3, 3)
-
-    num_front_types = (
-        model_properties["classes"] - 1
-    )  # remove the "no front" class type
+    # Load model properties pkl if it exists; fall back to CLI args otherwise.
+    pkl_path = "%s/model_%s/model_%s_properties.pkl" % (
+        args["model_dir"], args["model_number"], args["model_number"]
+    )
+    if os.path.isfile(pkl_path):
+        model_properties = pd.read_pickle(pkl_path)
+        try:
+            front_types = model_properties["dataset_properties"]["front_types"]
+        except KeyError:
+            front_types = model_properties["front_types"]
+        num_front_types = model_properties["classes"] - 1
+    else:
+        model_properties = None
+        if not args["front_types"]:
+            parser.error(
+                "--front_types is required when no model properties pkl exists "
+                "(expected at %s)" % pkl_path
+            )
+        front_types = args["front_types"]
+        num_front_types = len(front_types)
 
     if args["dataset"] is not None and args["year_and_month"] is not None:
         raise ValueError("--dataset and --year_and_month cannot be passed together.")
     elif args["dataset"] is None and args["year_and_month"] is None:
-        raise ValueError(
-            "At least one of [--dataset, --year_and_month] must be passed."
-        )
+        if args["fronts_file"] is not None:
+            # Derive years directly from the fronts file
+            _ds = xr.open_dataset(args["fronts_file"])
+            years = sorted(set(pd.DatetimeIndex(_ds.time.values).year.tolist()))
+            _ds.close()
+            months = range(1, 13)
+        else:
+            raise ValueError(
+                "Provide --dataset, --year_and_month, or --fronts_file "
+                "(years will be derived from the fronts file automatically)."
+            )
     elif args["year_and_month"] is not None:
         years, months = [args["year_and_month"][0]], [args["year_and_month"][1]]
     else:
+        if model_properties is None:
+            raise ValueError(
+                "--dataset requires a model properties pkl. "
+                "Use --year_and_month or --fronts_file instead."
+            )
         years, months = model_properties["%s_years" % args["dataset"]], range(1, 13)
 
     if args["gpu_device"] is not None:
@@ -93,77 +146,50 @@ if __name__ == "__main__":
                 device=[gpus[gpu] for gpu in args["gpu_device"]][0], enable=True
             )
 
+    # ------------------------------------------------------------------
+    # Pre-compute the spatial land/ocean mask once (same grid for all months).
+    # We defer actual masking until lats/lons are known from the first file.
+    # ------------------------------------------------------------------
+    spatial_mask_2d: np.ndarray | None = None  # shape (Nlat, Nlon), True = include
+
     for year in years:
         for month in months:
-            front_files_month = pd.read_pickle(
-                "%s/front_files_%d%02d.pkl" % (args["tf_indir"], year, month)
-            )
-
-            if domain != "conus":
-                for front_file in front_files_month[::-1]:
-                    if any(
-                        [
-                            "%02d_full.nc" % hour in front_file
-                            for hour in np.arange(3, 21.1, 6)
-                        ]
-                    ):
-                        front_files_month.pop(front_files_month.index(front_file))
-
-            prediction_file = (
-                f"%s/model_%d/probabilities/model_%d_pred_%s_%d%02d.nc"
-                % (
-                    args["model_dir"],
-                    args["model_number"],
-                    args["model_number"],
-                    args["domain"],
-                    year,
-                    month,
-                )
-            )
-
-            stats_dataset_path = (
-                "%s/model_%d/statistics/model_%d_statistics_%s_%d%02d.nc"
-                % (
-                    args["model_dir"],
-                    args["model_number"],
-                    args["model_number"],
-                    args["domain"],
-                    year,
-                    month,
-                )
-            )
-            if os.path.isfile(stats_dataset_path) and not args["overwrite"]:
-                print(
-                    "WARNING: %s exists, pass the --overwrite argument to overwrite existing data."
-                    % stats_dataset_path
-                )
-                continue
-
-            probs_ds = xr.open_dataset(prediction_file)
-            lons = probs_ds["longitude"].values
-            lats = probs_ds["latitude"].values
-
-            try:
-                custom_extent = model_properties["dataset_properties"][
-                    "override_extent"
-                ]
-                slice_extent = dict(
-                    longitude=slice(custom_extent[0], custom_extent[1]),
-                    latitude=slice(custom_extent[3], custom_extent[2]),
-                )
-            except KeyError:
-                slice_extent = dict(
-                    longitude=slice(
-                        DOMAIN_EXTENTS[args["domain"]][0],
-                        DOMAIN_EXTENTS[args["domain"]][1],
-                    ),
-                    latitude=slice(
-                        DOMAIN_EXTENTS[args["domain"]][3],
-                        DOMAIN_EXTENTS[args["domain"]][2],
-                    ),
+            # ------------------------------------------------------------------
+            # Load front truth labels — either from a single NetCDF file or the
+            # legacy pkl-based monthly file list.
+            # ------------------------------------------------------------------
+            if args["fronts_file"] is not None:
+                fronts_ds = xr.open_dataset(args["fronts_file"])
+                time_sel = "%d-%02d" % (year, month)
+                fronts_ds_month = data_utils.reformat_fronts(
+                    fronts_ds.sel(time=time_sel), front_types
                 )
             else:
-                if model_properties["dataset_properties"]["override_extent"] is None:
+                front_files_month = pd.read_pickle(
+                    "%s/front_files_%d%02d.pkl" % (args["tf_indir"], year, month)
+                )
+
+                if domain != "conus":
+                    for front_file in front_files_month[::-1]:
+                        if any(
+                            [
+                                "%02d_full.nc" % hour in front_file
+                                for hour in np.arange(3, 21.1, 6)
+                            ]
+                        ):
+                            front_files_month.pop(front_files_month.index(front_file))
+
+                custom_extent = (
+                    model_properties["dataset_properties"].get("override_extent")
+                    if model_properties is not None
+                    else None
+                )
+                if custom_extent is not None:
+                    slice_extent = dict(
+                        longitude=slice(custom_extent[0], custom_extent[1]),
+                        latitude=slice(custom_extent[3], custom_extent[2]),
+                    )
+                else:
                     slice_extent = dict(
                         longitude=slice(
                             DOMAIN_EXTENTS[args["domain"]][0],
@@ -175,21 +201,105 @@ if __name__ == "__main__":
                         ),
                     )
 
-            fronts_ds = xr.open_mfdataset(
-                front_files_month, combine="nested", concat_dim="time"
-            ).sel(**slice_extent)
-            fronts_ds_month = data_utils.reformat_fronts(
-                fronts_ds.sel(time="%d-%02d" % (year, month)), front_types
+                fronts_ds = xr.open_mfdataset(
+                    front_files_month, combine="nested", concat_dim="time"
+                ).sel(**slice_extent)
+                fronts_ds_month = data_utils.reformat_fronts(
+                    fronts_ds.sel(time="%d-%02d" % (year, month)), front_types
+                )
+
+            # ------------------------------------------------------------------
+            # Resolve prediction file and output path.
+            # Append the mask label to the stats filename when --mask is used so
+            # full / land / ocean stats files don't overwrite each other.
+            # ------------------------------------------------------------------
+            prediction_file = (
+                args["prediction_file"]
+                if args["prediction_file"] is not None
+                else "%s/model_%s/probabilities/model_%s_pred_%s_%d%02d.nc"
+                % (
+                    args["model_dir"],
+                    args["model_number"],
+                    args["model_number"],
+                    args["domain"],
+                    year,
+                    month,
+                )
             )
 
-            time_array = pd.read_pickle(
-                "%s/timesteps_%d%02d.pkl" % (args["tf_indir"], year, month)
+            mask_suffix = ("_%s" % args["mask"]) if args["mask"] else ""
+            stats_dataset_path = (
+                "%s/model_%s/statistics/model_%s_statistics_%s_%d%02d%s.nc"
+                % (
+                    args["model_dir"],
+                    args["model_number"],
+                    args["model_number"],
+                    args["domain"],
+                    year,
+                    month,
+                    mask_suffix,
+                )
+            )
+            if os.path.isfile(stats_dataset_path) and not args["overwrite"]:
+                print(
+                    "WARNING: %s exists, pass the --overwrite argument to overwrite existing data."
+                    % stats_dataset_path
+                )
+                continue
+
+            os.makedirs(os.path.dirname(stats_dataset_path), exist_ok=True)
+
+            probs_ds_full = xr.open_dataset(prediction_file)
+            # Subset predictions to the current year-month, then align with
+            # fronts on common timestamps (the two datasets may have different
+            # temporal resolutions or slightly different time coverage).
+            probs_ds_month = probs_ds_full.sel(time="%d-%02d" % (year, month))
+            common_times = np.intersect1d(
+                fronts_ds_month["time"].values, probs_ds_month["time"].values
+            )
+            if len(common_times) == 0:
+                print(
+                    "WARNING: no common timesteps for %d-%02d — skipping." % (year, month)
+                )
+                continue
+            fronts_ds_month = fronts_ds_month.sel(time=common_times)
+            probs_ds = probs_ds_month.sel(time=common_times)
+
+            time_array = (
+                common_times
+                if args["fronts_file"] is not None
+                else pd.read_pickle(
+                    "%s/timesteps_%d%02d.pkl" % (args["tf_indir"], year, month)
+                )
             )
             num_timesteps = len(time_array)
             lons = fronts_ds_month["longitude"].values
             lats = fronts_ds_month["latitude"].values
             Nlon = len(lons)
             Nlat = len(lats)
+
+            # ------------------------------------------------------------------
+            # Build the spatial mask (land or ocean) on the first iteration when
+            # we have the actual lat/lon grid.  Reuse on subsequent iterations.
+            # ------------------------------------------------------------------
+            if args["mask"] is not None and spatial_mask_2d is None:
+                land_regions = regionmask.defined_regions.natural_earth_v5_1_2.land_110
+                raw_mask = land_regions.mask(lons, lats)  # NaN = ocean, 0 = land
+                land_2d = ~np.isnan(raw_mask.values)  # True where land
+                spatial_mask_2d = land_2d if args["mask"] == "land" else ~land_2d
+                print(
+                    "Spatial mask (%s): %d / %d grid points included."
+                    % (args["mask"], spatial_mask_2d.sum(), spatial_mask_2d.size)
+                )
+
+            # Latitude weights; zero out masked points when --mask is active.
+            lat_weights = np.cos(np.deg2rad(lats))[:, np.newaxis]  # (Nlat, 1)
+            if spatial_mask_2d is not None:
+                lat_weights = lat_weights * spatial_mask_2d.astype(float)  # broadcast
+            weights = tf.cast(
+                tf.convert_to_tensor(lat_weights[np.newaxis, :, :]),
+                tf.float32,
+            )  # shape (1, Nlat, Nlon) — latitude weights with mask applied
 
             tp_array_temporal = np.zeros(
                 shape=[num_front_types, num_timesteps, 5, 100]
@@ -215,12 +325,6 @@ if __name__ == "__main__":
             fn_array_spatial = np.zeros(
                 shape=[num_front_types, Nlat, Nlon, 5, 100]
             ).astype("float32")
-            weights = tf.cast(
-                tf.convert_to_tensor(
-                    np.cos(np.deg2rad(lats))[np.newaxis, :, np.newaxis]
-                ),
-                tf.float32,
-            )  # latitude weights for the statistics
 
             thresholds = np.linspace(
                 0.01, 1, 100
@@ -265,9 +369,17 @@ if __name__ == "__main__":
             )
 
             for front_no, front_type in enumerate(front_types):
-                fronts_ds_month = data_utils.reformat_fronts(
-                    fronts_ds.sel(time="%d-%02d" % (year, month)), front_types
-                )
+                if args["fronts_file"] is not None:
+                    fronts_ds_month = data_utils.reformat_fronts(
+                        xr.open_dataset(args["fronts_file"]).sel(
+                            time="%d-%02d" % (year, month)
+                        ),
+                        front_types,
+                    )
+                else:
+                    fronts_ds_month = data_utils.reformat_fronts(
+                        fronts_ds.sel(time="%d-%02d" % (year, month)), front_types
+                    )
                 print("%d-%02d: %s (TN/FN)" % (year, month, front_type))
                 ### Calculate true/false negatives ###
                 for i in range(100):
