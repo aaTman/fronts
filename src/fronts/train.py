@@ -21,6 +21,8 @@ from typing import Any
 
 import dask
 import numpy as np
+import psutil
+import pynvml
 import tensorflow as tf
 import wandb
 import xarray as xr
@@ -302,13 +304,29 @@ def _compile(model: tf.keras.Model, learning_rate: float, class_weights: list[fl
 
 
 class _GcCallback(tf.keras.callbacks.Callback):
+    def on_train_begin(self, logs=None):
+        pynvml.nvmlInit()
+
+    def on_train_end(self, logs=None):
+        pynvml.nvmlShutdown()
+
     def on_epoch_end(self, epoch, logs=None):
         gc.collect()
-
-
-class _WandbLogger(tf.keras.callbacks.Callback):
-    def on_epoch_end(self, epoch, logs=None):
-        wandb.log(logs or {}, step=epoch)
+        proc = psutil.Process()
+        ram_used_gib = proc.memory_info().rss / 2**30
+        ram_total_gib = psutil.virtual_memory().total / 2**30
+        logger.info("RAM: %.1f%% (%.1f / %.1f GiB)", 100 * ram_used_gib / ram_total_gib, ram_used_gib, ram_total_gib)
+        n_gpus = pynvml.nvmlDeviceGetCount()
+        for i in range(n_gpus):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            logger.info(
+                "GPU %d VRAM: %.1f%% (%.1f / %.1f GiB)",
+                i,
+                100 * mem.used / mem.total,
+                mem.used / 2**30,
+                mem.total / 2**30,
+            )
 
 
 def _run(
@@ -335,7 +353,7 @@ def _run(
     callbacks = [
         tf.keras.callbacks.EarlyStopping(monitor=monitor, patience=patience, restore_best_weights=True),
         _GcCallback(),
-        *([_WandbLogger()] if use_wandb else []),
+        *([wandb.keras.WandbMetricsLogger(log_freq="epoch")] if use_wandb else []),
     ]
     t0 = time.time()
     history = model.fit(
