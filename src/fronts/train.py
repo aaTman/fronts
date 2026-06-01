@@ -336,25 +336,38 @@ def _run(
     epochs: int,
     monitor: str,
     patience: int,
-    wandb_project: str | None,
+    model_checkpoint_path: str | None = None,
+    wandb_project: str | None = None,
     run_name: str | None = None,
     steps_per_epoch: int | None = None,
     validation_steps: int | None = None,
     run_config: dict | None = None,
 ) -> tuple:
-    use_wandb = wandb_project is not None
-    if use_wandb:
+    if wandb_project:
         wandb.init(
             project=wandb_project,
             name=run_name,
             reinit=True,
             config=run_config or {},
         )
+
+    # Use the W&B Keras callback if logging to W&B, otherwise the standard ModelCheckpoint.
+    ckpt_cls = wandb.keras.WandbModelCheckpoint if wandb_project else tf.keras.callbacks.ModelCheckpoint
     callbacks = [
         tf.keras.callbacks.EarlyStopping(monitor=monitor, patience=patience, restore_best_weights=True),
         _GcCallback(),
-        *([wandb.keras.WandbMetricsLogger(log_freq="epoch")] if use_wandb else []),
     ]
+    if wandb_project:
+        callbacks.append(wandb.keras.WandbMetricsLogger(log_freq="epoch"))
+    if model_checkpoint_path:
+        callbacks.append(
+            ckpt_cls(
+                f"{model_checkpoint_path}_best_loss.keras",
+                monitor="val_loss",
+                save_best_only=True,
+                mode="min",
+            )
+        )
     t0 = time.time()
     history = model.fit(
         train_ds,
@@ -365,7 +378,11 @@ def _run(
         callbacks=callbacks,
     )
     elapsed = time.time() - t0
-    if use_wandb:
+    if model_checkpoint_path:
+        final_path = f"{model_checkpoint_path}_final.keras"
+        model.save(final_path)
+        logger.info("Saved final model to %s", final_path)
+    if wandb_project:
         wandb.finish()
     return history, elapsed
 
@@ -519,6 +536,7 @@ def main():
         validation_steps=val_steps,
         monitor=cfg.callbacks_config.monitor,
         patience=cfg.callbacks_config.patience,
+        model_checkpoint_path=cfg.callbacks_config.model_checkpoint_path,
         wandb_project=wandb_project,
         run_name=run_name,
         run_config=run_meta,
