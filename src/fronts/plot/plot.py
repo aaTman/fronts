@@ -359,11 +359,12 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
 
     probs_masked = xr.where(probs_ds > prob_mask, probs_ds, float("nan"))
 
+    central_lon = ((extent[0] + extent[1]) / 2) % 360
     fig, ax = plt.subplots(
         1,
         1,
         figsize=(22, 8),
-        subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)},
+        subplot_kw={"projection": ccrs.PlateCarree(central_longitude=central_lon)},
     )
     plot_background(extent, ax=ax, linewidth=0.5)
 
