@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from collections import namedtuple
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 
 import dacite
 import icechunk as ic
@@ -99,12 +99,16 @@ class PeriodicBoundaryIndex(PandasIndex):
         return f"PeriodicBoundaryIndex(period={self.period})"
 
 
+@overload
+def attach_periodic_lon_index(data: xr.DataArray) -> xr.DataArray: ...
+@overload
+def attach_periodic_lon_index(data: xr.Dataset) -> xr.Dataset: ...
 def attach_periodic_lon_index(data: XArrayType) -> XArrayType:
     """Attach a 360°-period :class:`PeriodicBoundaryIndex` to ``longitude``.
 
     Replaces the default ``PandasIndex`` so wrap-crossing
-    ``.sel(longitude=slice(...))`` queries work via
-    :func:`_wrap_lon_slice`.
+    ``.sel(longitude=slice(...))`` queries work, e.g. ``slice(130, 369.75)``
+    correctly wraps past 360° to include both 130-359.75 and 0-9.75.
 
     Args:
         data: Dataset or DataArray with a 1-D longitude coordinate.

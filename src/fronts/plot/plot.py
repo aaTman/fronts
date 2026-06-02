@@ -70,7 +70,6 @@ _DOMAIN_LAYOUT: dict[str, _LayoutConfig] = {
 }
 
 
-
 def _parse_front_types(aggregate_ds: xr.Dataset) -> list[str]:
     """Infer front type labels from variable names (tp_{FT})."""
     return [
@@ -262,7 +261,6 @@ def plot_performance_diagrams(
     print(f"Saved: {filename}")
 
 
-
 def _load_prediction(
     model: Any,
     era5_ds: xr.Dataset,
@@ -329,6 +327,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     )
 
     probs_ds = _load_prediction(model, era5_ds, data_cfg.variables, predict_cfg.front_types, init_time)
+    probs_ds = utils.attach_periodic_lon_index(probs_ds)
     extent = DOMAIN_EXTENTS[predict_cfg.domain]
     probs_ds = probs_ds.sel(
         latitude=slice(extent[2], extent[3]),
@@ -346,7 +345,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
             zarr_format=ic_fronts.zarr_format,
             virtual_chunk_local_path=ic_fronts.virtual_chunk_local_path,
         )
-        truth_da = _load_truth(fronts_ds, init_time)
+        truth_da = utils.attach_periodic_lon_index(_load_truth(fronts_ds, init_time))
         truth_da = truth_da.sel(
             latitude=slice(extent[2], extent[3]),
             longitude=slice(extent[0], extent[1]),
@@ -458,7 +457,6 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     plt.savefig(outfile, bbox_inches="tight", dpi=500)
     plt.close()
     print(f"Saved: {outfile}")
-
 
 
 def main() -> None:
