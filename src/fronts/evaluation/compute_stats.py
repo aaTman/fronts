@@ -18,6 +18,7 @@ Usage:
 import argparse
 import dataclasses
 import datetime
+import logging
 import os
 import time
 from typing import Any
@@ -32,6 +33,8 @@ from tqdm import tqdm
 from fronts import utils
 from fronts.constants import FRONT_TYPE_CLASS_INDEX
 from fronts.data import config, inputs, targets
+
+log = logging.getLogger(__name__)
 
 NEIGHBORHOODS_KM = np.array([50, 100, 150, 200, 250])
 EXPAND_ITERS_PER_STEP = 2
@@ -51,7 +54,7 @@ def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.nda
     inv_idx = np.argsort(sort_idx)
     is_land = ~np.isnan(raw.values[:, inv_idx])
     spatial_mask = is_land if mask == "land" else ~is_land
-    print(f"Spatial mask ({mask}): {spatial_mask.sum()} / {spatial_mask.size} grid points included.")
+    log.info("Spatial mask (%s): %d / %d grid points included.", mask, spatial_mask.sum(), spatial_mask.size)
     return spatial_mask
 
 
@@ -100,7 +103,7 @@ def compute_stats(
     n_times = era5_da.sizes["time"]
     class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in front_types]
 
-    print("Loading ERA5 and targets into memory …")
+    log.info("Loading ERA5 and targets into memory …")
     era5_np = era5_da.values.astype(np.float32)      # (time, lat, lon, channel)
     targets_np = targets_da.values.astype(np.float32)  # (time, lat, lon, class)
 
@@ -156,9 +159,9 @@ def compute_stats(
         t_stats = time.perf_counter()
 
         if t < 3:
-            print(
-                f"  t={t}: load={t_load-t0:.3f}s  infer={t_infer-t_load:.3f}s"
-                f"  stats={t_stats-t_infer:.3f}s  total={t_stats-t0:.3f}s"
+            log.info(
+                "t=%d: load=%.3fs  infer=%.3fs  stats=%.3fs  total=%.3fs",
+                t, t_load - t0, t_infer - t_load, t_stats - t_infer, t_stats - t0,
             )
 
     spatial_ds = xr.Dataset(
@@ -192,6 +195,7 @@ def compute_stats(
 
 def main() -> None:
     """Parse arguments, load configs, and run stats computation."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Compute performance statistics from icechunk stores.")
     parser.add_argument("--config_path", type=str, required=True, help="Path to training config YAML.")
     parser.add_argument(
@@ -224,14 +228,14 @@ def main() -> None:
     )
 
     utils.configure_gpu(eval_cfg.gpu_device)
-    print(f"Loading model from {eval_cfg.model_path} …")
+    log.info("Loading model from %s …", eval_cfg.model_path)
     model = tf.keras.models.load_model(eval_cfg.model_path, compile=False)
-    print(f"Model loaded. Output count: {len(model.outputs)}.")
+    log.info("Model loaded. Output count: %d.", len(model.outputs))
 
     ic_era5 = data_cfg.era5_icechunk_config
     ic_fronts = data_cfg.fronts_icechunk_config
 
-    print("Opening ERA5 icechunk store …")
+    log.info("Opening ERA5 icechunk store …")
     era5_ds = utils.open_readonly_icechunk_store(
         ic_era5.store_path,
         ic_era5.branch_name,
@@ -239,7 +243,7 @@ def main() -> None:
         zarr_format=ic_era5.zarr_format,
         virtual_chunk_local_path=ic_era5.virtual_chunk_local_path,
     )
-    print("Opening fronts icechunk store …")
+    log.info("Opening fronts icechunk store …")
     fronts_ds = utils.open_readonly_icechunk_store(
         ic_fronts.store_path,
         ic_fronts.branch_name,
@@ -258,7 +262,7 @@ def main() -> None:
 
     dilation = eval_cfg.front_dilation if eval_cfg.front_dilation is not None else data_cfg.front_dilation
     if dilation > 0:
-        print(f"Applying front dilation: {dilation} iterations …")
+        log.info("Applying front dilation: %d iterations …", dilation)
         targets_da = targets.dilate_fronts(targets_da, dilation)
 
     common_times = np.intersect1d(era5_da["time"].values, targets_da["time"].values)
@@ -266,7 +270,7 @@ def main() -> None:
         common_times = common_times[common_times >= np.datetime64(eval_cfg.time_start)]
     if eval_cfg.time_end:
         common_times = common_times[common_times < np.datetime64(eval_cfg.time_end)]
-    print(f"Common timesteps: {len(common_times)}")
+    log.info("Common timesteps: %d", len(common_times))
     era5_da = era5_da.sel(time=common_times)
     targets_da = targets_da.sel(time=common_times)
 
@@ -275,7 +279,7 @@ def main() -> None:
 
     spatial_mask = _build_spatial_mask(lats, lons, eval_cfg.mask) if eval_cfg.mask else None
 
-    print("Computing statistics …")
+    log.info("Computing statistics …")
     spatial_ds, aggregate_ds = compute_stats(
         model=model,
         era5_da=era5_da,
@@ -293,8 +297,8 @@ def main() -> None:
 
     spatial_ds.astype("float32").to_netcdf(spatial_path)
     aggregate_ds.astype("float32").to_netcdf(aggregate_path)
-    print(f"Spatial stats   → {spatial_path}")
-    print(f"Aggregate stats → {aggregate_path}")
+    log.info("Spatial stats   → %s", spatial_path)
+    log.info("Aggregate stats → %s", aggregate_path)
 
 
 if __name__ == "__main__":
