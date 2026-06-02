@@ -19,7 +19,6 @@ import os
 from typing import Any, TypedDict
 
 import cartopy.crs as ccrs
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
@@ -377,7 +376,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
             continue
 
         if predict_cfg.filled_contours:
-            cmap_probs = matplotlib.colormaps[CONTOUR_CMAPS[ft]].resampled(n_colors)
+            cmap_probs = truncated_colormap(CONTOUR_CMAPS[ft], minval=0.1, n=n_colors)
             norm_probs = colors.Normalize(vmin=0, vmax=1.01)
             probs_masked[ft].plot.contourf(
                 ax=ax,
@@ -387,7 +386,6 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
                 levels=levels,
                 cmap=cmap_probs,
                 transform=ccrs.PlateCarree(),
-                alpha=0.75,
                 add_colorbar=False,
             )
             cbar_ax = fig.add_axes((cbar_x_start + (front_no * 0.015), 0.24, 0.015, 0.64))
@@ -395,7 +393,6 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
                 cm.ScalarMappable(norm=norm_probs, cmap=cmap_probs),
                 cax=cbar_ax,
                 boundaries=levels[1:],
-                alpha=0.75,
             )
             cbar.set_ticklabels([])
             if front_no == len(front_types):
