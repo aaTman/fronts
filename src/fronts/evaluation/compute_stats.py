@@ -98,10 +98,8 @@ def compute_stats(
     n_times = era5_da.sizes["time"]
 
     for t in tqdm(range(n_times), unit="timestep"):
-        # Fuse both dask graphs into a single scheduler pass.
-        x_da, y_da = xr.compute(era5_da.isel(time=t), targets_da.isel(time=t))  # pyrefly: ignore[missing-attribute]
-        x_np = x_da.values.astype(np.float32)  # (lat, lon, channel)
-        y_np = y_da.values.astype(np.float32)  # (lat, lon, class)
+        x_np = era5_da.isel(time=t).values.astype(np.float32)  # (lat, lon, channel)
+        y_np = targets_da.isel(time=t).values.astype(np.float32)  # (lat, lon, class)
 
         pred = model(x_np[np.newaxis], training=False)
         if isinstance(pred, (list, tuple)):
