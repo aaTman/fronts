@@ -198,7 +198,7 @@ def main() -> None:
 
     utils.configure_gpu(eval_cfg.gpu_device)
     print(f"Loading model from {eval_cfg.model_path} …")
-    model = tf.keras.models.load_model(eval_cfg.model_path)
+    model = tf.keras.models.load_model(eval_cfg.model_path, compile=False)
     print(f"Model loaded. Output count: {len(model.outputs)}.")
 
     ic_era5 = data_cfg.era5_icechunk_config

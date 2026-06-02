@@ -314,7 +314,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     utils.configure_gpu(predict_cfg.gpu_device)
 
     print(f"Loading model from {predict_cfg.model_path} …")
-    model = tf.keras.models.load_model(predict_cfg.model_path)
+    model = tf.keras.models.load_model(predict_cfg.model_path, compile=False)
 
     year, month, day, hour = predict_cfg.init_time
     init_time = np.datetime64(f"{year}-{month:02d}-{day:02d}T{hour:02d}")
