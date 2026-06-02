@@ -97,17 +97,21 @@ def compute_stats(
     fn_ag = np.zeros_like(tp_ag)
 
     n_times = era5_da.sizes["time"]
+    class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in front_types]
+
+    print("Loading ERA5 and targets into memory …")
+    era5_np = era5_da.values.astype(np.float32)      # (time, lat, lon, channel)
+    targets_np = targets_da.values.astype(np.float32)  # (time, lat, lon, class)
 
     for t in tqdm(range(n_times), unit="timestep"):
-        x_np = era5_da.isel(time=t).values.astype(np.float32)  # (lat, lon, channel)
-        y_np = targets_da.isel(time=t).values.astype(np.float32)  # (lat, lon, class)
+        x_np = era5_np[t]   # (lat, lon, channel)
+        y_np = targets_np[t]  # (lat, lon, class)
 
         pred = model(x_np[np.newaxis], training=False)
         if isinstance(pred, (list, tuple)):
             pred = pred[0]
         pred_np = pred.numpy()[0].astype(np.float32)  # (lat, lon, n_classes)
 
-        class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in front_types]
         pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, n_fronts)
         truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, n_fronts) bool
 
