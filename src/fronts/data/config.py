@@ -102,12 +102,10 @@ class EvalConfig:
 
     model_path: str
     outdir: str
+    coordinates: utils.BoundingBox
     front_types: list[str] = dataclasses.field(default_factory=lambda: ["CF", "WF", "SF", "OF", "DL"])
     mask: str | None = None
     front_dilation: int | None = None
-    coordinates: utils.BoundingBox = dataclasses.field(
-        default_factory=lambda: utils.BoundingBox(lat_min=25.0, lat_max=56.75, lon_min=228.0, lon_max=299.75)
-    )
     gpu_device: int | None = None
 
 
