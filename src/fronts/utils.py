@@ -135,7 +135,14 @@ def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
     Returns:
         Spatially subsetted Dataset.
     """
-    lat_sel = data.sel(latitude=slice(bb.lat_min, bb.lat_max))
+    # ERA5 latitudes are stored descending (90 to -90); use the correct slice direction.
+    lat_vals = data["latitude"].values
+    if len(lat_vals) >= 2 and lat_vals[0] > lat_vals[1]:
+        lat_slice = slice(bb.lat_max, bb.lat_min)  # descending
+    else:
+        lat_slice = slice(bb.lat_min, bb.lat_max)  # ascending
+    lat_sel = data.sel(latitude=lat_slice)
+
     if bb.lon_max <= 360.0:
         return lat_sel.sel(longitude=slice(bb.lon_min, bb.lon_max))
     part1 = lat_sel.sel(longitude=slice(bb.lon_min, None))
