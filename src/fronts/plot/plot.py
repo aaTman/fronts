@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import os
+from typing import Any, TypedDict
 
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
@@ -36,29 +37,38 @@ from fronts.constants import (
 from fronts.data import config, inputs, targets
 from fronts.plot.utils import plot_background, truncated_colormap
 
-_DOMAIN_LAYOUT = {
+
+class _LayoutConfig(TypedDict):
+    table_axis_extent: tuple[float, float, float, float]
+    table_scale: tuple[float, float]
+    table_title_kwargs: dict[str, Any]
+    spatial_axis_extent: tuple[float, float, float, float]
+    cbar_kwargs: dict[str, str | float | int]
+    spatial_plot_xlabels: list[int]
+    spatial_plot_ylabels: list[int]
+
+
+_DOMAIN_LAYOUT: dict[str, _LayoutConfig] = {
     "conus": {
-        "table_axis_extent": [0.063, -0.038, 0.39, 0.239],
-        "table_scale": (1, 3.3),
+        "table_axis_extent": (0.063, -0.038, 0.39, 0.239),
+        "table_scale": (1.0, 3.3),
         "table_title_kwargs": {"x": 0.5, "y": 0.098, "pad": -4},
-        "spatial_axis_extent": [0.5, -0.582, 0.512, 0.544],
+        "spatial_axis_extent": (0.5, -0.582, 0.512, 0.544),
         "cbar_kwargs": {"label": "CSI", "pad": 0, "shrink": 1},
         "spatial_plot_xlabels": [-140, -105, -70],
         "spatial_plot_ylabels": [30, 40, 50],
     },
     "full": {
-        "table_axis_extent": [0.063, -0.038, 0.39, 0.229],
-        "table_scale": (1, 2.8),
+        "table_axis_extent": (0.063, -0.038, 0.39, 0.229),
+        "table_scale": (1.0, 2.8),
         "table_title_kwargs": {"x": 0.5, "y": 0.096, "pad": -4},
-        "spatial_axis_extent": [0.523, -0.5915, 0.48, 0.66],
+        "spatial_axis_extent": (0.523, -0.5915, 0.48, 0.66),
         "cbar_kwargs": {"label": "CSI", "pad": 0, "shrink": 0.675},
         "spatial_plot_xlabels": [-150, -120, -90, -60, -30, 0, 120, 150, 180],
         "spatial_plot_ylabels": [0, 20, 40, 60, 80],
     },
 }
 
-
-# ─── Performance diagrams ────────────────────────────────────────────────────
 
 
 def _parse_front_types(aggregate_ds: xr.Dataset) -> list[str]:
@@ -138,7 +148,7 @@ def plot_performance_diagrams(
     ax0.clabel(cs, fb_levels, fontsize=8)
     csi_contour = ax0.contourf(sr_matrix, pod_matrix, csi_matrix, csi_levels, cmap="Blues")
     cbar = fig.colorbar(csi_contour, ax=ax0, pad=0.02, label="Critical Success Index (CSI)")
-    cbar.set_ticks(axis_ticks)
+    cbar.set_ticks(axis_ticks.tolist())
 
     ax1_bar = ax1.twinx()
     ax1_bar.set_ylabel("Percentage of Grid Points with Forecasts [bars]")
@@ -210,9 +220,9 @@ def plot_performance_diagrams(
         cellLoc="center",
     )
     stats_table.scale(*layout["table_scale"])
-    for cell in stats_table._cells:
-        stats_table._cells[cell].set_alpha(0.7)
-        stats_table._cells[cell].set_text_props(fontproperties=FontProperties(size="x-large", stretch="expanded"))
+    for cell in stats_table._cells:  # pyrefly: ignore[missing-attribute]
+        stats_table._cells[cell].set_alpha(0.7)  # pyrefly: ignore[missing-attribute]
+        stats_table._cells[cell].set_text_props(fontproperties=FontProperties(size="x-large", stretch="expanded"))  # pyrefly: ignore[missing-attribute]
 
     csi_cmap = truncated_colormap("gnuplot2", maxval=0.9, n=10)
     spatial_axis = plt.axes(layout["spatial_axis_extent"], projection=ccrs.Miller(central_longitude=250))
@@ -230,7 +240,7 @@ def plot_performance_diagrams(
         cbar_kwargs=layout["cbar_kwargs"],
     )
     spatial_axis.set_title(rf"$\bf{{d)}}$ $\bf{{{map_neighborhood}}}$ $\bf{{km}}$ $\bf{{CSI}}$ $\bf{{map}}$")
-    gl = spatial_axis.gridlines(draw_labels=True, zorder=0, dms=True, x_inline=False, y_inline=False)
+    gl = spatial_axis.gridlines(draw_labels=True, zorder=0, dms=True, x_inline=False, y_inline=False)  # pyrefly: ignore[missing-attribute]
     gl.right_labels = False
     gl.top_labels = False
     gl.left_labels = True
@@ -251,8 +261,6 @@ def plot_performance_diagrams(
     plt.close()
     print(f"Saved: {filename}")
 
-
-# ─── Case study ──────────────────────────────────────────────────────────────
 
 
 def _load_prediction(
@@ -387,7 +395,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
                 alpha=0.75,
                 add_colorbar=False,
             )
-            cbar_ax = fig.add_axes([cbar_x_start + (front_no * 0.015), 0.24, 0.015, 0.64])
+            cbar_ax = fig.add_axes((cbar_x_start + (front_no * 0.015), 0.24, 0.015, 0.64))
             cbar = plt.colorbar(
                 cm.ScalarMappable(norm=norm_probs, cmap=cmap_probs),
                 cax=cbar_ax,
@@ -397,8 +405,9 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
             cbar.set_ticklabels([])
             if front_no == len(front_types):
                 cbar.set_label("Probability (uncalibrated)", rotation=90)
-                cbar.set_ticks(np.around(np.arange(prob_mask, 1 + prob_int, prob_int), 2))
-                cbar.set_ticklabels(np.around(np.arange(prob_mask, 1 + prob_int, prob_int), 2))
+                tick_vals = np.around(np.arange(prob_mask, 1 + prob_int, prob_int), 2)
+                cbar.set_ticks(tick_vals.tolist())
+                cbar.set_ticklabels([str(v) for v in tick_vals])
 
         if predict_cfg.open_contours:
             probs_masked[ft].plot.contour(
@@ -450,8 +459,6 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     plt.close()
     print(f"Saved: {outfile}")
 
-
-# ─── Entry point ─────────────────────────────────────────────────────────────
 
 
 def main() -> None:

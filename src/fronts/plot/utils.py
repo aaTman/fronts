@@ -27,11 +27,11 @@ def plot_background(
         crs = ccrs.PlateCarree()
     if ax is None:
         ax = plt.axes(projection=crs)
-    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=linewidth)
-    ax.add_feature(cfeature.BORDERS, linewidth=linewidth)
-    ax.add_feature(cfeature.STATES, linewidth=linewidth)
+    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=linewidth)  # pyrefly: ignore[missing-attribute]
+    ax.add_feature(cfeature.BORDERS, linewidth=linewidth)  # pyrefly: ignore[missing-attribute]
+    ax.add_feature(cfeature.STATES, linewidth=linewidth)  # pyrefly: ignore[missing-attribute]
     if extent is not None:
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.set_extent(extent, crs=ccrs.PlateCarree())  # pyrefly: ignore[missing-attribute]
     return ax
 
 
