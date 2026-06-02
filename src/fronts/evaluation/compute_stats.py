@@ -8,19 +8,19 @@ Outputs two NetCDF files compatible with the ``performance-diagrams`` subcommand
 ``src/fronts/plot/plot.py``.
 
 Usage:
-    pixi run python src/fronts/evaluation/compute_stats.py \
+    pixi run -e schooner python src/fronts/evaluation/compute_stats.py \
         --config_path configs/schooner_train.yaml --mask land
 
-    pixi run python src/fronts/evaluation/compute_stats.py \
+    pixi run -e schooner python src/fronts/evaluation/compute_stats.py \
         --config_path configs/schooner_train.yaml --mask ocean --outdir ~/models/fronts/stats
 """
 
 import argparse
 import dataclasses
 import os
+from typing import Any
 
 import numpy as np
-import tensorflow as tf
 import xarray as xr
 from scipy.ndimage import maximum_filter
 from tqdm import tqdm
@@ -49,7 +49,7 @@ def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.nda
 
 
 def compute_stats(
-    model: tf.keras.Model,
+    model: Any,
     era5_da: xr.DataArray,
     targets_da: xr.DataArray,
     front_types: list[str],
@@ -193,6 +193,8 @@ def main() -> None:
         mask=args.mask if args.mask is not None else eval_cfg.mask,
         outdir=args.outdir if args.outdir is not None else eval_cfg.outdir,
     )
+
+    import tensorflow as tf
 
     utils.configure_gpu(eval_cfg.gpu_device)
     print(f"Loading model from {eval_cfg.model_path} …")

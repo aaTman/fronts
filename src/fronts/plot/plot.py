@@ -6,10 +6,10 @@ Two subcommands:
     performance-diagrams — Read pre-computed stats NetCDFs and save 4-panel figures.
 
 Usage:
-    pixi run python src/fronts/plot/plot.py case-study \
+    pixi run -e schooner python src/fronts/plot/plot.py case-study \
         --config_path configs/schooner_train.yaml
 
-    pixi run python src/fronts/plot/plot.py performance-diagrams \
+    pixi run -e schooner python src/fronts/plot/plot.py performance-diagrams \
         --stats_dir ~/models/fronts/stats --mask land
 """
 
@@ -20,7 +20,6 @@ from typing import Any, TypedDict
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow as tf
 import xarray as xr
 from matplotlib import cm, colors
 from matplotlib.font_manager import FontProperties
@@ -264,7 +263,7 @@ def plot_performance_diagrams(
 
 
 def _load_prediction(
-    model: tf.keras.Model,
+    model: Any,
     era5_ds: xr.Dataset,
     variables: list[str],
     front_types: list[str],
@@ -310,6 +309,8 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
         predict_cfg: Prediction configuration (model, domain, plot options).
         data_cfg: Data configuration (icechunk store paths, variables).
     """
+    import tensorflow as tf
+
     utils.configure_gpu(predict_cfg.gpu_device)
 
     print(f"Loading model from {predict_cfg.model_path} …")
