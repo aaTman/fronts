@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 from collections import namedtuple
 from collections.abc import Callable
@@ -241,20 +240,28 @@ def open_readonly_icechunk_store(
 
 
 def configure_gpu(gpu_device: int | None) -> None:
-    """Configure TensorFlow to use a single GPU or fall back to CPU.
+    """Configure TensorFlow GPU visibility before the first TF import.
 
-    Must be called before any TensorFlow operations. When ``gpu_device`` is
-    None, forces CPU-only execution via ``CUDA_VISIBLE_DEVICES=-1``.
+    Must be called before ``import tensorflow`` in the calling scope.
+    Setting ``CUDA_VISIBLE_DEVICES`` after TF has been imported has no effect
+    because TF caches device enumeration on first import.
 
     Args:
         gpu_device: Index of the GPU to use, or None for CPU-only.
+
+    Raises:
+        RuntimeError: If ``gpu_device`` is specified but no GPUs are detected.
+        IndexError: If ``gpu_device`` is out of range for the available GPUs.
     """
     import tensorflow as tf
 
-    if gpu_device is not None:
-        gpus = tf.config.list_physical_devices("GPU")
-        if gpus:
-            tf.config.set_visible_devices(gpus[gpu_device], "GPU")
-            tf.config.experimental.set_memory_growth(gpus[gpu_device], True)
-    else:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpu_device is None:
+        tf.config.set_visible_devices([], "GPU")
+        return
+    if not gpus:
+        raise RuntimeError(f"gpu_device={gpu_device} requested but no GPUs detected.")
+    if gpu_device >= len(gpus):
+        raise IndexError(f"gpu_device={gpu_device} is out of range — {len(gpus)} GPU(s) available.")
+    tf.config.set_visible_devices(gpus[gpu_device], "GPU")
+    tf.config.experimental.set_memory_growth(gpus[gpu_device], True)

@@ -20,6 +20,7 @@ from typing import Any, TypedDict
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import numpy as np
+import tensorflow as tf
 import xarray as xr
 from matplotlib import cm, colors
 from matplotlib.font_manager import FontProperties
@@ -309,8 +310,6 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
         predict_cfg: Prediction configuration (model, domain, plot options).
         data_cfg: Data configuration (icechunk store paths, variables).
     """
-    import tensorflow as tf
-
     utils.configure_gpu(predict_cfg.gpu_device)
 
     print(f"Loading model from {predict_cfg.model_path} …")

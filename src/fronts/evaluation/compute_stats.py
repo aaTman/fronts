@@ -21,11 +21,14 @@ import os
 from typing import Any
 
 import numpy as np
+import regionmask
+import tensorflow as tf
 import xarray as xr
 from scipy.ndimage import maximum_filter
 from tqdm import tqdm
 
 from fronts import utils
+from fronts.constants import FRONT_TYPE_CLASS_INDEX
 from fronts.data import config, inputs, targets
 
 NEIGHBORHOODS_KM = np.array([50, 100, 150, 200, 250])
@@ -38,8 +41,6 @@ THRESHOLDS = np.linspace(0.01, 1.0, N_THRESHOLDS, dtype=np.float32)
 
 def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.ndarray:
     """Return a (n_lat, n_lon) bool array — True where points are included."""
-    import regionmask
-
     land_regions = regionmask.defined_regions.natural_earth_v5_1_2.land_110
     raw = land_regions.mask(lons, lats)
     is_land = ~np.isnan(raw.values)
@@ -103,8 +104,9 @@ def compute_stats(
             pred = pred[0]
         pred_np = pred.numpy()[0].astype(np.float32)  # (lat, lon, n_classes)
 
-        pred_fronts = pred_np[:, :, 1:]  # (lat, lon, n_fronts)
-        truth_fronts = y_np[:, :, 1:] > 0.5  # (lat, lon, n_fronts) bool
+        class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in front_types]
+        pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, n_fronts)
+        truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, n_fronts) bool
 
         pf4 = pred_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
         tf4 = truth_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
@@ -115,10 +117,12 @@ def compute_stats(
         tn_contrib = (below & ~tf4).astype(np.float32) * wt
         fn_contrib = (below & tf4).astype(np.float32) * wt
         # Rearrange (lat, lon, n_fronts, T) → (n_fronts, lat, lon, T), broadcast over n_nbhd.
-        tn_sp += np.moveaxis(tn_contrib, 2, 0)[:, :, :, np.newaxis, :]
-        fn_sp += np.moveaxis(fn_contrib, 2, 0)[:, :, :, np.newaxis, :]
-        tn_ag += np.moveaxis(tn_contrib, 2, 0).sum(axis=(1, 2))[:, np.newaxis, :]
-        fn_ag += np.moveaxis(fn_contrib, 2, 0).sum(axis=(1, 2))[:, np.newaxis, :]
+        tn_t = np.moveaxis(tn_contrib, 2, 0)
+        fn_t = np.moveaxis(fn_contrib, 2, 0)
+        tn_sp += tn_t[:, :, :, np.newaxis, :]
+        fn_sp += fn_t[:, :, :, np.newaxis, :]
+        tn_ag += tn_t.sum(axis=(1, 2))[:, np.newaxis, :]
+        fn_ag += fn_t.sum(axis=(1, 2))[:, np.newaxis, :]
 
         # TP/FP: cumulative neighbourhood expansion across n_nbhd.
         expanded = truth_fronts.copy()  # (lat, lon, n_fronts)
@@ -130,10 +134,12 @@ def compute_stats(
             above = pf4 >= THRESHOLDS
             tp_contrib = (above & exp4).astype(np.float32) * wt
             fp_contrib = (above & ~exp4).astype(np.float32) * wt
-            tp_sp[:, :, :, ni, :] += np.moveaxis(tp_contrib, 2, 0)
-            fp_sp[:, :, :, ni, :] += np.moveaxis(fp_contrib, 2, 0)
-            tp_ag[:, ni, :] += np.moveaxis(tp_contrib, 2, 0).sum(axis=(1, 2))
-            fp_ag[:, ni, :] += np.moveaxis(fp_contrib, 2, 0).sum(axis=(1, 2))
+            tp_t = np.moveaxis(tp_contrib, 2, 0)
+            fp_t = np.moveaxis(fp_contrib, 2, 0)
+            tp_sp[:, :, :, ni, :] += tp_t
+            fp_sp[:, :, :, ni, :] += fp_t
+            tp_ag[:, ni, :] += tp_t.sum(axis=(1, 2))
+            fp_ag[:, ni, :] += fp_t.sum(axis=(1, 2))
 
     spatial_ds = xr.Dataset(
         coords={
@@ -193,8 +199,6 @@ def main() -> None:
         mask=args.mask if args.mask is not None else eval_cfg.mask,
         outdir=args.outdir if args.outdir is not None else eval_cfg.outdir,
     )
-
-    import tensorflow as tf
 
     utils.configure_gpu(eval_cfg.gpu_device)
     print(f"Loading model from {eval_cfg.model_path} …")
