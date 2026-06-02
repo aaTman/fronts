@@ -140,7 +140,8 @@ def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
         return lat_sel.sel(longitude=slice(bb.lon_min, bb.lon_max))
     part1 = lat_sel.sel(longitude=slice(bb.lon_min, None))
     part2 = lat_sel.sel(longitude=slice(None, bb.lon_max - 360.0))
-    return xr.concat([part1, part2], dim="longitude")
+    parts = [p for p in (part1, part2) if p.sizes.get("longitude", 0) > 0]
+    return xr.concat(parts, dim="longitude") if len(parts) > 1 else parts[0]
 
 
 def open_config_yaml_as_dataclass(
