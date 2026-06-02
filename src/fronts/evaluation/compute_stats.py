@@ -231,7 +231,7 @@ def main() -> None:
 
     era5_da = inputs.era5_to_dataarray(era5_ds, data_cfg.variables)
     fronts_remapped = targets.remap_fronts(fronts_ds["identifier"])
-    targets_da = targets.one_hot_encode_to_dataarray(fronts_remapped)
+    targets_da = utils.drop_duplicate_times(targets.one_hot_encode_to_dataarray(fronts_remapped))
 
     dilation = eval_cfg.front_dilation if eval_cfg.front_dilation is not None else data_cfg.front_dilation
     if dilation > 0:

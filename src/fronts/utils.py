@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from collections import namedtuple
-from collections.abc import Callable
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 import dacite
 import icechunk as ic
@@ -14,9 +13,8 @@ from xarray.core.indexes import IndexSelResult, PandasIndex, _query_slice
 from xarray.core.indexing import _expand_slice
 
 T = TypeVar("T")
+_XArray = TypeVar("_XArray", xr.Dataset, xr.DataArray)
 BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
-XArrayType = xr.Dataset | xr.DataArray
-TransformFunc = Callable[[XArrayType], XArrayType]
 
 
 class PeriodicBoundaryIndex(PandasIndex):
@@ -99,11 +97,7 @@ class PeriodicBoundaryIndex(PandasIndex):
         return f"PeriodicBoundaryIndex(period={self.period})"
 
 
-@overload
-def attach_periodic_lon_index(data: xr.DataArray) -> xr.DataArray: ...
-@overload
-def attach_periodic_lon_index(data: xr.Dataset) -> xr.Dataset: ...
-def attach_periodic_lon_index(data: XArrayType) -> XArrayType:
+def attach_periodic_lon_index(data: _XArray) -> _XArray:
     """Attach a 360°-period :class:`PeriodicBoundaryIndex` to ``longitude``.
 
     Replaces the default ``PandasIndex`` so wrap-crossing
@@ -149,6 +143,19 @@ def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
     part2 = lat_sel.sel(longitude=slice(None, bb.lon_max - 360.0))
     parts = [p for p in (part1, part2) if p.sizes.get("longitude", 0) > 0]
     return xr.concat(parts, dim="longitude") if len(parts) > 1 else parts[0]
+
+
+def drop_duplicate_times(data: _XArray) -> _XArray:
+    """Drop duplicate timestamps along the time dimension, keeping the first occurrence.
+
+    Args:
+        data: DataArray or Dataset with a ``time`` coordinate.
+
+    Returns:
+        Input with any duplicate time values removed.
+    """
+    _, unique_idx = np.unique(data["time"].values, return_index=True)
+    return data.isel(time=sorted(unique_idx))
 
 
 def open_config_yaml_as_dataclass(
