@@ -1,0 +1,31 @@
+data_config:
+  era5_icechunk_config:
+    store_path: "/ourdisk/hpc/ai2es/tman/era5/fronts_icechunk"
+    branch_name: "main"
+  fronts_icechunk_config:
+    store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
+    branch_name: "main"
+    virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  front_dilation: 1
+  variables:
+    - geopotential
+    - temperature
+    - u_component_of_wind
+    - v_component_of_wind
+    - specific_humidity
+
+eval_config:
+  model_path: "/ourdisk/hpc/ai2es/tman/models/_best_loss.keras"
+  outdir: "/ourdisk/hpc/ai2es/tman/models/stats"
+  coordinates: [25.0, 56.75, 228.0, 299.75]  # lat_min, lat_max, lon_min, lon_max (CONUS)
+  front_types: [CF, WF, SF, OF, DL]
+  front_dilation: 1  # match training dilation
+
+predict_config:
+  model_path: "/ourdisk/hpc/ai2es/tman/models/_best_loss.keras"
+  outdir: "/ourdisk/hpc/ai2es/tman/models/case_studies"
+  init_time: [2020, 1, 15, 0]  # [year, month, day, hour]
+  front_types: [CF, WF, SF, OF, DL]
+  domain: "full"
+  filled_contours: true
+  targets: true
