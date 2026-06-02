@@ -29,17 +29,36 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.ticker import FixedLocator
 
 from fronts import utils
-from fronts.constants import (
-    CONTOUR_CMAPS,
-    DOMAIN_EXTENTS,
-    FRONT_COLORS,
-    FRONT_NAMES,
-    FRONT_TYPE_CLASS_INDEX,
-)
 from fronts.data import config, inputs, targets
 from fronts.plot.utils import plot_background, truncated_colormap
 
 log = logging.getLogger(__name__)
+
+FRONT_COLORS: dict[str, str] = {
+    "CF": "blue",
+    "WF": "red",
+    "SF": "limegreen",
+    "OF": "darkviolet",
+    "DL": "chocolate",
+}
+
+CONTOUR_CMAPS: dict[str, str] = {
+    "CF": "Blues",
+    "WF": "Reds",
+    "SF": "Greens",
+    "OF": "Purples",
+    "DL": "copper_r",
+}
+
+FRONT_NAMES: dict[str, str] = {
+    "CF": "Cold front",
+    "WF": "Warm front",
+    "SF": "Stationary front",
+    "OF": "Occluded front",
+    "DL": "Dryline",
+}
+
+FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
 
 
 class _LayoutConfig(TypedDict):
@@ -88,7 +107,7 @@ def plot_performance_diagrams(
     aggregate_ds: xr.Dataset,
     spatial_ds: xr.Dataset,
     mask: str | None,
-    domain: str,
+    coordinates: utils.BoundingBox,
     map_neighborhood: int,
     output_type: str,
     outdir: str,
@@ -100,14 +119,13 @@ def plot_performance_diagrams(
         aggregate_ds: Aggregated stats Dataset with dims (neighborhood, threshold).
         spatial_ds: Spatial stats Dataset with dims (lat, lon, neighborhood, threshold).
         mask: "land", "ocean", or None — used only for the figure title and filename.
-        domain: Domain key matching a ``_DOMAIN_LAYOUT`` entry (e.g. "conus", "full").
+        coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
         map_neighborhood: Neighbourhood radius (km) for the spatial CSI map panel.
         output_type: Output image format (e.g. "png").
         outdir: Directory to write the output file.
     """
-    if domain not in _DOMAIN_LAYOUT:
-        raise ValueError(f"Domain '{domain}' is not supported. Use one of: {list(_DOMAIN_LAYOUT)}.")
-    layout = _DOMAIN_LAYOUT[domain]
+    layout_key = "full" if (coordinates.lon_max - coordinates.lon_min) > 150 else "conus"
+    layout = _DOMAIN_LAYOUT[layout_key]
 
     thresholds = aggregate_ds["threshold"].values  # (100,)
 
@@ -229,7 +247,10 @@ def plot_performance_diagrams(
 
     csi_cmap = truncated_colormap("gnuplot2", maxval=0.9, n=10)
     spatial_axis = plt.axes(layout["spatial_axis_extent"], projection=ccrs.Miller(central_longitude=250))
-    plot_background(extent=DOMAIN_EXTENTS[domain], ax=spatial_axis)
+    plot_background(
+        extent=[coordinates.lon_min, coordinates.lon_max, coordinates.lat_min, coordinates.lat_max],
+        ax=spatial_axis,
+    )
 
     norm_probs = colors.Normalize(vmin=0.1, vmax=1)
     xr.where(spatial_csi_map >= 0.1, spatial_csi_map, float("nan")).sel(neighborhood=map_neighborhood).plot(
@@ -491,11 +512,12 @@ def main() -> None:
         help="Front types to plot (default: all in file).",
     )
     pd.add_argument(
-        "--domain",
-        type=str,
-        default="conus",
-        choices=list(_DOMAIN_LAYOUT),
-        help="Domain for spatial plot layout.",
+        "--coordinates",
+        type=float,
+        nargs=4,
+        default=[0.25, 80.0, 130.0, 369.75],
+        metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
+        help="Spatial bounding box as lat_min lat_max lon_min lon_max.",
     )
     pd.add_argument("--map_neighborhood", type=int, default=250, help="Neighbourhood (km) for spatial CSI map.")
     pd.add_argument("--output_type", type=str, default="png", help="Image format (png, pdf, etc.).")
@@ -533,7 +555,7 @@ def main() -> None:
                 aggregate_ds=aggregate_ds,
                 spatial_ds=spatial_ds,
                 mask=args.mask,
-                domain=args.domain,
+                coordinates=utils.BoundingBox(*args.coordinates),
                 map_neighborhood=args.map_neighborhood,
                 output_type=args.output_type,
                 outdir=outdir,

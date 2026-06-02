@@ -29,11 +29,11 @@ from scipy.ndimage import maximum_filter
 from tqdm import tqdm
 
 from fronts import utils
-from fronts.constants import FRONT_TYPE_CLASS_INDEX
 from fronts.data import config, inputs, targets
 
 log = logging.getLogger(__name__)
 
+FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
 NEIGHBORHOODS_KM = np.array([50, 100, 150, 200, 250])
 EXPAND_ITERS_PER_STEP = 2
 _EXPAND_SIZE = 2 * EXPAND_ITERS_PER_STEP + 1
