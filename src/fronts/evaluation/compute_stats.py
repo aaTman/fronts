@@ -42,8 +42,12 @@ THRESHOLDS = np.linspace(0.01, 1.0, N_THRESHOLDS, dtype=np.float32)
 def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.ndarray:
     """Return a (n_lat, n_lon) bool array — True where points are included."""
     land_regions = regionmask.defined_regions.natural_earth_v5_1_2.land_110
-    raw = land_regions.mask(lons, lats)
-    is_land = ~np.isnan(raw.values)
+    # regionmask requires monotonically increasing lons; wrap-crossing domains produce
+    # non-monotonic arrays, so sort before masking and inverse-permute the columns back.
+    sort_idx = np.argsort(lons)
+    raw = land_regions.mask(lons[sort_idx], lats)
+    inv_idx = np.argsort(sort_idx)
+    is_land = ~np.isnan(raw.values[:, inv_idx])
     spatial_mask = is_land if mask == "land" else ~is_land
     print(f"Spatial mask ({mask}): {spatial_mask.sum()} / {spatial_mask.size} grid points included.")
     return spatial_mask

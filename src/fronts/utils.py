@@ -74,6 +74,8 @@ class PeriodicBoundaryIndex(PandasIndex):
 
         if isinstance(label, slice):
             start, stop, step = label.start, label.stop, label.step
+            if start is None or stop is None:
+                return super().sel({coord_name: label})
             if stop < start:
                 return super().sel({coord_name: []})
 
@@ -116,11 +118,9 @@ def attach_periodic_lon_index(data: _XArray) -> _XArray:
 def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
     """Select latitude and longitude from a Dataset, handling wrap-crossing ranges.
 
-    When ``bb.lon_max > 360`` the domain wraps past the date line. Rather than
-    using fancy integer indexing (which dask cannot shape-infer at graph
-    construction time), this performs two monotonic contiguous slices and
-    concatenates them along the longitude dimension — fully compatible with
-    dask-backed zarr arrays.
+    Attaches a :class:`PeriodicBoundaryIndex` to longitude if one is not already
+    present, then performs a single ``.sel()`` so wrap-crossing slices (e.g.
+    ``lon_min=350, lon_max=370``) are handled transparently.
 
     Args:
         data: Dataset with ``latitude`` and ``longitude`` coordinates.
@@ -129,20 +129,15 @@ def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
     Returns:
         Spatially subsetted Dataset.
     """
-    # ERA5 latitudes are stored descending (90 to -90); use the correct slice direction.
     lat_vals = data["latitude"].values
-    if len(lat_vals) >= 2 and lat_vals[0] > lat_vals[1]:
-        lat_slice = slice(bb.lat_max, bb.lat_min)  # descending
-    else:
-        lat_slice = slice(bb.lat_min, bb.lat_max)  # ascending
-    lat_sel = data.sel(latitude=lat_slice)
-
-    if bb.lon_max <= 360.0:
-        return lat_sel.sel(longitude=slice(bb.lon_min, bb.lon_max))
-    part1 = lat_sel.sel(longitude=slice(bb.lon_min, None))
-    part2 = lat_sel.sel(longitude=slice(None, bb.lon_max - 360.0))
-    parts = [p for p in (part1, part2) if p.sizes.get("longitude", 0) > 0]
-    return xr.concat(parts, dim="longitude") if len(parts) > 1 else parts[0]
+    lat_slice = (
+        slice(bb.lat_max, bb.lat_min)
+        if len(lat_vals) >= 2 and lat_vals[0] > lat_vals[1]
+        else slice(bb.lat_min, bb.lat_max)
+    )
+    if not isinstance(data.xindexes.get("longitude"), PeriodicBoundaryIndex):
+        data = attach_periodic_lon_index(data)
+    return data.sel(latitude=lat_slice, longitude=slice(bb.lon_min, bb.lon_max))
 
 
 def drop_duplicate_times(data: _XArray) -> _XArray:
