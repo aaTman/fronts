@@ -24,8 +24,6 @@ import time
 from typing import Any
 
 import numpy as np
-import regionmask
-import tensorflow as tf
 import xarray as xr
 from scipy.ndimage import maximum_filter
 from tqdm import tqdm
@@ -38,7 +36,6 @@ log = logging.getLogger(__name__)
 
 NEIGHBORHOODS_KM = np.array([50, 100, 150, 200, 250])
 EXPAND_ITERS_PER_STEP = 2
-# Kernel size for each neighbourhood expansion step (applied cumulatively).
 _EXPAND_SIZE = 2 * EXPAND_ITERS_PER_STEP + 1
 N_THRESHOLDS = 100
 THRESHOLDS = np.linspace(0.01, 1.0, N_THRESHOLDS, dtype=np.float32)
@@ -46,9 +43,11 @@ THRESHOLDS = np.linspace(0.01, 1.0, N_THRESHOLDS, dtype=np.float32)
 
 def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.ndarray:
     """Return a (n_lat, n_lon) bool array — True where points are included."""
+    import regionmask
+
     land_regions = regionmask.defined_regions.natural_earth_v5_1_2.land_110
     # regionmask requires monotonically increasing lons; wrap-crossing domains produce
-    # non-monotonic arrays, so sort before masking and inverse-permute the columns back.
+    # non-monotonic arrays, so sort before masking and inverse-permute columns back.
     sort_idx = np.argsort(lons)
     raw = land_regions.mask(lons[sort_idx], lats)
     inv_idx = np.argsort(sort_idx)
@@ -56,6 +55,105 @@ def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.nda
     spatial_mask = is_land if mask == "land" else ~is_land
     log.info("Spatial mask (%s): %d / %d grid points included.", mask, spatial_mask.sum(), spatial_mask.size)
     return spatial_mask
+
+
+def _expand_all_neighborhoods(
+    truth_fronts: np.ndarray,
+    n_nbhd: int,
+    expand_size: int,
+) -> np.ndarray:
+    """Return cumulative maximum-filter expansions for all neighbourhood radii.
+
+    Args:
+        truth_fronts: Boolean truth labels of shape (lat, lon, n_fronts).
+        n_nbhd: Number of neighbourhood radii.
+        expand_size: Size of the square maximum-filter kernel per expansion step.
+
+    Returns:
+        Array of shape (n_nbhd, lat, lon, n_fronts) where slice [ni] is the result
+        after ni+1 cumulative applications of the filter.
+    """
+    n_lat, n_lon, n_fronts = truth_fronts.shape
+    expanded_stack = np.empty((n_nbhd, n_lat, n_lon, n_fronts), dtype=bool)
+    expanded = truth_fronts.copy()
+    for ni in range(n_nbhd):
+        expanded = maximum_filter(expanded.astype(np.uint8), size=(expand_size, expand_size, 1)).astype(bool)
+        expanded_stack[ni] = expanded
+    return expanded_stack
+
+
+def _accumulate_timestep(
+    pred_fronts: np.ndarray,
+    truth_fronts: np.ndarray,
+    weights: np.ndarray,
+    thresholds: np.ndarray,
+    n_nbhd: int,
+    expand_size: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute weighted TP/FP/TN/FN deltas for one timestep.
+
+    Args:
+        pred_fronts: Predicted probabilities of shape (lat, lon, n_fronts).
+        truth_fronts: Binary truth labels of shape (lat, lon, n_fronts).
+        weights: Per-pixel weights of shape (lat, lon), e.g. cosine latitude weights
+            with an optional land/ocean mask applied.
+        thresholds: 1-D array of probability thresholds, shape (T,).
+        n_nbhd: Number of neighbourhood radii.
+        expand_size: Kernel size for each cumulative neighbourhood expansion step.
+
+    Returns:
+        8-tuple ``(tp_sp, fp_sp, tn_sp, fn_sp, tp_ag, fp_ag, tn_ag, fn_ag)``.
+        Spatial shapes — tp/fp: ``(n_fronts, lat, lon, n_nbhd, T)``;
+                         tn/fn: ``(n_fronts, lat, lon, 1, T)`` (identical across
+                         neighbourhoods; the caller's ``+=`` broadcasts over n_nbhd).
+        Aggregate shapes — tp/fp: ``(n_fronts, n_nbhd, T)``;
+                           tn/fn: ``(n_fronts, 1, T)`` (broadcasts over n_nbhd).
+    """
+    n_lat, n_lon, n_fronts = pred_fronts.shape
+    n_thresh = len(thresholds)
+
+    # Front-first layout (n_fronts, lat, lon) throughout avoids repeated moveaxis copies.
+    pred_f = pred_fronts.transpose(2, 0, 1)    # (F, lat, lon)
+    truth_f = truth_fronts.transpose(2, 0, 1)  # (F, lat, lon)
+
+    # Threshold comparison computed once and reused across all neighbourhoods.
+    above = pred_f[:, :, :, np.newaxis] >= thresholds  # (F, lat, lon, T) bool
+    below = ~above
+
+    w = weights[np.newaxis, :, :, np.newaxis]   # (1, lat, lon, 1)
+    truth_4d = truth_f[:, :, :, np.newaxis]     # (F, lat, lon, 1)
+
+    # TN/FN are neighbourhood-independent; bool * float32 promotes automatically.
+    tn_weighted = (below & ~truth_4d) * w   # (F, lat, lon, T) float32
+    fn_weighted = (below & truth_4d) * w
+    tn_sp = tn_weighted[:, :, :, np.newaxis, :]           # (F, lat, lon, 1, T)
+    fn_sp = fn_weighted[:, :, :, np.newaxis, :]
+    tn_ag = tn_weighted.sum(axis=(1, 2))[:, np.newaxis, :]  # (F, 1, T)
+    fn_ag = fn_weighted.sum(axis=(1, 2))[:, np.newaxis, :]
+
+    # Precompute all neighbourhood expansions: (n_nbhd, lat, lon, F) → (F, n_nbhd, lat, lon).
+    expanded_stack = _expand_all_neighborhoods(truth_fronts, n_nbhd, expand_size)
+    exp_f = expanded_stack.transpose(3, 0, 1, 2)  # (F, n_nbhd, lat, lon)
+
+    # Aggregate TP/FP via batched matmul — avoids materialising (F, n_nbhd, lat, lon, T) float32.
+    # Flatten spatial dims: above → (F, lat*lon, T); exp → (F, n_nbhd, lat*lon).
+    above_flat = above.reshape(n_fronts, n_lat * n_lon, n_thresh).astype(np.float32)
+    w_flat = weights.ravel()  # (lat*lon,)
+    exp_flat = exp_f.reshape(n_fronts, n_nbhd, n_lat * n_lon)
+    exp_weighted = exp_flat * w_flat           # (F, n_nbhd, lat*lon) float32
+    tp_ag = np.matmul(exp_weighted, above_flat)  # (F, n_nbhd, T)
+    not_exp_weighted = (~exp_flat) * w_flat
+    fp_ag = np.matmul(not_exp_weighted, above_flat)
+
+    # Spatial TP/FP: per-pixel accumulation; one neighbourhood at a time to bound peak memory.
+    tp_sp = np.empty((n_fronts, n_lat, n_lon, n_nbhd, n_thresh), dtype=np.float32)
+    fp_sp = np.empty_like(tp_sp)
+    for ni in range(n_nbhd):
+        exp_ni = exp_f[:, ni, :, :, np.newaxis]          # (F, lat, lon, 1)
+        tp_sp[:, :, :, ni, :] = (above & exp_ni) * w     # (F, lat, lon, T)
+        fp_sp[:, :, :, ni, :] = (above & ~exp_ni) * w
+
+    return tp_sp, fp_sp, tn_sp, fn_sp, tp_ag, fp_ag, tn_ag, fn_ag
 
 
 def compute_stats(
@@ -87,9 +185,9 @@ def compute_stats(
     n_nbhd = len(NEIGHBORHOODS_KM)
     n_lat, n_lon = len(lats), len(lons)
 
-    lat_weights = np.cos(np.deg2rad(lats))[:, np.newaxis] * np.ones((1, n_lon))
+    lat_weights = np.cos(np.deg2rad(lats))[:, np.newaxis] * np.ones((1, n_lon), dtype=np.float32)
     if spatial_mask is not None:
-        lat_weights = lat_weights * spatial_mask.astype(float)
+        lat_weights = lat_weights * spatial_mask.astype(np.float32)
 
     tp_sp = np.zeros((n_fronts, n_lat, n_lon, n_nbhd, N_THRESHOLDS), dtype=np.float32)
     fp_sp = np.zeros_like(tp_sp)
@@ -104,58 +202,41 @@ def compute_stats(
     class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in front_types]
 
     log.info("Loading ERA5 and targets into memory …")
-    era5_np = era5_da.values.astype(np.float32)      # (time, lat, lon, channel)
+    era5_np = era5_da.values.astype(np.float32)       # (time, lat, lon, channel)
     targets_np = targets_da.values.astype(np.float32)  # (time, lat, lon, class)
 
     for t in tqdm(range(n_times), unit="timestep"):
         t0 = time.perf_counter()
 
-        x_np = era5_np[t]   # (lat, lon, channel)
-        y_np = targets_np[t]  # (lat, lon, class)
+        x_np = era5_np[t]
+        y_np = targets_np[t]
         t_load = time.perf_counter()
 
         pred = model(x_np[np.newaxis], training=False)
         if isinstance(pred, (list, tuple)):
             pred = pred[0]
-        pred_np = pred.numpy()[0].astype(np.float32)  # (lat, lon, n_classes)
+        pred_np = (pred.numpy() if hasattr(pred, "numpy") else np.asarray(pred))[0].astype(np.float32)
         t_infer = time.perf_counter()
 
-        pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, n_fronts)
-        truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, n_fronts) bool
+        pred_fronts = pred_np[:, :, class_indices]           # (lat, lon, n_fronts)
+        truth_fronts = y_np[:, :, class_indices] > 0.5       # (lat, lon, n_fronts) bool
 
-        pf4 = pred_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
-        tf4 = truth_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
-        wt = lat_weights[:, :, np.newaxis, np.newaxis]  # (lat, lon, 1, 1)
-
-        above = pf4 >= THRESHOLDS  # (lat, lon, n_fronts, N_THRESHOLDS) — same for all neighbourhoods
-        below = ~above
-
-        # TN/FN: same for all neighbourhoods — broadcast across n_nbhd.
-        tn_contrib = (below & ~tf4).astype(np.float32) * wt
-        fn_contrib = (below & tf4).astype(np.float32) * wt
-        # Rearrange (lat, lon, n_fronts, T) → (n_fronts, lat, lon, T), broadcast over n_nbhd.
-        tn_t = np.moveaxis(tn_contrib, 2, 0)
-        fn_t = np.moveaxis(fn_contrib, 2, 0)
-        tn_sp += tn_t[:, :, :, np.newaxis, :]
-        fn_sp += fn_t[:, :, :, np.newaxis, :]
-        tn_ag += tn_t.sum(axis=(1, 2))[:, np.newaxis, :]
-        fn_ag += fn_t.sum(axis=(1, 2))[:, np.newaxis, :]
-
-        # TP/FP: cumulative neighbourhood expansion across n_nbhd.
-        expanded = truth_fronts.copy()  # (lat, lon, n_fronts)
-        for ni in range(n_nbhd):
-            # Apply the same fixed kernel to the already-expanded result (cumulative).
-            expanded = maximum_filter(expanded.astype(np.uint8), size=(_EXPAND_SIZE, _EXPAND_SIZE, 1)).astype(bool)
-
-            exp4 = expanded[:, :, :, np.newaxis]
-            tp_contrib = (above & exp4).astype(np.float32) * wt
-            fp_contrib = (above & ~exp4).astype(np.float32) * wt
-            tp_t = np.moveaxis(tp_contrib, 2, 0)
-            fp_t = np.moveaxis(fp_contrib, 2, 0)
-            tp_sp[:, :, :, ni, :] += tp_t
-            fp_sp[:, :, :, ni, :] += fp_t
-            tp_ag[:, ni, :] += tp_t.sum(axis=(1, 2))
-            fp_ag[:, ni, :] += fp_t.sum(axis=(1, 2))
+        d_tp_sp, d_fp_sp, d_tn_sp, d_fn_sp, d_tp_ag, d_fp_ag, d_tn_ag, d_fn_ag = _accumulate_timestep(
+            pred_fronts=pred_fronts,
+            truth_fronts=truth_fronts,
+            weights=lat_weights,
+            thresholds=THRESHOLDS,
+            n_nbhd=n_nbhd,
+            expand_size=_EXPAND_SIZE,
+        )
+        tp_sp += d_tp_sp
+        fp_sp += d_fp_sp
+        tn_sp += d_tn_sp  # (F, lat, lon, 1, T) broadcasts over n_nbhd
+        fn_sp += d_fn_sp
+        tp_ag += d_tp_ag
+        fp_ag += d_fp_ag
+        tn_ag += d_tn_ag  # (F, 1, T) broadcasts over n_nbhd
+        fn_ag += d_fn_ag
 
         t_stats = time.perf_counter()
 
@@ -227,6 +308,8 @@ def main() -> None:
         mask=args.mask if args.mask is not None else eval_cfg.mask,
         outdir=args.outdir if args.outdir is not None else eval_cfg.outdir,
     )
+
+    import tensorflow as tf
 
     utils.configure_gpu(eval_cfg.gpu_device)
     log.info("Loading model from %s …", eval_cfg.model_path)
