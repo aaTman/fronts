@@ -19,6 +19,7 @@ import os
 from typing import Any, TypedDict
 
 import cartopy.crs as ccrs
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
@@ -375,7 +376,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
             continue
 
         if predict_cfg.filled_contours:
-            cmap_probs = cm.get_cmap(CONTOUR_CMAPS[ft], n_colors)
+            cmap_probs = matplotlib.colormaps[CONTOUR_CMAPS[ft]].resampled(n_colors)
             norm_probs = colors.Normalize(vmin=0, vmax=1.01)
             probs_masked[ft].plot.contourf(
                 ax=ax,
