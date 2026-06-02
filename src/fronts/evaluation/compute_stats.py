@@ -19,6 +19,7 @@ import argparse
 import dataclasses
 import datetime
 import os
+import time
 from typing import Any
 
 import numpy as np
@@ -104,13 +105,17 @@ def compute_stats(
     targets_np = targets_da.values.astype(np.float32)  # (time, lat, lon, class)
 
     for t in tqdm(range(n_times), unit="timestep"):
+        t0 = time.perf_counter()
+
         x_np = era5_np[t]   # (lat, lon, channel)
         y_np = targets_np[t]  # (lat, lon, class)
+        t_load = time.perf_counter()
 
         pred = model(x_np[np.newaxis], training=False)
         if isinstance(pred, (list, tuple)):
             pred = pred[0]
         pred_np = pred.numpy()[0].astype(np.float32)  # (lat, lon, n_classes)
+        t_infer = time.perf_counter()
 
         pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, n_fronts)
         truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, n_fronts) bool
@@ -147,6 +152,14 @@ def compute_stats(
             fp_sp[:, :, :, ni, :] += fp_t
             tp_ag[:, ni, :] += tp_t.sum(axis=(1, 2))
             fp_ag[:, ni, :] += fp_t.sum(axis=(1, 2))
+
+        t_stats = time.perf_counter()
+
+        if t < 3:
+            print(
+                f"  t={t}: load={t_load-t0:.3f}s  infer={t_infer-t_load:.3f}s"
+                f"  stats={t_stats-t_infer:.3f}s  total={t_stats-t0:.3f}s"
+            )
 
     spatial_ds = xr.Dataset(
         coords={
