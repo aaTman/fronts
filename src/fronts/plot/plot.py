@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import os
 from typing import Any, TypedDict
 
@@ -313,8 +314,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     print(f"Loading model from {predict_cfg.model_path} …")
     model = tf.keras.models.load_model(predict_cfg.model_path, compile=False)
 
-    year, month, day, hour = predict_cfg.init_time
-    init_time = np.datetime64(f"{year}-{month:02d}-{day:02d}T{hour:02d}")
+    init_time = np.datetime64(predict_cfg.init_time)
 
     ic_era5 = data_cfg.era5_icechunk_config
     print("Opening ERA5 store …")
@@ -441,12 +441,13 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     cbar_front.set_ticklabels(cbar_front_labels)
     cbar_front.set_label(r"$\bf{Front}$ $\bf{type}$")
 
-    ax.set_title(f"ERA5 {year}-{month:02d}-{day:02d}-{hour:02d}z", loc="left")
+    ax.set_title(f"ERA5 {init_time}z", loc="left")
 
     os.makedirs(predict_cfg.outdir, exist_ok=True)
+    ts = predict_cfg.init_time.strftime("%Y%m%d%H")
     outfile = os.path.join(
         predict_cfg.outdir,
-        f"prediction_{year}{month:02d}{day:02d}{hour:02d}_{predict_cfg.domain}.png",
+        f"prediction_{ts}_{predict_cfg.domain}.png",
     )
     plt.savefig(outfile, bbox_inches="tight", dpi=500)
     plt.close()
@@ -497,7 +498,10 @@ def main() -> None:
 
     if args.command == "case-study":
         predict_cfg: config.PredictConfig = utils.open_config_yaml_as_dataclass(
-            args.config_path, config.PredictConfig, config_key="predict_config"
+            args.config_path,
+            config.PredictConfig,
+            config_key="predict_config",
+            type_hooks={datetime.datetime: lambda d: datetime.datetime.fromisoformat(str(d))},
         )
         data_cfg: config.DataConfig = utils.open_config_yaml_as_dataclass(
             args.config_path, config.DataConfig, config_key="data_config"

@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import dataclasses
+import datetime
 import os
 from typing import Any
 
@@ -190,7 +191,10 @@ def main() -> None:
         args.config_path,
         config.EvalConfig,
         config_key="eval_config",
-        type_hooks={utils.BoundingBox: lambda d: utils.BoundingBox(*d)},
+        type_hooks={
+            utils.BoundingBox: lambda d: utils.BoundingBox(*d),
+            datetime.datetime: lambda d: datetime.datetime.fromisoformat(str(d)),
+        },
     )
     data_cfg: config.DataConfig = utils.open_config_yaml_as_dataclass(
         args.config_path, config.DataConfig, config_key="data_config"
@@ -241,6 +245,10 @@ def main() -> None:
         targets_da = targets.dilate_fronts(targets_da, dilation)
 
     common_times = np.intersect1d(era5_da["time"].values, targets_da["time"].values)
+    if eval_cfg.time_start:
+        common_times = common_times[common_times >= np.datetime64(eval_cfg.time_start)]
+    if eval_cfg.time_end:
+        common_times = common_times[common_times < np.datetime64(eval_cfg.time_end)]
     print(f"Common timesteps: {len(common_times)}")
     era5_da = era5_da.sel(time=common_times)
     targets_da = targets_da.sel(time=common_times)

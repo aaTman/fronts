@@ -98,6 +98,8 @@ class EvalConfig:
         coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
             Defaults to CONUS extent.
         gpu_device: GPU index to use. None runs on CPU.
+        time_start: Restrict evaluation to timesteps on or after this date. None means no lower bound.
+        time_end: Restrict evaluation to timesteps before this date. None means no upper bound.
     """
 
     model_path: str
@@ -109,6 +111,8 @@ class EvalConfig:
     mask: str | None = None
     front_dilation: int | None = None
     gpu_device: int | None = None
+    time_start: datetime.datetime | None = None
+    time_end: datetime.datetime | None = None
 
 
 @dataclasses.dataclass
@@ -131,7 +135,7 @@ class PredictConfig:
 
     model_path: str
     outdir: str
-    init_time: list[int]
+    init_time: datetime.datetime
     front_types: list[str] = dataclasses.field(default_factory=lambda: ["CF", "WF", "SF", "OF", "DL"])
     domain: str = "conus"
     prob_mask: float = 0.1
