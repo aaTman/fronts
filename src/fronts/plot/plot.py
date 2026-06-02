@@ -329,10 +329,8 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     probs_ds = _load_prediction(model, era5_ds, data_cfg.variables, predict_cfg.front_types, init_time)
     probs_ds = utils.attach_periodic_lon_index(probs_ds)
     extent = DOMAIN_EXTENTS[predict_cfg.domain]
-    probs_ds = probs_ds.sel(
-        latitude=slice(extent[2], extent[3]),
-        longitude=slice(extent[0], extent[1]),
-    )
+    plot_bb = utils.BoundingBox(lat_min=extent[2], lat_max=extent[3], lon_min=extent[0], lon_max=extent[1])
+    probs_ds = utils.select_spatial_domain(probs_ds, plot_bb)
 
     truth_da = None
     if predict_cfg.targets:
@@ -345,11 +343,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
             zarr_format=ic_fronts.zarr_format,
             virtual_chunk_local_path=ic_fronts.virtual_chunk_local_path,
         )
-        fronts_ds = utils.attach_periodic_lon_index(fronts_ds).sel(
-            latitude=slice(extent[2], extent[3]),
-            longitude=slice(extent[0], extent[1]),
-        )
-        truth_da = _load_truth(fronts_ds, init_time).compute()
+        truth_da = _load_truth(utils.select_spatial_domain(fronts_ds, plot_bb), init_time).compute()
         truth_da = xr.where(truth_da == 0, float("nan"), truth_da)
 
     front_types = predict_cfg.front_types

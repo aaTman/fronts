@@ -225,18 +225,9 @@ def main() -> None:
         virtual_chunk_local_path=ic_fronts.virtual_chunk_local_path,
     )
 
-    # Attach the periodic lon index and select the spatial domain on the raw Datasets,
-    # before any transformations add extra dimensions (class, channel) that complicate
-    # the wrap-crossing longitude selection.
     bb = eval_cfg.coordinates
-    era5_ds = utils.attach_periodic_lon_index(era5_ds).sel(
-        latitude=slice(bb.lat_min, bb.lat_max),
-        longitude=slice(bb.lon_min, bb.lon_max),
-    )
-    fronts_ds = utils.attach_periodic_lon_index(fronts_ds).sel(
-        latitude=slice(bb.lat_min, bb.lat_max),
-        longitude=slice(bb.lon_min, bb.lon_max),
-    )
+    era5_ds = utils.select_spatial_domain(era5_ds, bb)
+    fronts_ds = utils.select_spatial_domain(fronts_ds, bb)
 
     era5_da = inputs.era5_to_dataarray(era5_ds, data_cfg.variables)
     fronts_remapped = targets.remap_fronts(fronts_ds["identifier"])

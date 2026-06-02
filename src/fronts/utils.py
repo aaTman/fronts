@@ -119,6 +119,30 @@ def attach_periodic_lon_index(data: XArrayType) -> XArrayType:
     return data.drop_indexes("longitude").set_xindex("longitude", index_cls=PeriodicBoundaryIndex, period=360)
 
 
+def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
+    """Select latitude and longitude from a Dataset, handling wrap-crossing ranges.
+
+    When ``bb.lon_max > 360`` the domain wraps past the date line. Rather than
+    using fancy integer indexing (which dask cannot shape-infer at graph
+    construction time), this performs two monotonic contiguous slices and
+    concatenates them along the longitude dimension — fully compatible with
+    dask-backed zarr arrays.
+
+    Args:
+        data: Dataset with ``latitude`` and ``longitude`` coordinates.
+        bb: Bounding box. ``lon_max > 360`` triggers wrap-crossing logic.
+
+    Returns:
+        Spatially subsetted Dataset.
+    """
+    lat_sel = data.sel(latitude=slice(bb.lat_min, bb.lat_max))
+    if bb.lon_max <= 360.0:
+        return lat_sel.sel(longitude=slice(bb.lon_min, bb.lon_max))
+    part1 = lat_sel.sel(longitude=slice(bb.lon_min, None))
+    part2 = lat_sel.sel(longitude=slice(None, bb.lon_max - 360.0))
+    return xr.concat([part1, part2], dim="longitude")
+
+
 def open_config_yaml_as_dataclass(
     path: str,
     config_class: type[T],
