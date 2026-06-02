@@ -113,20 +113,20 @@ def _accumulate_timestep(
     n_thresh = len(thresholds)
 
     # Front-first layout (n_fronts, lat, lon) throughout avoids repeated moveaxis copies.
-    pred_f = pred_fronts.transpose(2, 0, 1)    # (F, lat, lon)
+    pred_f = pred_fronts.transpose(2, 0, 1)  # (F, lat, lon)
     truth_f = truth_fronts.transpose(2, 0, 1)  # (F, lat, lon)
 
     # Threshold comparison computed once and reused across all neighbourhoods.
     above = pred_f[:, :, :, np.newaxis] >= thresholds  # (F, lat, lon, T) bool
     below = ~above
 
-    w = weights[np.newaxis, :, :, np.newaxis]   # (1, lat, lon, 1)
-    truth_4d = truth_f[:, :, :, np.newaxis]     # (F, lat, lon, 1)
+    w = weights[np.newaxis, :, :, np.newaxis]  # (1, lat, lon, 1)
+    truth_4d = truth_f[:, :, :, np.newaxis]  # (F, lat, lon, 1)
 
     # TN/FN are neighbourhood-independent; bool * float32 promotes automatically.
-    tn_weighted = (below & ~truth_4d) * w   # (F, lat, lon, T) float32
+    tn_weighted = (below & ~truth_4d) * w  # (F, lat, lon, T) float32
     fn_weighted = (below & truth_4d) * w
-    tn_sp = tn_weighted[:, :, :, np.newaxis, :]           # (F, lat, lon, 1, T)
+    tn_sp = tn_weighted[:, :, :, np.newaxis, :]  # (F, lat, lon, 1, T)
     fn_sp = fn_weighted[:, :, :, np.newaxis, :]
     tn_ag = tn_weighted.sum(axis=(1, 2))[:, np.newaxis, :]  # (F, 1, T)
     fn_ag = fn_weighted.sum(axis=(1, 2))[:, np.newaxis, :]
@@ -140,7 +140,7 @@ def _accumulate_timestep(
     above_flat = above.reshape(n_fronts, n_lat * n_lon, n_thresh).astype(np.float32)
     w_flat = weights.ravel()  # (lat*lon,)
     exp_flat = exp_f.reshape(n_fronts, n_nbhd, n_lat * n_lon)
-    exp_weighted = exp_flat * w_flat           # (F, n_nbhd, lat*lon) float32
+    exp_weighted = exp_flat * w_flat  # (F, n_nbhd, lat*lon) float32
     tp_ag = np.matmul(exp_weighted, above_flat)  # (F, n_nbhd, T)
     not_exp_weighted = (~exp_flat) * w_flat
     fp_ag = np.matmul(not_exp_weighted, above_flat)
@@ -149,8 +149,8 @@ def _accumulate_timestep(
     tp_sp = np.empty((n_fronts, n_lat, n_lon, n_nbhd, n_thresh), dtype=np.float32)
     fp_sp = np.empty_like(tp_sp)
     for ni in range(n_nbhd):
-        exp_ni = exp_f[:, ni, :, :, np.newaxis]          # (F, lat, lon, 1)
-        tp_sp[:, :, :, ni, :] = (above & exp_ni) * w     # (F, lat, lon, T)
+        exp_ni = exp_f[:, ni, :, :, np.newaxis]  # (F, lat, lon, 1)
+        tp_sp[:, :, :, ni, :] = (above & exp_ni) * w  # (F, lat, lon, T)
         fp_sp[:, :, :, ni, :] = (above & ~exp_ni) * w
 
     return tp_sp, fp_sp, tn_sp, fn_sp, tp_ag, fp_ag, tn_ag, fn_ag
@@ -202,7 +202,7 @@ def compute_stats(
     class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in front_types]
 
     log.info("Loading ERA5 and targets into memory …")
-    era5_np = era5_da.values.astype(np.float32)       # (time, lat, lon, channel)
+    era5_np = era5_da.values.astype(np.float32)  # (time, lat, lon, channel)
     targets_np = targets_da.values.astype(np.float32)  # (time, lat, lon, class)
 
     for t in tqdm(range(n_times), unit="timestep"):
@@ -218,8 +218,8 @@ def compute_stats(
         pred_np = (pred.numpy() if hasattr(pred, "numpy") else np.asarray(pred))[0].astype(np.float32)
         t_infer = time.perf_counter()
 
-        pred_fronts = pred_np[:, :, class_indices]           # (lat, lon, n_fronts)
-        truth_fronts = y_np[:, :, class_indices] > 0.5       # (lat, lon, n_fronts) bool
+        pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, n_fronts)
+        truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, n_fronts) bool
 
         d_tp_sp, d_fp_sp, d_tn_sp, d_fn_sp, d_tp_ag, d_fp_ag, d_tn_ag, d_fn_ag = _accumulate_timestep(
             pred_fronts=pred_fronts,
@@ -243,7 +243,11 @@ def compute_stats(
         if t < 3:
             log.info(
                 "t=%d: load=%.3fs  infer=%.3fs  stats=%.3fs  total=%.3fs",
-                t, t_load - t0, t_infer - t_load, t_stats - t_infer, t_stats - t0,
+                t,
+                t_load - t0,
+                t_infer - t_load,
+                t_stats - t_infer,
+                t_stats - t0,
             )
 
     spatial_ds = xr.Dataset(
