@@ -1,0 +1,273 @@
+r"""Compute TP/FP/TN/FN performance statistics from an icechunk-backed model and data pipeline.
+
+Iterates over all aligned ERA5/fronts timesteps in the icechunk stores, runs model
+inference, and accumulates statistics over 5 neighbourhood radii (50-250 km) and
+100 probability thresholds (0.01-1.0) with optional land/ocean masking.
+
+Outputs two NetCDF files compatible with the ``performance-diagrams`` subcommand of
+``src/fronts/plot/plot.py``.
+
+Usage:
+    pixi run python src/fronts/evaluation/compute_stats.py \
+        --config_path configs/schooner_train.yaml --mask land
+
+    pixi run python src/fronts/evaluation/compute_stats.py \
+        --config_path configs/schooner_train.yaml --mask ocean --outdir ~/models/fronts/stats
+"""
+
+import argparse
+import dataclasses
+import os
+
+import numpy as np
+import tensorflow as tf
+import xarray as xr
+from scipy.ndimage import maximum_filter
+from tqdm import tqdm
+
+from fronts import utils
+from fronts.data import config, inputs, targets
+
+NEIGHBORHOODS_KM = np.array([50, 100, 150, 200, 250])
+EXPAND_ITERS_PER_STEP = 2
+# Kernel size for each neighbourhood expansion step (applied cumulatively).
+_EXPAND_SIZE = 2 * EXPAND_ITERS_PER_STEP + 1
+N_THRESHOLDS = 100
+THRESHOLDS = np.linspace(0.01, 1.0, N_THRESHOLDS, dtype=np.float32)
+
+
+def _build_spatial_mask(lats: np.ndarray, lons: np.ndarray, mask: str) -> np.ndarray:
+    """Return a (n_lat, n_lon) bool array — True where points are included."""
+    import regionmask
+
+    land_regions = regionmask.defined_regions.natural_earth_v5_1_2.land_110
+    raw = land_regions.mask(lons, lats)
+    is_land = ~np.isnan(raw.values)
+    spatial_mask = is_land if mask == "land" else ~is_land
+    print(f"Spatial mask ({mask}): {spatial_mask.sum()} / {spatial_mask.size} grid points included.")
+    return spatial_mask
+
+
+def compute_stats(
+    model: tf.keras.Model,
+    era5_da: xr.DataArray,
+    targets_da: xr.DataArray,
+    front_types: list[str],
+    lats: np.ndarray,
+    lons: np.ndarray,
+    spatial_mask: np.ndarray | None,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Iterate timesteps, run inference, and accumulate TP/FP/TN/FN.
+
+    Args:
+        model: Loaded Keras model with baked-in normalization.
+        era5_da: ERA5 inputs of shape (time, lat, lon, channel).
+        targets_da: One-hot truth labels of shape (time, lat, lon, class).
+        front_types: Front type labels in class order excluding background (class 0).
+        lats: 1-D latitude array.
+        lons: 1-D longitude array.
+        spatial_mask: Boolean (n_lat, n_lon) mask — True for included points. None = all.
+
+    Returns:
+        Tuple of (spatial_ds, aggregate_ds) xr.Datasets with TP/FP/TN/FN variables.
+        spatial_ds variables have dims (latitude, longitude, neighborhood, threshold).
+        aggregate_ds variables have dims (neighborhood, threshold).
+    """
+    n_fronts = len(front_types)
+    n_nbhd = len(NEIGHBORHOODS_KM)
+    n_lat, n_lon = len(lats), len(lons)
+
+    lat_weights = np.cos(np.deg2rad(lats))[:, np.newaxis] * np.ones((1, n_lon))
+    if spatial_mask is not None:
+        lat_weights = lat_weights * spatial_mask.astype(float)
+
+    tp_sp = np.zeros((n_fronts, n_lat, n_lon, n_nbhd, N_THRESHOLDS), dtype=np.float32)
+    fp_sp = np.zeros_like(tp_sp)
+    tn_sp = np.zeros_like(tp_sp)
+    fn_sp = np.zeros_like(tp_sp)
+    tp_ag = np.zeros((n_fronts, n_nbhd, N_THRESHOLDS), dtype=np.float32)
+    fp_ag = np.zeros_like(tp_ag)
+    tn_ag = np.zeros_like(tp_ag)
+    fn_ag = np.zeros_like(tp_ag)
+
+    n_times = era5_da.sizes["time"]
+
+    for t in tqdm(range(n_times), unit="timestep"):
+        # Fuse both dask graphs into a single scheduler pass.
+        x_da, y_da = xr.compute(era5_da.isel(time=t), targets_da.isel(time=t))  # pyrefly: ignore[missing-attribute]
+        x_np = x_da.values.astype(np.float32)  # (lat, lon, channel)
+        y_np = y_da.values.astype(np.float32)  # (lat, lon, class)
+
+        pred = model(x_np[np.newaxis], training=False)
+        if isinstance(pred, (list, tuple)):
+            pred = pred[0]
+        pred_np = pred.numpy()[0].astype(np.float32)  # (lat, lon, n_classes)
+
+        pred_fronts = pred_np[:, :, 1:]  # (lat, lon, n_fronts)
+        truth_fronts = y_np[:, :, 1:] > 0.5  # (lat, lon, n_fronts) bool
+
+        pf4 = pred_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
+        tf4 = truth_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
+        wt = lat_weights[:, :, np.newaxis, np.newaxis]  # (lat, lon, 1, 1)
+
+        # TN/FN: same for all neighbourhoods — broadcast across n_nbhd.
+        below = pf4 < THRESHOLDS  # (lat, lon, n_fronts, N_THRESHOLDS)
+        tn_contrib = (below & ~tf4).astype(np.float32) * wt
+        fn_contrib = (below & tf4).astype(np.float32) * wt
+        # Rearrange (lat, lon, n_fronts, T) → (n_fronts, lat, lon, T), broadcast over n_nbhd.
+        tn_sp += np.moveaxis(tn_contrib, 2, 0)[:, :, :, np.newaxis, :]
+        fn_sp += np.moveaxis(fn_contrib, 2, 0)[:, :, :, np.newaxis, :]
+        tn_ag += np.moveaxis(tn_contrib, 2, 0).sum(axis=(1, 2))[:, np.newaxis, :]
+        fn_ag += np.moveaxis(fn_contrib, 2, 0).sum(axis=(1, 2))[:, np.newaxis, :]
+
+        # TP/FP: cumulative neighbourhood expansion across n_nbhd.
+        expanded = truth_fronts.copy()  # (lat, lon, n_fronts)
+        for ni in range(n_nbhd):
+            # Apply the same fixed kernel to the already-expanded result (cumulative).
+            expanded = maximum_filter(expanded.astype(np.uint8), size=(_EXPAND_SIZE, _EXPAND_SIZE, 1)).astype(bool)
+
+            exp4 = expanded[:, :, :, np.newaxis]
+            above = pf4 >= THRESHOLDS
+            tp_contrib = (above & exp4).astype(np.float32) * wt
+            fp_contrib = (above & ~exp4).astype(np.float32) * wt
+            tp_sp[:, :, :, ni, :] += np.moveaxis(tp_contrib, 2, 0)
+            fp_sp[:, :, :, ni, :] += np.moveaxis(fp_contrib, 2, 0)
+            tp_ag[:, ni, :] += np.moveaxis(tp_contrib, 2, 0).sum(axis=(1, 2))
+            fp_ag[:, ni, :] += np.moveaxis(fp_contrib, 2, 0).sum(axis=(1, 2))
+
+    spatial_ds = xr.Dataset(
+        coords={
+            "latitude": lats,
+            "longitude": lons,
+            "neighborhood": NEIGHBORHOODS_KM,
+            "threshold": THRESHOLDS,
+        }
+    )
+    aggregate_ds = xr.Dataset(
+        coords={
+            "neighborhood": NEIGHBORHOODS_KM,
+            "threshold": THRESHOLDS,
+        }
+    )
+    dims_sp = ("latitude", "longitude", "neighborhood", "threshold")
+    dims_ag = ("neighborhood", "threshold")
+    for fi, ft in enumerate(front_types):
+        spatial_ds[f"tp_spatial_{ft}"] = (dims_sp, tp_sp[fi])
+        spatial_ds[f"fp_spatial_{ft}"] = (dims_sp, fp_sp[fi])
+        spatial_ds[f"tn_spatial_{ft}"] = (dims_sp, tn_sp[fi])
+        spatial_ds[f"fn_spatial_{ft}"] = (dims_sp, fn_sp[fi])
+        aggregate_ds[f"tp_{ft}"] = (dims_ag, tp_ag[fi])
+        aggregate_ds[f"fp_{ft}"] = (dims_ag, fp_ag[fi])
+        aggregate_ds[f"tn_{ft}"] = (dims_ag, tn_ag[fi])
+        aggregate_ds[f"fn_{ft}"] = (dims_ag, fn_ag[fi])
+
+    return spatial_ds, aggregate_ds
+
+
+def main() -> None:
+    """Parse arguments, load configs, and run stats computation."""
+    parser = argparse.ArgumentParser(description="Compute performance statistics from icechunk stores.")
+    parser.add_argument("--config_path", type=str, required=True, help="Path to training config YAML.")
+    parser.add_argument(
+        "--mask",
+        type=str,
+        default=None,
+        choices=["land", "ocean"],
+        help="Restrict stats to land or ocean grid points.",
+    )
+    parser.add_argument("--outdir", type=str, default=None, help="Override output directory from eval_config.")
+    args = parser.parse_args()
+
+    eval_cfg: config.EvalConfig = utils.open_config_yaml_as_dataclass(
+        args.config_path,
+        config.EvalConfig,
+        config_key="eval_config",
+        type_hooks={utils.BoundingBox: lambda d: utils.BoundingBox(*d)},
+    )
+    data_cfg: config.DataConfig = utils.open_config_yaml_as_dataclass(
+        args.config_path, config.DataConfig, config_key="data_config"
+    )
+
+    eval_cfg = dataclasses.replace(
+        eval_cfg,
+        mask=args.mask if args.mask is not None else eval_cfg.mask,
+        outdir=args.outdir if args.outdir is not None else eval_cfg.outdir,
+    )
+
+    utils.configure_gpu(eval_cfg.gpu_device)
+    print(f"Loading model from {eval_cfg.model_path} …")
+    model = tf.keras.models.load_model(eval_cfg.model_path)
+    print(f"Model loaded. Output count: {len(model.outputs)}.")
+
+    ic_era5 = data_cfg.era5_icechunk_config
+    ic_fronts = data_cfg.fronts_icechunk_config
+
+    print("Opening ERA5 icechunk store …")
+    era5_ds = utils.open_readonly_icechunk_store(
+        ic_era5.store_path,
+        ic_era5.branch_name,
+        group=ic_era5.group_name,
+        zarr_format=ic_era5.zarr_format,
+        virtual_chunk_local_path=ic_era5.virtual_chunk_local_path,
+    )
+    print("Opening fronts icechunk store …")
+    fronts_ds = utils.open_readonly_icechunk_store(
+        ic_fronts.store_path,
+        ic_fronts.branch_name,
+        group=ic_fronts.group_name,
+        zarr_format=ic_fronts.zarr_format,
+        virtual_chunk_local_path=ic_fronts.virtual_chunk_local_path,
+    )
+
+    era5_da = inputs.era5_to_dataarray(era5_ds, data_cfg.variables)
+    fronts_remapped = targets.remap_fronts(fronts_ds["identifier"])
+    targets_da = targets.one_hot_encode_to_dataarray(fronts_remapped)
+
+    dilation = eval_cfg.front_dilation if eval_cfg.front_dilation is not None else data_cfg.front_dilation
+    if dilation > 0:
+        print(f"Applying front dilation: {dilation} iterations …")
+        targets_da = targets.dilate_fronts(targets_da, dilation)
+
+    common_times = np.intersect1d(era5_da["time"].values, targets_da["time"].values)
+    print(f"Common timesteps: {len(common_times)}")
+    bb = eval_cfg.coordinates
+    era5_da = era5_da.sel(
+        time=common_times,
+        latitude=slice(bb.lat_min, bb.lat_max),
+        longitude=slice(bb.lon_min, bb.lon_max),
+    )
+    targets_da = targets_da.sel(
+        time=common_times,
+        latitude=slice(bb.lat_min, bb.lat_max),
+        longitude=slice(bb.lon_min, bb.lon_max),
+    )
+
+    lats = era5_da["latitude"].values
+    lons = era5_da["longitude"].values
+
+    spatial_mask = _build_spatial_mask(lats, lons, eval_cfg.mask) if eval_cfg.mask else None
+
+    print("Computing statistics …")
+    spatial_ds, aggregate_ds = compute_stats(
+        model=model,
+        era5_da=era5_da,
+        targets_da=targets_da,
+        front_types=eval_cfg.front_types,
+        lats=lats,
+        lons=lons,
+        spatial_mask=spatial_mask,
+    )
+
+    os.makedirs(eval_cfg.outdir, exist_ok=True)
+    mask_suffix = f"_{eval_cfg.mask}" if eval_cfg.mask else ""
+    spatial_path = os.path.join(eval_cfg.outdir, f"stats_spatial{mask_suffix}.nc")
+    aggregate_path = os.path.join(eval_cfg.outdir, f"stats_aggregate{mask_suffix}.nc")
+
+    spatial_ds.astype("float32").to_netcdf(spatial_path)
+    aggregate_ds.astype("float32").to_netcdf(aggregate_path)
+    print(f"Spatial stats   → {spatial_path}")
+    print(f"Aggregate stats → {aggregate_path}")
+
+
+if __name__ == "__main__":
+    main()

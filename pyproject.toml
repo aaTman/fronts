@@ -173,7 +173,7 @@ hatchling = ">=1.26.3"
 backend = { name = "pixi-build-python", version = "0.4.*" }
 
 [tool.pyrefly]
-ignore-missing-imports = ["tensorflow", "tensorflow.keras.layers", "tensorflow.keras.models", "wandb", "scipy", "scipy.ndimage"]
+ignore-missing-imports = ["cartopy", "cartopy.crs", "cartopy.feature", "matplotlib", "matplotlib.colors", "matplotlib.font_manager", "matplotlib.pyplot", "matplotlib.ticker", "regionmask", "scipy", "scipy.ndimage", "tensorflow", "tensorflow.keras.layers", "tensorflow.keras.models", "wandb"]
 
 [tool.ruff]
 line-length = 120

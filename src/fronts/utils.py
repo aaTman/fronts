@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from collections import namedtuple
 from collections.abc import Callable
@@ -237,3 +238,23 @@ def open_readonly_icechunk_store(
     )
     session = repo.readonly_session(branch)
     return xr.open_zarr(session.store, group=group, zarr_format=zarr_format, consolidated=False)
+
+
+def configure_gpu(gpu_device: int | None) -> None:
+    """Configure TensorFlow to use a single GPU or fall back to CPU.
+
+    Must be called before any TensorFlow operations. When ``gpu_device`` is
+    None, forces CPU-only execution via ``CUDA_VISIBLE_DEVICES=-1``.
+
+    Args:
+        gpu_device: Index of the GPU to use, or None for CPU-only.
+    """
+    import tensorflow as tf
+
+    if gpu_device is not None:
+        gpus = tf.config.list_physical_devices("GPU")
+        if gpus:
+            tf.config.set_visible_devices(gpus[gpu_device], "GPU")
+            tf.config.experimental.set_memory_growth(gpus[gpu_device], True)
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
