@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import datetime
+import logging
 import os
 from typing import Any, TypedDict
 
@@ -37,6 +38,8 @@ from fronts.constants import (
 )
 from fronts.data import config, inputs, targets
 from fronts.plot.utils import plot_background, truncated_colormap
+
+log = logging.getLogger(__name__)
 
 
 class _LayoutConfig(TypedDict):
@@ -289,6 +292,10 @@ def _load_prediction(
         pred = pred[0]
     pred_np = pred.numpy()[0].astype(np.float32)  # (lat, lon, n_classes)
 
+    for ft in front_types:
+        idx = FRONT_TYPE_CLASS_INDEX[ft]
+        log.info("%s (class %d): max prob = %.3f", ft, idx, pred_np[:, :, idx].max())
+
     lats = era5_t["latitude"].values
     lons = era5_t["longitude"].values
     ds = xr.Dataset(coords={"latitude": lats, "longitude": lons})
@@ -311,13 +318,16 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     """
     utils.configure_gpu(predict_cfg.gpu_device)
 
-    print(f"Loading model from {predict_cfg.model_path} …")
+    log.info("Loading model from %s …", predict_cfg.model_path)
     model = tf.keras.models.load_model(predict_cfg.model_path, compile=False)
 
     init_time = np.datetime64(predict_cfg.init_time)
 
+    extent = DOMAIN_EXTENTS[predict_cfg.domain]
+    plot_bb = utils.BoundingBox(lat_min=extent[2], lat_max=extent[3], lon_min=extent[0], lon_max=extent[1])
+
     ic_era5 = data_cfg.era5_icechunk_config
-    print("Opening ERA5 store …")
+    log.info("Opening ERA5 store …")
     era5_ds = utils.open_readonly_icechunk_store(
         ic_era5.store_path,
         ic_era5.branch_name,
@@ -325,17 +335,14 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
         zarr_format=ic_era5.zarr_format,
         virtual_chunk_local_path=ic_era5.virtual_chunk_local_path,
     )
+    era5_ds = utils.select_spatial_domain(era5_ds, plot_bb)
 
     probs_ds = _load_prediction(model, era5_ds, data_cfg.variables, predict_cfg.front_types, init_time)
-    probs_ds = utils.attach_periodic_lon_index(probs_ds)
-    extent = DOMAIN_EXTENTS[predict_cfg.domain]
-    plot_bb = utils.BoundingBox(lat_min=extent[2], lat_max=extent[3], lon_min=extent[0], lon_max=extent[1])
-    probs_ds = utils.select_spatial_domain(probs_ds, plot_bb)
 
     truth_da = None
     if predict_cfg.targets:
         ic_fronts = data_cfg.fronts_icechunk_config
-        print("Opening fronts store …")
+        log.info("Opening fronts store …")
         fronts_ds = utils.open_readonly_icechunk_store(
             ic_fronts.store_path,
             ic_fronts.branch_name,
@@ -455,6 +462,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
 
 def main() -> None:
     """Dispatch to the requested plot subcommand."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Plot model outputs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

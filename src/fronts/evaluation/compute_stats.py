@@ -205,6 +205,17 @@ def compute_stats(
     era5_np = era5_da.values.astype(np.float32)  # (time, lat, lon, channel)
     targets_np = targets_da.values.astype(np.float32)  # (time, lat, lon, class)
 
+    # Pre-allocate all large work buffers once to eliminate per-timestep page faults.
+    # Each fresh np.empty/astype on a >100 MB array triggers OS page faults (~5 µs/page)
+    # that dominate runtime when called every iteration.
+    _above = np.empty((n_fronts, n_lat, n_lon, N_THRESHOLDS), dtype=bool)
+    _bool_buf = np.empty_like(_above)
+    _float_buf = np.empty((n_fronts, n_lat, n_lon, N_THRESHOLDS), dtype=np.float32)
+    _above_f32 = np.empty_like(_float_buf)
+    _expanded = np.empty((n_nbhd, n_lat, n_lon, n_fronts), dtype=bool)
+    w_4d = lat_weights[np.newaxis, :, :, np.newaxis]
+    w_flat = lat_weights.ravel()
+
     for t in tqdm(range(n_times), unit="timestep"):
         t0 = time.perf_counter()
 
@@ -218,25 +229,56 @@ def compute_stats(
         pred_np = (pred.numpy() if hasattr(pred, "numpy") else np.asarray(pred))[0].astype(np.float32)
         t_infer = time.perf_counter()
 
-        pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, n_fronts)
-        truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, n_fronts) bool
+        pred_fronts = pred_np[:, :, class_indices]        # (lat, lon, F)
+        truth_fronts = y_np[:, :, class_indices] > 0.5   # (lat, lon, F) bool
 
-        d_tp_sp, d_fp_sp, d_tn_sp, d_fn_sp, d_tp_ag, d_fp_ag, d_tn_ag, d_fn_ag = _accumulate_timestep(
-            pred_fronts=pred_fronts,
-            truth_fronts=truth_fronts,
-            weights=lat_weights,
-            thresholds=THRESHOLDS,
-            n_nbhd=n_nbhd,
-            expand_size=_EXPAND_SIZE,
-        )
-        tp_sp += d_tp_sp
-        fp_sp += d_fp_sp
-        tn_sp += d_tn_sp  # (F, lat, lon, 1, T) broadcasts over n_nbhd
-        fn_sp += d_fn_sp
-        tp_ag += d_tp_ag
-        fp_ag += d_fp_ag
-        tn_ag += d_tn_ag  # (F, 1, T) broadcasts over n_nbhd
-        fn_ag += d_fn_ag
+        pred_f = pred_fronts.transpose(2, 0, 1)    # (F, lat, lon)
+        truth_f = truth_fronts.transpose(2, 0, 1)  # (F, lat, lon)
+
+        # Threshold comparison written into pre-allocated buffer — no allocation.
+        np.greater_equal(pred_f[:, :, :, np.newaxis], THRESHOLDS, out=_above)
+
+        truth_4d = truth_f[:, :, :, np.newaxis]  # (F, lat, lon, 1) — tiny view
+
+        # TN: ~above & ~truth, weighted.
+        np.logical_not(_above, out=_bool_buf)
+        np.logical_and(_bool_buf, ~truth_4d, out=_bool_buf)
+        np.multiply(_bool_buf, w_4d, out=_float_buf)
+        for ni in range(n_nbhd):
+            tn_sp[:, :, :, ni, :] += _float_buf
+        tn_ag += _float_buf.sum(axis=(1, 2))[:, np.newaxis, :]
+
+        # FN: ~above & truth, weighted.
+        np.logical_not(_above, out=_bool_buf)
+        np.logical_and(_bool_buf, truth_4d, out=_bool_buf)
+        np.multiply(_bool_buf, w_4d, out=_float_buf)
+        for ni in range(n_nbhd):
+            fn_sp[:, :, :, ni, :] += _float_buf
+        fn_ag += _float_buf.sum(axis=(1, 2))[:, np.newaxis, :]
+
+        # Precompute neighbourhood expansions into pre-allocated buffer.
+        expanded = truth_fronts.copy()
+        for ni in range(n_nbhd):
+            expanded = maximum_filter(expanded.astype(np.uint8), size=(_EXPAND_SIZE, _EXPAND_SIZE, 1)).astype(bool)
+            _expanded[ni] = expanded
+        exp_f = _expanded.transpose(3, 0, 1, 2)  # (F, n_nbhd, lat, lon)
+
+        # Float32 copy of _above for matmul — written into pre-allocated buffer.
+        _above_f32[:] = _above
+        above_flat = _above_f32.reshape(n_fronts, n_lat * n_lon, N_THRESHOLDS)
+        exp_flat = exp_f.reshape(n_fronts, n_nbhd, n_lat * n_lon)
+        tp_ag += np.matmul(exp_flat * w_flat, above_flat)
+        fp_ag += np.matmul((~exp_flat) * w_flat, above_flat)
+
+        # Spatial TP/FP: per-neighbourhood in-place accumulation.
+        for ni in range(n_nbhd):
+            exp_ni = exp_f[:, ni, :, :, np.newaxis]  # (F, lat, lon, 1) — tiny view
+            np.logical_and(_above, exp_ni, out=_bool_buf)
+            np.multiply(_bool_buf, w_4d, out=_float_buf)
+            tp_sp[:, :, :, ni, :] += _float_buf
+            np.logical_and(_above, ~exp_ni, out=_bool_buf)
+            np.multiply(_bool_buf, w_4d, out=_float_buf)
+            fp_sp[:, :, :, ni, :] += _float_buf
 
         t_stats = time.perf_counter()
 
