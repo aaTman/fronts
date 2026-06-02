@@ -17,7 +17,7 @@ data_config:
 eval_config:
   model_path: "/ourdisk/hpc/ai2es/tman/models/_best_loss.keras"
   outdir: "/ourdisk/hpc/ai2es/tman/models/stats"
-  coordinates: [0.25, 80.0, 130.0, 369.75]  # [lat_min, lat_max, lon_min, lon_max] (full)
+  coordinates: [0.25, 80.0, 130.0, 369.75]  # [lat_min, lat_max, lon_min, lon_max]
   front_types: [CF, WF, SF, OF, DL]
   front_dilation: 1  # match training dilation
   time_start: "2024-01-01T00:00:00"
