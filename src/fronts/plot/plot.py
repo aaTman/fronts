@@ -345,11 +345,11 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
             zarr_format=ic_fronts.zarr_format,
             virtual_chunk_local_path=ic_fronts.virtual_chunk_local_path,
         )
-        truth_da = utils.attach_periodic_lon_index(_load_truth(fronts_ds, init_time))
-        truth_da = truth_da.sel(
+        fronts_ds = utils.attach_periodic_lon_index(fronts_ds).sel(
             latitude=slice(extent[2], extent[3]),
             longitude=slice(extent[0], extent[1]),
-        ).compute()
+        )
+        truth_da = _load_truth(fronts_ds, init_time).compute()
         truth_da = xr.where(truth_da == 0, float("nan"), truth_da)
 
     front_types = predict_cfg.front_types
