@@ -127,8 +127,10 @@ def compute_stats(
         tf4 = truth_fronts[:, :, :, np.newaxis]  # (lat, lon, n_fronts, 1)
         wt = lat_weights[:, :, np.newaxis, np.newaxis]  # (lat, lon, 1, 1)
 
+        above = pf4 >= THRESHOLDS  # (lat, lon, n_fronts, N_THRESHOLDS) — same for all neighbourhoods
+        below = ~above
+
         # TN/FN: same for all neighbourhoods — broadcast across n_nbhd.
-        below = pf4 < THRESHOLDS  # (lat, lon, n_fronts, N_THRESHOLDS)
         tn_contrib = (below & ~tf4).astype(np.float32) * wt
         fn_contrib = (below & tf4).astype(np.float32) * wt
         # Rearrange (lat, lon, n_fronts, T) → (n_fronts, lat, lon, T), broadcast over n_nbhd.
@@ -146,7 +148,6 @@ def compute_stats(
             expanded = maximum_filter(expanded.astype(np.uint8), size=(_EXPAND_SIZE, _EXPAND_SIZE, 1)).astype(bool)
 
             exp4 = expanded[:, :, :, np.newaxis]
-            above = pf4 >= THRESHOLDS
             tp_contrib = (above & exp4).astype(np.float32) * wt
             fp_contrib = (above & ~exp4).astype(np.float32) * wt
             tp_t = np.moveaxis(tp_contrib, 2, 0)
