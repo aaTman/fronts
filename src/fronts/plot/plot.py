@@ -313,7 +313,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     """Run inference and generate a single-timestep probability map.
 
     Args:
-        predict_cfg: Prediction configuration (model, domain, plot options).
+        predict_cfg: Prediction configuration (model, coordinates, plot options).
         data_cfg: Data configuration (icechunk store paths, variables).
     """
     utils.configure_gpu(predict_cfg.gpu_device)
@@ -323,8 +323,8 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
 
     init_time = np.datetime64(predict_cfg.init_time)
 
-    extent = DOMAIN_EXTENTS[predict_cfg.domain]
-    plot_bb = utils.BoundingBox(lat_min=extent[2], lat_max=extent[3], lon_min=extent[0], lon_max=extent[1])
+    plot_bb = predict_cfg.coordinates
+    extent = [plot_bb.lon_min, plot_bb.lon_max, plot_bb.lat_min, plot_bb.lat_max]
 
     ic_era5 = data_cfg.era5_icechunk_config
     log.info("Opening ERA5 store …")
@@ -335,7 +335,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
         zarr_format=ic_era5.zarr_format,
         virtual_chunk_local_path=ic_era5.virtual_chunk_local_path,
     )
-    era5_ds = utils.select_spatial_domain(era5_ds, plot_bb)
+    era5_ds = utils.unwrap_longitude(utils.select_spatial_domain(era5_ds, plot_bb))
 
     probs_ds = _load_prediction(model, era5_ds, data_cfg.variables, predict_cfg.front_types, init_time)
 
@@ -374,7 +374,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     )
     plot_background(extent, ax=ax, linewidth=0.5)
 
-    cbar_x_start = 0.75 if predict_cfg.domain == "conus" else 0.85
+    cbar_x_start = 0.85
     cbar_front_labels = []
     cbar_front_ticks = []
 
@@ -453,7 +453,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConf
     ts = predict_cfg.init_time.strftime("%Y%m%d%H")
     outfile = os.path.join(
         predict_cfg.outdir,
-        f"prediction_{ts}_{predict_cfg.domain}.png",
+        f"prediction_{ts}.png",
     )
     plt.savefig(outfile, bbox_inches="tight", dpi=500)
     plt.close()
@@ -508,7 +508,10 @@ def main() -> None:
             args.config_path,
             config.PredictConfig,
             config_key="predict_config",
-            type_hooks={datetime.datetime: lambda d: datetime.datetime.fromisoformat(str(d))},
+            type_hooks={
+                datetime.datetime: lambda d: datetime.datetime.fromisoformat(str(d)),
+                utils.BoundingBox: lambda d: utils.BoundingBox(*d),
+            },
         )
         data_cfg: config.DataConfig = utils.open_config_yaml_as_dataclass(
             args.config_path, config.DataConfig, config_key="data_config"

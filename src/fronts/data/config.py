@@ -124,7 +124,8 @@ class PredictConfig:
         outdir: Directory to write the output PNG.
         init_time: Timestep as [year, month, day, hour].
         front_types: Front type labels in class order (excluding background class 0).
-        domain: Named domain key from constants.DOMAIN_EXTENTS (e.g. "conus", "full").
+        coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
+            Defaults to full domain extent.
         prob_mask: Minimum probability to display; values below are masked.
         prob_interval: Contour interval for probability levels.
         filled_contours: Plot filled probability contours.
@@ -137,7 +138,9 @@ class PredictConfig:
     outdir: str
     init_time: datetime.datetime
     front_types: list[str] = dataclasses.field(default_factory=lambda: ["CF", "WF", "SF", "OF", "DL"])
-    domain: str = "conus"
+    coordinates: utils.BoundingBox = dataclasses.field(
+        default_factory=lambda: utils.BoundingBox(lat_min=0.25, lat_max=80.0, lon_min=130.0, lon_max=369.75)
+    )
     prob_mask: float = 0.1
     prob_interval: float = 0.1
     filled_contours: bool = False

@@ -140,6 +140,30 @@ def select_spatial_domain(data: xr.Dataset, bb: BoundingBox) -> xr.Dataset:
     return data.sel(latitude=lat_slice, longitude=slice(bb.lon_min, bb.lon_max))
 
 
+def unwrap_longitude(data: _XArray) -> _XArray:
+    """Remap a wrap-crossing longitude coordinate to be monotonically increasing.
+
+    After a wrap-crossing ``select_spatial_domain`` the longitude coordinate may
+    look like ``[130, ..., 359.75, 0, ..., 9.75]``.  Plotting libraries expect
+    monotonically increasing coordinates, so this function shifts the second chunk
+    to ``[360, ..., 369.75]``, giving ``[130, ..., 359.75, 360, ..., 369.75]``.
+
+    Args:
+        data: Dataset or DataArray with a 1-D ``longitude`` coordinate.
+
+    Returns:
+        Input with the longitude coordinate remapped to be monotonically increasing.
+        If the coordinate is already monotonic, it is returned unchanged.
+    """
+    lons = data["longitude"].values
+    if len(lons) < 2 or np.all(np.diff(lons) >= 0):
+        return data
+    wrap_idx = int(np.argmax(np.diff(lons) < 0)) + 1
+    new_lons = lons.copy()
+    new_lons[wrap_idx:] += 360.0
+    return data.assign_coords(longitude=new_lons)
+
+
 def drop_duplicate_times(data: _XArray) -> _XArray:
     """Drop duplicate timestamps along the time dimension, keeping the first occurrence.
 

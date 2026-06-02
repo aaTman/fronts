@@ -28,6 +28,6 @@ predict_config:
   outdir: "/ourdisk/hpc/ai2es/tman/models/case_studies"
   init_time: "2024-03-15T06:00:00"
   front_types: [CF, WF, SF, OF, DL]
-  domain: "full"
+  coordinates: [0.25, 80.0, 130.0, 369.75]
   filled_contours: true
   targets: true

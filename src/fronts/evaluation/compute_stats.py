@@ -229,10 +229,10 @@ def compute_stats(
         pred_np = (pred.numpy() if hasattr(pred, "numpy") else np.asarray(pred))[0].astype(np.float32)
         t_infer = time.perf_counter()
 
-        pred_fronts = pred_np[:, :, class_indices]        # (lat, lon, F)
-        truth_fronts = y_np[:, :, class_indices] > 0.5   # (lat, lon, F) bool
+        pred_fronts = pred_np[:, :, class_indices]  # (lat, lon, F)
+        truth_fronts = y_np[:, :, class_indices] > 0.5  # (lat, lon, F) bool
 
-        pred_f = pred_fronts.transpose(2, 0, 1)    # (F, lat, lon)
+        pred_f = pred_fronts.transpose(2, 0, 1)  # (F, lat, lon)
         truth_f = truth_fronts.transpose(2, 0, 1)  # (F, lat, lon)
 
         # Threshold comparison written into pre-allocated buffer — no allocation.
