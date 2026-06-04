@@ -43,7 +43,7 @@ model_config:
 callbacks_config:
   monitor: "val_loss"
   patience: 16
-  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/"
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/vertical_velocity/"
   
 wandb_config:
   project_name: "fronts"
