@@ -455,9 +455,6 @@ def main():
 
     logger.info(f"Train timesteps: {train_era5.sizes['time']}, Val timesteps: {val_era5.sizes['time']}")
 
-    n_lat = train_era5.sizes["latitude"]
-    n_lon = train_era5.sizes["longitude"]
-
     t0 = time.time()
     norm_mean, norm_variance = inputs.compute_norm_stats(train_era5)
     logger.info(f"Normalization stats computed over full training set  ({time.time() - t0:.1f} s)")
@@ -478,7 +475,7 @@ def main():
 
     with strategy.scope():
         unet = model.UNet3Plus(
-            input_shape=(n_lat, n_lon, cfg.model_config.n_channels),
+            input_shape=(None, None, cfg.model_config.n_channels),
             num_classes=cfg.model_config.n_classes,
             levels=cfg.model_config.levels,
             filter_num=cfg.model_config.filter_num,
