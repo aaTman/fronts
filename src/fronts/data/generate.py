@@ -119,6 +119,7 @@ def write_new_variables_to_icechunk_store(
         f"{storage_config.store_path} with dataset of shape {ds.sizes}"
     )
 
+    ds = ds.drop_vars([c for c in ds.coords if c in ds.dims])
     session = repo.writable_session(storage_config.branch_name)
     icechunk.xarray.to_icechunk(ds, session, mode="a", safe_chunks=False)
     session.commit(f"{storage_config.commit_message} - added variables: {list(ds.data_vars)}")
