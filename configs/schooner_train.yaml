@@ -27,7 +27,7 @@ data_config:
 
 model_config:
   n_classes: 6
-  n_channels: 30
+  n_channels: 36
   levels: 4
   filter_num: [16, 32, 64, 128]
   pool_size: [2, 2]
