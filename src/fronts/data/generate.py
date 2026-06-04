@@ -132,9 +132,9 @@ def write_new_variables_to_icechunk_store(
         f"{storage_config.store_path} with dataset of shape {ds.sizes}"
     )
 
-    new_ds = xr.Dataset({name: (list(ds[name].dims), ds[name].drop_encoding().values) for name in ds.data_vars})
+    new_ds = xr.Dataset({name: (list(ds[name].dims), ds[name].drop_encoding().data) for name in ds.data_vars})
     session = repo.writable_session(storage_config.branch_name)
-    new_ds.to_zarr(session.store, mode="a", consolidated=False)
+    icechunk.xarray.to_icechunk(new_ds, session, mode="a", safe_chunks=False)
     log = f"{storage_config.commit_message} - added variables: {list(ds.data_vars)}"
     session.commit(log)
     logger.info(log)
