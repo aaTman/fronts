@@ -47,4 +47,4 @@ callbacks_config:
   
 wandb_config:
   project_name: "fronts"
-  run_name: "with_dilation"
+  run_name: "vertical_velocity"
