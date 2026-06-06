@@ -164,6 +164,7 @@ def inspect_store(storage_config: config.IcechunkStorageConfig) -> StoreContents
     if not ic.Repository.exists(storage):
         return None
     ds = utils.open_readonly_icechunk_store(storage_config.store_path, storage_config.branch_name)
+    ds = utils.unwrap_longitude(ds)
     return StoreContents(
         variables=[str(k) for k in ds.data_vars],
         times=pd.DatetimeIndex(ds.time.values),

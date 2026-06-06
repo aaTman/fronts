@@ -23,6 +23,7 @@ ERA5_VARS = [
 LEVELS = [1000, 950, 900, 850, 700, 500]
 LAT = np.linspace(45.0, 25.0, 8)  # descending (N→S) to match ERA5 convention
 LON = np.linspace(-110.0, -70.0, 8)
+LON_WRAP = np.array([330.0, 350.0, 0.0, 20.0])  # wraps past 360: physical domain 330→380
 
 YAML_PATH = pathlib.Path(__file__).parent / "test_generate.yaml"
 
@@ -250,6 +251,23 @@ class TestInspectStore:
         assert result.coordinates.lat_max == pytest.approx(float(LAT.max()))
         assert result.coordinates.lon_min == pytest.approx(float(LON.min()))
         assert result.coordinates.lon_max == pytest.approx(float(LON.max()))
+
+    def test_wraparound_longitude_coordinates(self, storage_config, time_range):
+        rng = np.random.default_rng(5)
+        wrap_ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    rng.standard_normal((4, 6, 4, 4)).astype(np.float32),
+                    dims=["time", "level", "latitude", "longitude"],
+                    coords={"time": time_range, "level": LEVELS, "latitude": LAT[:4], "longitude": LON_WRAP},
+                )
+            }
+        )
+        generate.write_or_append_icechunk_store(storage_config, wrap_ds)
+        result = generate.inspect_store(storage_config)
+        assert result is not None
+        assert result.coordinates.lon_min == pytest.approx(330.0)
+        assert result.coordinates.lon_max == pytest.approx(380.0)
 
 
 class TestDetermineWriteStrategy:
