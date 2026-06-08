@@ -1,5 +1,6 @@
 import dataclasses
 import pathlib
+import tempfile
 from datetime import datetime
 
 import dacite
@@ -9,6 +10,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 import yaml
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
 from fronts.data import config, generate
 from fronts.utils import BoundingBox
@@ -518,3 +521,264 @@ class TestYamlConfigLoading:
         assert result.store_path == "/tmp/test_store"
         assert result.branch_name == "main"
         assert result.commit_message == "test commit"
+
+
+_BASE_CONFIG = config.ERA5DataLoaderConfig(
+    era5_uri="/dev/null",
+    variables=list(ERA5_VARS),
+    pressure_levels=list(LEVELS),
+    time_start=datetime(2019, 1, 1),
+    time_end=datetime(2019, 1, 1, 18),
+    time_resolution="6h",
+    coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+    storage_options=None,
+    chunks={"time": 1},
+)
+
+_PROP_LEVELS = [1000, 500]
+_PROP_LAT = np.linspace(45.0, 25.0, 4)
+_PROP_LON = np.linspace(-110.0, -70.0, 4)
+
+
+@st.composite
+def time_index_strategy(draw, min_size=1, max_size=6):
+    n = draw(st.integers(min_value=min_size, max_value=max_size))
+    freq = draw(st.sampled_from(["3h", "6h", "12h"]))
+    # Build start from integers to avoid sub-second precision, which overflows
+    # icechunk's CF-convention time encoding when written to zarr.
+    year = draw(st.integers(2010, 2017))
+    month = draw(st.integers(1, 12))
+    day = draw(st.integers(1, 28))
+    hour = draw(st.integers(0, 23))
+    return pd.date_range(datetime(year, month, day, hour), periods=n, freq=freq)
+
+
+var_list_strategy = st.lists(st.sampled_from(ERA5_VARS), unique=True, min_size=1, max_size=len(ERA5_VARS))
+
+attr_strategy = st.dictionaries(
+    keys=st.text(alphabet=st.characters(whitelist_categories=("L",)), min_size=1, max_size=20),
+    values=st.text(max_size=50),
+    max_size=5,
+)
+
+
+def _prop_ds(times: pd.DatetimeIndex, var_names: list[str]) -> xr.Dataset:
+    rng = np.random.default_rng(0)
+    shape = (len(times), len(_PROP_LEVELS), len(_PROP_LAT), len(_PROP_LON))
+    return xr.Dataset(
+        {
+            v: xr.DataArray(
+                rng.standard_normal(shape).astype(np.float32),
+                dims=["time", "level", "latitude", "longitude"],
+                coords={"time": times, "level": _PROP_LEVELS, "latitude": _PROP_LAT, "longitude": _PROP_LON},
+            )
+            for v in var_names
+        }
+    )
+
+
+def _prop_storage(tmp_dir: str) -> config.IcechunkStorageConfig:
+    return config.IcechunkStorageConfig(store_path=str(pathlib.Path(tmp_dir) / "store"), branch_name="main")
+
+
+class TestPropertyBasedStrategy:
+    @given(
+        n=st.integers(1, 6),
+        freq=st.sampled_from(["3h", "6h", "12h"]),
+        year=st.integers(2010, 2017),
+        month=st.integers(1, 12),
+        day=st.integers(1, 28),
+        variables=var_list_strategy,
+    )
+    def test_skip_when_all_present(self, n, freq, year, month, day, variables):
+        start = datetime(year, month, day)
+        times = pd.date_range(start, periods=n, freq=freq)
+        cfg = dataclasses.replace(
+            _BASE_CONFIG,
+            variables=variables,
+            time_start=times[0].to_pydatetime(),
+            time_end=times[-1].to_pydatetime(),
+            time_resolution=freq,
+        )
+        store = _make_store_contents(variables=variables, times=times)
+        strategy = generate.determine_write_strategy(cfg, store)
+        assert strategy.skip_reason
+        assert not strategy.error_reason
+
+    @given(
+        n=st.integers(2, 5),
+        year=st.integers(2010, 2017),
+        month=st.integers(1, 12),
+        day=st.integers(1, 28),
+    )
+    def test_merge_required_when_times_interleave(self, n, year, month, day):
+        start = datetime(year, month, day)
+        # Store has 6h times; request 3h — the 3h gaps are interleaved with existing 6h steps
+        existing = pd.date_range(start, periods=n, freq="6h")
+        cfg = dataclasses.replace(
+            _BASE_CONFIG,
+            time_start=existing[0].to_pydatetime(),
+            time_end=existing[-1].to_pydatetime(),
+            time_resolution="3h",
+        )
+        store = _make_store_contents(times=existing)
+        strategy = generate.determine_write_strategy(cfg, store)
+        assert strategy.merge_required
+        assert not strategy.error_reason
+
+    @given(
+        n_existing=st.integers(1, 4),
+        n_extra=st.integers(1, 4),
+        year=st.integers(2010, 2017),
+        month=st.integers(1, 12),
+        day=st.integers(1, 28),
+        freq=st.sampled_from(["3h", "6h", "12h"]),
+    )
+    def test_no_merge_for_strict_tail_append(self, n_existing, n_extra, year, month, day, freq):
+        start = datetime(year, month, day)
+        existing = pd.date_range(start, periods=n_existing, freq=freq)
+        extra = pd.date_range(existing[-1] + pd.Timedelta(freq), periods=n_extra, freq=freq)
+        cfg = dataclasses.replace(
+            _BASE_CONFIG,
+            time_start=existing[0].to_pydatetime(),
+            time_end=extra[-1].to_pydatetime(),
+            time_resolution=freq,
+        )
+        store = _make_store_contents(times=existing)
+        strategy = generate.determine_write_strategy(cfg, store)
+        assert not strategy.merge_required
+        assert not strategy.error_reason
+
+    @given(
+        levels_a=st.lists(st.integers(1, 1000), unique=True, min_size=1, max_size=8),
+        levels_b=st.lists(st.integers(1, 1000), unique=True, min_size=1, max_size=8),
+    )
+    def test_level_mismatch_always_errors(self, levels_a, levels_b):
+        assume(sorted(levels_a) != sorted(levels_b))
+        cfg = dataclasses.replace(_BASE_CONFIG, pressure_levels=sorted(levels_a))
+        store = _make_store_contents(levels=sorted(levels_b))
+        strategy = generate.determine_write_strategy(cfg, store)
+        assert strategy.error_reason
+
+    @given(
+        variables=st.lists(st.sampled_from(ERA5_VARS), unique=True, min_size=2, max_size=len(ERA5_VARS)),
+        n_total=st.integers(2, 6),
+        year=st.integers(2010, 2017),
+        month=st.integers(1, 12),
+        day=st.integers(1, 28),
+        freq=st.sampled_from(["3h", "6h", "12h"]),
+        data=st.data(),
+    )
+    def test_missing_vars_and_times_always_errors(self, variables, n_total, year, month, day, freq, data):
+        start = datetime(year, month, day)
+        all_times = pd.date_range(start, periods=n_total, freq=freq)
+        n_stored = data.draw(st.integers(1, n_total - 1))
+        subset_vars = data.draw(
+            st.lists(st.sampled_from(variables), unique=True, min_size=1, max_size=len(variables) - 1)
+        )
+        cfg = dataclasses.replace(
+            _BASE_CONFIG,
+            variables=variables,
+            time_start=all_times[0].to_pydatetime(),
+            time_end=all_times[-1].to_pydatetime(),
+            time_resolution=freq,
+        )
+        store = _make_store_contents(variables=subset_vars, times=all_times[:n_stored])
+        strategy = generate.determine_write_strategy(cfg, store)
+        assert strategy.error_reason
+
+
+class TestPropertyBasedIO:
+    @given(times=time_index_strategy())
+    @settings(max_examples=20, deadline=None)
+    def test_time_count_preserved_after_write(self, times):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sc = _prop_storage(tmp_dir)
+            generate.write_or_append_icechunk_store(sc, _prop_ds(times, ["temperature"]))
+            result = generate.inspect_store(sc)
+        assert result is not None
+        assert len(result.times) == len(times)
+
+    @given(times_a=time_index_strategy(), times_b=time_index_strategy())
+    @settings(max_examples=20, deadline=None)
+    def test_append_accumulates_times(self, times_a, times_b):
+        assume(not times_a.isin(times_b).any())
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sc = _prop_storage(tmp_dir)
+            generate.write_or_append_icechunk_store(sc, _prop_ds(times_a, ["temperature"]))
+            generate.write_or_append_icechunk_store(sc, _prop_ds(times_b, ["temperature"]))
+            result = generate.inspect_store(sc)
+        assert result is not None
+        assert len(result.times) == len(times_a) + len(times_b)
+
+    @given(variables=var_list_strategy, times=time_index_strategy())
+    @settings(max_examples=20, deadline=None)
+    def test_variable_names_roundtrip(self, variables, times):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sc = _prop_storage(tmp_dir)
+            generate.write_or_append_icechunk_store(sc, _prop_ds(times, variables))
+            result = generate.inspect_store(sc)
+        assert result is not None
+        assert set(result.variables) == set(variables)
+
+    @given(attrs=attr_strategy, times=time_index_strategy())
+    @settings(max_examples=20, deadline=None)
+    def test_global_attrs_roundtrip(self, attrs, times):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sc = _prop_storage(tmp_dir)
+            ds = _prop_ds(times, ["temperature"])
+            ds.attrs = attrs
+            generate.write_or_append_icechunk_store(sc, ds)
+            storage = ic.local_filesystem_storage(sc.store_path)
+            repo = ic.Repository.open(storage)
+            result = xr.open_zarr(repo.readonly_session("main").store, consolidated=False)
+        for key, val in attrs.items():
+            assert result.attrs.get(key) == val
+
+    @given(attrs=attr_strategy, times=time_index_strategy())
+    @settings(max_examples=20, deadline=None)
+    def test_var_attrs_roundtrip(self, attrs, times):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sc = _prop_storage(tmp_dir)
+            generate.write_or_append_icechunk_store(sc, _prop_ds(times, ["temperature"]))
+            new_ds = _prop_ds(times, ["specific_humidity"])
+            new_ds["specific_humidity"].attrs = attrs
+            generate.write_new_variables_to_icechunk_store(sc, new_ds)
+            storage = ic.local_filesystem_storage(sc.store_path)
+            repo = ic.Repository.open(storage)
+            result = xr.open_zarr(repo.readonly_session("main").store, consolidated=False)
+        for key, val in attrs.items():
+            assert result["specific_humidity"].attrs.get(key) == val
+
+    @given(
+        lat_size_a=st.integers(2, 5),
+        lon_size_a=st.integers(2, 5),
+        lat_size_b=st.integers(2, 5),
+        lon_size_b=st.integers(2, 5),
+        times=time_index_strategy(),
+    )
+    @settings(max_examples=20, deadline=None)
+    def test_dimension_mismatch_raises(self, lat_size_a, lon_size_a, lat_size_b, lon_size_b, times):
+        assume(lat_size_a != lat_size_b or lon_size_a != lon_size_b)
+        lat_a = np.linspace(45.0, 25.0, lat_size_a)
+        lon_a = np.linspace(-110.0, -70.0, lon_size_a)
+        lat_b = np.linspace(45.0, 25.0, lat_size_b)
+        lon_b = np.linspace(-110.0, -70.0, lon_size_b)
+
+        def _ds(lat, lon, var):
+            rng = np.random.default_rng(0)
+            return xr.Dataset(
+                {
+                    var: xr.DataArray(
+                        rng.standard_normal((len(times), 2, len(lat), len(lon))).astype(np.float32),
+                        dims=["time", "level", "latitude", "longitude"],
+                        coords={"time": times, "level": _PROP_LEVELS, "latitude": lat, "longitude": lon},
+                    )
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sc = _prop_storage(tmp_dir)
+            generate.write_or_append_icechunk_store(sc, _ds(lat_a, lon_a, "temperature"))
+            with pytest.raises(ValueError):
+                generate.write_new_variables_to_icechunk_store(sc, _ds(lat_b, lon_b, "specific_humidity"))
