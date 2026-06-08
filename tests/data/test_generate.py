@@ -393,7 +393,6 @@ class TestWriteNewVariablesToIcechunkStore:
         np.testing.assert_array_equal(result["vertical_velocity"].values, new_variable_ds["vertical_velocity"].values)
 
 
-
 class TestAttributePreservation:
     def test_write_or_append_preserves_global_attrs(self, storage_config, write_ds):
         write_ds.attrs = {"source": "era5", "version": "1"}
