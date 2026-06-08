@@ -1,8 +1,6 @@
 import argparse
 import dataclasses
 import logging
-import pathlib
-import shutil
 import sys
 
 import icechunk as ic
@@ -79,8 +77,8 @@ class WriteStrategy:
             if self.merge_required:
                 logger.info("Generating ERA5 data for missing time steps...")
                 missing_ds = generate_era5_data(era5_config).sel(time=self.missing_times)
-                logger.info("Merging missing time steps into icechunk store...")
-                write_merged_icechunk_store(icechunk_config, missing_ds)
+                logger.info("Appending missing time steps to icechunk store...")
+                write_or_append_icechunk_store(icechunk_config, missing_ds)
             else:
                 data_config = dataclasses.replace(
                     era5_config,
@@ -283,7 +281,9 @@ def write_new_variables_to_icechunk_store(
     logger.info(log)
 
 
-def write_or_append_icechunk_store(storage_config: config.IcechunkStorageConfig, ds: xr.Dataset | xr.DataArray) -> None:
+def write_or_append_icechunk_store(
+    storage_config: config.IcechunkStorageConfig, ds: xr.Dataset | xr.DataArray, dry_run: bool = False
+) -> None:
     """Write or append an xarray Dataset to an icechunk store.
 
     If the store already exists, the new data will be appended along the time dimension.
@@ -291,6 +291,7 @@ def write_or_append_icechunk_store(storage_config: config.IcechunkStorageConfig,
     Args:
         storage_config: Configuration object containing parameters for icechunk storage.
         ds: The xarray Dataset to write or append to the store.
+        dry_run: If True, perform a dry run without actually writing to the store.
     """
     # Drop encoding due to zarr v3 compatibility issues; see
     # https://github.com/pydata/xarray/issues/10032
@@ -316,57 +317,13 @@ def write_or_append_icechunk_store(storage_config: config.IcechunkStorageConfig,
             pbar.set_postfix(year=str(time_slice[0])[:4], steps=f"{i}-{i + len(time_slice)}")
             session = repo.writable_session(storage_config.branch_name)
             icechunk.xarray.to_icechunk(ds_slice, session, append_dim=append, safe_chunks=False)
-            session.commit(f"{storage_config.commit_message}, time steps {i} to {i + len(time_slice)}")
+            if dry_run:
+                logger.info(
+                    f"Dry run: would commit {len(time_slice)} time steps from {time_slice[0]} to {time_slice[-1]}"
+                )
+            else:
+                session.commit(f"{storage_config.commit_message}, time steps {i} to {i + len(time_slice)}")
             append = "time"  # always append after first write
-
-
-def write_merged_icechunk_store(
-    storage_config: config.IcechunkStorageConfig,
-    new_ds: xr.Dataset,
-) -> None:
-    """Merge new time steps with existing store data and rewrite the store.
-
-    Concatenates the new (missing) time steps with the existing store data, sorts by
-    time, and writes the result to a temporary path before atomically replacing the
-    original. Writing to a separate path avoids a read-write conflict on the same store.
-
-    Used when new time steps are interleaved with existing data, e.g. after a resolution
-    change from 6h to 3h produces a 1-0-1-0-1 pattern of existing and missing steps.
-
-    Args:
-        storage_config: Configuration for the icechunk store.
-        new_ds: Dataset containing only the missing time steps to merge in.
-    """
-    existing_ds = utils.open_readonly_icechunk_store(
-        storage_config.store_path,
-        storage_config.branch_name,
-        group=storage_config.group_name,
-        zarr_format=storage_config.zarr_format,
-    )
-    # xr.concat raises AlignmentError when one dataset has PeriodicBoundaryIndex and the
-    # other has PandasIndex on the same coordinate. Normalize both to PeriodicBoundaryIndex
-    # before concat so the index types match regardless of how each dataset was created.
-    existing_ds = utils.attach_periodic_lon_index(existing_ds)
-    new_ds = utils.attach_periodic_lon_index(new_ds)
-    merged_ds = xr.concat([existing_ds, new_ds], dim="time").sortby("time")
-
-    logger.info(
-        f"Merging {new_ds.sizes['time']} new time steps with {existing_ds.sizes['time']} existing "
-        f"({merged_ds.sizes['time']} total) at {storage_config.store_path}"
-    )
-
-    tmp_path = storage_config.store_path + "_merge_tmp"
-    tmp_config = dataclasses.replace(storage_config, store_path=tmp_path)
-    try:
-        write_or_append_icechunk_store(tmp_config, merged_ds)
-        shutil.rmtree(storage_config.store_path)
-        shutil.move(tmp_path, storage_config.store_path)
-    except Exception:
-        if pathlib.Path(tmp_path).exists():
-            shutil.rmtree(tmp_path)
-        raise
-
-    logger.info(f"Merge complete; store at {storage_config.store_path} has {merged_ds.sizes['time']} time steps")
 
 
 def create_dask_client(

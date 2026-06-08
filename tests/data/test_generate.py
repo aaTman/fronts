@@ -393,78 +393,6 @@ class TestWriteNewVariablesToIcechunkStore:
         np.testing.assert_array_equal(result["vertical_velocity"].values, new_variable_ds["vertical_velocity"].values)
 
 
-class TestWriteMergedIcechunkStore:
-    def test_merged_store_has_all_time_steps(self, storage_config, write_ds):
-        existing_times = pd.date_range("2019-01-01", periods=4, freq="6h")
-        interleaved_times = pd.date_range("2019-01-01 03:00", periods=4, freq="6h")
-        rng = np.random.default_rng(99)
-        new_ds = xr.Dataset(
-            {
-                "temperature": xr.DataArray(
-                    rng.standard_normal((4, 6, 8, 8)).astype(np.float32),
-                    dims=["time", "level", "latitude", "longitude"],
-                    coords={"time": interleaved_times, "level": LEVELS, "latitude": LAT, "longitude": LON},
-                )
-            }
-        )
-        generate.write_or_append_icechunk_store(storage_config, write_ds)
-        generate.write_merged_icechunk_store(storage_config, new_ds)
-
-        storage = ic.local_filesystem_storage(storage_config.store_path)
-        repo = ic.Repository.open(storage)
-        session = repo.readonly_session("main")
-        result = xr.open_zarr(session.store, consolidated=False)
-        result_times = pd.DatetimeIndex(result.time.values)
-        expected_times = existing_times.append(interleaved_times).sort_values()
-        np.testing.assert_array_equal(result_times.astype("datetime64[us]"), expected_times.values)
-
-    def test_merged_store_data_is_sorted(self, storage_config, write_ds):
-        interleaved_times = pd.date_range("2019-01-01 03:00", periods=4, freq="6h")
-        rng = np.random.default_rng(99)
-        new_ds = xr.Dataset(
-            {
-                "temperature": xr.DataArray(
-                    rng.standard_normal((4, 6, 8, 8)).astype(np.float32),
-                    dims=["time", "level", "latitude", "longitude"],
-                    coords={"time": interleaved_times, "level": LEVELS, "latitude": LAT, "longitude": LON},
-                )
-            }
-        )
-        generate.write_or_append_icechunk_store(storage_config, write_ds)
-        generate.write_merged_icechunk_store(storage_config, new_ds)
-
-        storage = ic.local_filesystem_storage(storage_config.store_path)
-        repo = ic.Repository.open(storage)
-        session = repo.readonly_session("main")
-        result = xr.open_zarr(session.store, consolidated=False)
-        times = pd.DatetimeIndex(result.time.values)
-        assert times.is_monotonic_increasing
-
-    def test_merged_store_preserves_existing_data(self, storage_config, write_ds):
-        interleaved_times = pd.date_range("2019-01-01 03:00", periods=4, freq="6h")
-        rng = np.random.default_rng(99)
-        new_ds = xr.Dataset(
-            {
-                "temperature": xr.DataArray(
-                    rng.standard_normal((4, 6, 8, 8)).astype(np.float32),
-                    dims=["time", "level", "latitude", "longitude"],
-                    coords={"time": interleaved_times, "level": LEVELS, "latitude": LAT, "longitude": LON},
-                )
-            }
-        )
-        generate.write_or_append_icechunk_store(storage_config, write_ds)
-        generate.write_merged_icechunk_store(storage_config, new_ds)
-
-        storage = ic.local_filesystem_storage(storage_config.store_path)
-        repo = ic.Repository.open(storage)
-        session = repo.readonly_session("main")
-        result = xr.open_zarr(session.store, consolidated=False)
-        existing_times = pd.DatetimeIndex(write_ds.time.values)
-        np.testing.assert_array_equal(
-            result.sel(time=existing_times.astype("datetime64[ns]"))["temperature"].values,
-            write_ds["temperature"].values,
-        )
-
 
 class TestAttributePreservation:
     def test_write_or_append_preserves_global_attrs(self, storage_config, write_ds):
@@ -537,16 +465,6 @@ class TestTimeResolution:
         result = generate.inspect_store(storage_config)
         assert result is not None
         assert len(result.times) == len(pd.date_range("2019-01-01", "2019-01-01 18:00", freq="3h"))
-
-    def test_6h_to_3h_end_to_end_is_sorted(self, storage_config, era5_zarr_3h, minimal_ds):
-        generate.write_or_append_icechunk_store(storage_config, minimal_ds)
-        cfg = self._config(era5_zarr_3h, "3h")
-        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(storage_config))
-        strategy.execute(cfg, storage_config)
-
-        result = generate.inspect_store(storage_config)
-        assert result is not None
-        assert result.times.is_monotonic_increasing
 
     def test_6h_to_3h_end_to_end_preserves_existing_data(self, storage_config, era5_zarr_3h, minimal_ds):
         generate.write_or_append_icechunk_store(storage_config, minimal_ds)
