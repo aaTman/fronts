@@ -43,7 +43,8 @@ class StoreContents:
 class WriteStrategy:
     """Decision record produced by determine_write_strategy.
 
-    Exactly one of skip_reason, error_reason, or an action field will be populated:
+    Fields are not mutually exclusive: both missing_variables and missing_times may be
+    set, in which case execute appends the times first then writes the new variables.
     - skip_reason non-empty: log and return immediately.
     - error_reason non-empty: raise ValueError with the reason.
     - Otherwise: proceed using missing_variables and/or missing_times.
@@ -85,15 +86,16 @@ class WriteStrategy:
                     time_start=self.missing_times[0].to_pydatetime(),
                     time_end=self.missing_times[-1].to_pydatetime(),
                 )
-                logger.info("Generating ERA5 data subset...")
+                logger.info("Generating ERA5 data for missing time steps...")
                 era5_subset = generate_era5_data(narrow_config)
                 logger.info("Writing ERA5 subset to icechunk store...")
                 write_or_append_icechunk_store(icechunk_config, era5_subset)
-        else:
+
+        if self.missing_variables:
             narrow_config = dataclasses.replace(era5_config, variables=self.missing_variables)
-            logger.info("Generating ERA5 data subset...")
+            logger.info("Generating ERA5 data for missing variables...")
             era5_subset = generate_era5_data(narrow_config)
-            logger.info("Writing ERA5 subset to icechunk store...")
+            logger.info("Writing new variables to icechunk store...")
             write_new_variables_to_icechunk_store(icechunk_config, era5_subset)
 
 
@@ -232,18 +234,19 @@ def determine_write_strategy(
         missing_variables = [v for v in era5_config.variables if v not in store_contents.variables]
         missing_times = requested_times[~requested_times.isin(store_contents.times)]
 
-        if len(missing_variables) > 0 and len(missing_times) > 0:
-            error_reason = (
-                "Store has both missing variables and missing time steps. "
-                "Add the missing time steps first, then rerun to add new variables."
-            )
-        elif len(missing_variables) == 0 and len(missing_times) == 0:
+        if len(missing_variables) == 0 and len(missing_times) == 0:
             skip_reason = "All requested variables and time steps are already present in the store."
-        elif len(missing_times) > 0:
+        if len(missing_times) > 0:
             if len(store_contents.times) == 0:
                 error_reason = "Store exists but contains no time steps. Delete the store and rerun."
             elif missing_times[0] <= store_contents.times[-1]:
-                merge_required = True
+                if len(missing_variables) > 0:
+                    error_reason = (
+                        "Store has both missing variables and missing time steps that require merging. "
+                        "Add the missing time steps first, then rerun to add new variables."
+                    )
+                else:
+                    merge_required = True
 
     return WriteStrategy(
         missing_variables=missing_variables,

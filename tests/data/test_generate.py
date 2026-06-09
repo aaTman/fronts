@@ -353,14 +353,16 @@ class TestDetermineWriteStrategy:
         assert len(strategy.missing_times) == 0
         assert not strategy.error_reason
 
-    def test_missing_vars_and_times_returns_error(self, era5_zarr):
+    def test_missing_vars_and_times_no_error(self, era5_zarr):
         cfg = dataclasses.replace(
             self._base_config(era5_zarr),
             time_end=datetime(2019, 1, 2, 0),
         )
         store = _make_store_contents(variables=["temperature"])
         strategy = generate.determine_write_strategy(cfg, store)
-        assert strategy.error_reason
+        assert not strategy.error_reason
+        assert strategy.missing_variables
+        assert strategy.missing_times.size
 
 
 class TestWriteNewVariablesToIcechunkStore:
@@ -669,7 +671,7 @@ class TestPropertyBasedStrategy:
         freq=st.sampled_from(["3h", "6h", "12h"]),
         data=st.data(),
     )
-    def test_missing_vars_and_times_always_errors(self, variables, n_total, year, month, day, freq, data):
+    def test_missing_vars_and_times_no_error(self, variables, n_total, year, month, day, freq, data):
         start = datetime(year, month, day)
         all_times = pd.date_range(start, periods=n_total, freq=freq)
         n_stored = data.draw(st.integers(1, n_total - 1))
@@ -685,7 +687,11 @@ class TestPropertyBasedStrategy:
         )
         store = _make_store_contents(variables=subset_vars, times=all_times[:n_stored])
         strategy = generate.determine_write_strategy(cfg, store)
-        assert strategy.error_reason
+        # Only errors when merge is required alongside missing variables
+        if not strategy.merge_required:
+            assert not strategy.error_reason
+        assert strategy.missing_variables
+        assert strategy.missing_times.size
 
 
 class TestPropertyBasedIO:
