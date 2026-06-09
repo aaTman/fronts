@@ -118,7 +118,7 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
         ValueError: If any requested variable is not in ARCO and has no registered
             derivation function.
     """
-    open_kwargs: dict = {"chunks": None}
+    open_kwargs: dict = {"chunks": {}}
     if era5_config.storage_options:
         open_kwargs["storage_options"] = era5_config.storage_options
     ds = xr.open_zarr(era5_config.era5_uri, **open_kwargs)
@@ -140,7 +140,7 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
     for var_name in derived_vars:
         spec = derived.DERIVED_VARIABLE_REGISTRY[var_name]
         logger.info(f"Computing derived variable '{var_name}' from {spec.required_inputs}")
-        ds_subset[var_name] = spec.compute(ds_subset)
+        ds_subset[var_name] = spec.compute(*[ds_subset[inp] for inp in spec.required_inputs])
 
     requested_set = set(era5_config.variables)
     vars_to_drop = [v for v in ds_subset.data_vars if v not in requested_set]

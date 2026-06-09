@@ -1,6 +1,7 @@
 import dataclasses
 from collections.abc import Callable
 
+import atmos.kinematic
 import numpy as np
 import xarray as xr
 
@@ -15,87 +16,91 @@ class DerivedVariableSpec:
     """Specification for computing a variable not present in the ARCO ERA5 store.
 
     Attributes:
-        required_inputs: ERA5 variable names that must be downloaded before compute.
-        compute: Callable that takes the subsetted Dataset and returns a DataArray
-            with dims (time, level, latitude, longitude).
+        required_inputs: ERA5 variable names that must be downloaded before compute,
+            in the order they are passed to ``compute``.
+        compute: Callable that accepts one DataArray per entry in ``required_inputs``
+            and returns a DataArray with dims (time, level, latitude, longitude).
     """
 
     required_inputs: list[str]
-    compute: Callable[[xr.Dataset], xr.DataArray]
+    compute: Callable[..., xr.DataArray]
 
 
-def _compute_wind_speed(ds: xr.Dataset) -> xr.DataArray:
-    return (ds["u_component_of_wind"] ** 2 + ds["v_component_of_wind"] ** 2) ** 0.5
+def _pressure_pa(da: xr.DataArray) -> xr.DataArray:
+    """Broadcast pressure levels (hPa → Pa) lazily from a DataArray's level coord."""
+    return (da.level * 100.0).broadcast_like(da)
 
 
-def _pressure_pa(ds: xr.Dataset) -> xr.DataArray:
-    """Broadcast pressure levels (hPa → Pa) to (time, level, lat, lon)."""
-    level_pa = ds["level"].values.astype(np.float64) * 100.0
-    ref_var = next(iter(ds.data_vars))
-    return xr.DataArray(
-        np.broadcast_to(
-            level_pa[np.newaxis, :, np.newaxis, np.newaxis],
-            ds[ref_var].shape,
-        ).copy(),
-        dims=ds[ref_var].dims,
-        coords=ds[ref_var].coords,
-    )
-
-
-def _compute_potential_temperature(ds: xr.Dataset) -> xr.DataArray:
-    """Dry potential temperature via Poisson's equation: θ = T (p₀/p)^(R_d/c_pd)."""
-    p = _pressure_pa(ds)
-    return ds["temperature"] * (100000.0 / p) ** (_R_D / _C_PD)
-
-
-def _saturation_vapour_pressure(t: xr.DataArray) -> xr.DataArray:
+def _saturation_vapour_pressure(temperature: xr.DataArray) -> xr.DataArray:
     """Saturation vapour pressure in hPa via Bolton (1980) eq. 10."""
-    return 6.112 * xr.apply_ufunc(np.exp, 17.67 * (t - 273.15) / (t - 29.65))
+    return 6.112 * xr.apply_ufunc(np.exp, 17.67 * (temperature - 273.15) / (temperature - 29.65), dask="parallelized")
 
 
-def _vapour_pressure(ds: xr.Dataset) -> xr.DataArray:
-    """Actual vapour pressure in hPa from specific humidity and pressure level."""
-    q = ds["specific_humidity"]
-    p_hpa = _pressure_pa(ds) / 100.0
-    r = q / (1.0 - q)
-    return r / (_EPSILON + r) * p_hpa
+def _vapour_pressure(specific_humidity: xr.DataArray, pressure_hpa: xr.DataArray) -> xr.DataArray:
+    """Actual vapour pressure in hPa from specific humidity and pressure (hPa)."""
+    r = specific_humidity / (1.0 - specific_humidity)
+    return r / (_EPSILON + r) * pressure_hpa
 
 
-def _compute_equivalent_potential_temperature(ds: xr.Dataset) -> xr.DataArray:
+def _compute_wind_speed(
+    u_component_of_wind: xr.DataArray,
+    v_component_of_wind: xr.DataArray,
+) -> xr.DataArray:
+    return xr.apply_ufunc(atmos.kinematic.wind_speed, u_component_of_wind, v_component_of_wind, dask="parallelized")
+
+
+def _compute_potential_temperature(temperature: xr.DataArray) -> xr.DataArray:
+    """Dry potential temperature via Poisson's equation: θ = T (p₀/p)^(R_d/c_pd)."""
+    p = _pressure_pa(temperature)
+    return temperature * (100000.0 / p) ** (_R_D / _C_PD)
+
+
+def _compute_equivalent_potential_temperature(
+    temperature: xr.DataArray,
+    specific_humidity: xr.DataArray,
+) -> xr.DataArray:
     """Equivalent potential temperature via Bolton (1980) eq. 43.
 
     Reference: Bolton, D. (1980). Mon. Wea. Rev., 108, 1046-1053.
     """
-    t = ds["temperature"]
-    q = ds["specific_humidity"]
-    p = _pressure_pa(ds)
-    e = _vapour_pressure(ds)
-    r = q / (1.0 - q)
-    log_e = xr.apply_ufunc(np.log, e / 6.112)
+    p = _pressure_pa(temperature)
+    p_hpa = p / 100.0
+    e = _vapour_pressure(specific_humidity, p_hpa)
+    r = specific_humidity / (1.0 - specific_humidity)
+    log_e = xr.apply_ufunc(np.log, e / 6.112, dask="parallelized")
     t_d = 243.5 * log_e / (17.67 - log_e) + 273.15
-    t_l = 1.0 / (1.0 / (t_d - 56.0) + xr.apply_ufunc(np.log, t / t_d) / 800.0) + 56.0
-    return t * (100000.0 / p) ** (_R_D / _C_PD) * xr.apply_ufunc(np.exp, (_L_V * r) / (_C_PD * t_l))
+    t_l = 1.0 / (1.0 / (t_d - 56.0) + xr.apply_ufunc(np.log, temperature / t_d, dask="parallelized") / 800.0) + 56.0
+    theta = temperature * (100000.0 / p) ** (_R_D / _C_PD)
+    return theta * xr.apply_ufunc(np.exp, (_L_V * r) / (_C_PD * t_l), dask="parallelized")
 
 
-def _compute_virtual_temperature(ds: xr.Dataset) -> xr.DataArray:
+def _compute_virtual_temperature(
+    temperature: xr.DataArray,
+    specific_humidity: xr.DataArray,
+) -> xr.DataArray:
     """Virtual temperature: T_v = T (1 + q/ε) / (1 + q)."""
-    t = ds["temperature"]
-    q = ds["specific_humidity"]
-    return t * (1.0 + q / _EPSILON) / (1.0 + q)
+    return temperature * (1.0 + specific_humidity / _EPSILON) / (1.0 + specific_humidity)
 
 
-def _compute_dewpoint_temperature(ds: xr.Dataset) -> xr.DataArray:
+def _compute_dewpoint_temperature(
+    temperature: xr.DataArray,
+    specific_humidity: xr.DataArray,
+) -> xr.DataArray:
     """Dewpoint temperature via Bolton (1980) eq. 11."""
-    e = _vapour_pressure(ds)
-    log_e = xr.apply_ufunc(np.log, e / 6.112)
+    p_hpa = _pressure_pa(temperature) / 100.0
+    e = _vapour_pressure(specific_humidity, p_hpa)
+    log_e = xr.apply_ufunc(np.log, e / 6.112, dask="parallelized")
     return 243.5 * log_e / (17.67 - log_e) + 273.15
 
 
-def _compute_relative_humidity(ds: xr.Dataset) -> xr.DataArray:
+def _compute_relative_humidity(
+    temperature: xr.DataArray,
+    specific_humidity: xr.DataArray,
+) -> xr.DataArray:
     """Relative humidity as a fraction (0-1) from specific humidity and pressure."""
-    t = ds["temperature"]
-    e = _vapour_pressure(ds)
-    e_s = _saturation_vapour_pressure(t)
+    p_hpa = _pressure_pa(temperature) / 100.0
+    e = _vapour_pressure(specific_humidity, p_hpa)
+    e_s = _saturation_vapour_pressure(temperature)
     return e / e_s
 
 

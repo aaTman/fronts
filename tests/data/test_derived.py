@@ -151,73 +151,93 @@ class TestResolveDownloadVariables:
 
 class TestWindSpeedCompute:
     def test_shape_preserved(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(
+            base_ds["u_component_of_wind"], base_ds["v_component_of_wind"]
+        )
         assert result.shape == base_ds["temperature"].shape
         assert result.dims == base_ds["temperature"].dims
 
     def test_values_correct(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(
+            base_ds["u_component_of_wind"], base_ds["v_component_of_wind"]
+        )
         u = base_ds["u_component_of_wind"].values
         v = base_ds["v_component_of_wind"].values
         expected = np.sqrt(u**2 + v**2)
         np.testing.assert_allclose(result.values, expected, rtol=1e-5)
 
     def test_non_negative(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(
+            base_ds["u_component_of_wind"], base_ds["v_component_of_wind"]
+        )
         assert np.all(result.values >= 0)
 
 
 class TestPotentialTemperatureCompute:
     def test_shape_preserved(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(base_ds["temperature"])
         assert result.shape == base_ds["temperature"].shape
 
     def test_values_reasonable(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(base_ds)
-        # Potential temperature at sea level should be close to actual temperature
-        # and physically between ~200 K and ~400 K
+        result = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(base_ds["temperature"])
         assert np.all(result.values > 150)
         assert np.all(result.values < 500)
 
 
 class TestEquivalentPotentialTemperatureCompute:
     def test_shape_preserved(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["equivalent_potential_temperature"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["equivalent_potential_temperature"].compute(
+            base_ds["temperature"], base_ds["specific_humidity"]
+        )
         assert result.shape == base_ds["temperature"].shape
 
     def test_values_warmer_than_potential_temperature(self, base_ds: xr.Dataset):
-        theta = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(base_ds)
-        theta_e = derived.DERIVED_VARIABLE_REGISTRY["equivalent_potential_temperature"].compute(base_ds)
+        theta = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(base_ds["temperature"])
+        theta_e = derived.DERIVED_VARIABLE_REGISTRY["equivalent_potential_temperature"].compute(
+            base_ds["temperature"], base_ds["specific_humidity"]
+        )
         assert np.all(theta_e.values >= theta.values)
 
 
 class TestVirtualTemperatureCompute:
     def test_shape_preserved(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["virtual_temperature"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["virtual_temperature"].compute(
+            base_ds["temperature"], base_ds["specific_humidity"]
+        )
         assert result.shape == base_ds["temperature"].shape
 
     def test_warmer_than_actual_temperature(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["virtual_temperature"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["virtual_temperature"].compute(
+            base_ds["temperature"], base_ds["specific_humidity"]
+        )
         assert np.all(result.values >= base_ds["temperature"].values)
 
 
 class TestDewpointTemperatureCompute:
     def test_shape_preserved(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["dewpoint_temperature"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["dewpoint_temperature"].compute(
+            base_ds["temperature"], base_ds["specific_humidity"]
+        )
         assert result.shape == base_ds["temperature"].shape
 
     def test_at_or_below_actual_temperature(self, physical_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["dewpoint_temperature"].compute(physical_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["dewpoint_temperature"].compute(
+            physical_ds["temperature"], physical_ds["specific_humidity"]
+        )
         assert np.all(result.values <= physical_ds["temperature"].values + 1e-3)
 
 
 class TestRelativeHumidityCompute:
     def test_shape_preserved(self, base_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["relative_humidity"].compute(base_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["relative_humidity"].compute(
+            base_ds["temperature"], base_ds["specific_humidity"]
+        )
         assert result.shape == base_ds["temperature"].shape
 
     def test_bounded_between_zero_and_one(self, physical_ds: xr.Dataset):
-        result = derived.DERIVED_VARIABLE_REGISTRY["relative_humidity"].compute(physical_ds)
+        result = derived.DERIVED_VARIABLE_REGISTRY["relative_humidity"].compute(
+            physical_ds["temperature"], physical_ds["specific_humidity"]
+        )
         assert np.all(result.values >= 0)
         assert np.all(result.values <= 1.0 + 1e-6)
 
