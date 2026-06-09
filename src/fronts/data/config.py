@@ -69,7 +69,7 @@ class DataConfig:
         val_split: Fraction of all filtered time steps to use for validation.
         test_split: Fraction of timesteps per meteorological season to hold out as a sequestered
             test set (never seen during training or validation). train_split + val_split +
-            test_split should sum to approximately 1.0.
+            test_split should sum to 1.
         batch_size: Number of timesteps per training batch.
         class_weights: Per-class loss weights. None means equal weighting.
         front_dilation: Number of binary dilation iterations applied to each non-background
