@@ -687,9 +687,7 @@ class TestPropertyBasedStrategy:
         )
         store = _make_store_contents(variables=subset_vars, times=all_times[:n_stored])
         strategy = generate.determine_write_strategy(cfg, store)
-        # Only errors when merge is required alongside missing variables
-        if not strategy.merge_required:
-            assert not strategy.error_reason
+        assert not strategy.error_reason
         assert strategy.missing_variables
         assert strategy.missing_times.size
 

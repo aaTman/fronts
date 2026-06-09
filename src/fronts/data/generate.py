@@ -240,13 +240,7 @@ def determine_write_strategy(
             if len(store_contents.times) == 0:
                 error_reason = "Store exists but contains no time steps. Delete the store and rerun."
             elif missing_times[0] <= store_contents.times[-1]:
-                if len(missing_variables) > 0:
-                    error_reason = (
-                        "Store has both missing variables and missing time steps that require merging. "
-                        "Add the missing time steps first, then rerun to add new variables."
-                    )
-                else:
-                    merge_required = True
+                merge_required = True
 
     return WriteStrategy(
         missing_variables=missing_variables,
