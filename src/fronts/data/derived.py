@@ -28,7 +28,7 @@ class DerivedVariableSpec:
 
 def _pressure_pa(da: xr.DataArray) -> xr.DataArray:
     """Broadcast pressure levels (hPa → Pa) lazily from a DataArray's level coord."""
-    return (da.level * 100.0).broadcast_like(da)
+    return (da.level * 100.0).chunk({"level": -1}).broadcast_like(da)
 
 
 def _saturation_vapour_pressure(temperature: xr.DataArray) -> xr.DataArray:

@@ -1,6 +1,7 @@
 import pathlib
 from datetime import datetime
 
+import dask.array as dsa
 import numpy as np
 import pandas as pd
 import pytest
@@ -147,6 +148,18 @@ class TestResolveDownloadVariables:
         derived_vars = ["potential_temperature", "wind_speed"]
         result = derived.resolve_download_variables(direct + derived_vars, direct, derived_vars)
         assert result.count("temperature") == 1
+
+
+class TestPressurePa:
+    def test_lazy_when_input_is_dask(self, base_ds: xr.Dataset):
+        chunked = base_ds["temperature"].chunk({"time": 1})
+        result = derived._pressure_pa(chunked)
+        assert isinstance(result.data, dsa.Array)
+
+    def test_values_correct(self, base_ds: xr.Dataset):
+        result = derived._pressure_pa(base_ds["temperature"])
+        expected_pa = np.array(_LEVELS) * 100.0
+        np.testing.assert_array_equal(result.isel(time=0, latitude=0, longitude=0).values, expected_pa)
 
 
 class TestWindSpeedCompute:
