@@ -1,10 +1,22 @@
 era5_config:
   era5_uri: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
-  variables: ["geopotential", "temperature", "u_component_of_wind", "v_component_of_wind", "specific_humidity", "vertical_velocity"]
+  variables: [
+    "geopotential", 
+    "temperature", 
+    "u_component_of_wind", 
+    "v_component_of_wind", 
+    "specific_humidity", 
+    "vertical_velocity", 
+    "equivalent_potential_temperature", 
+    "virtual_temperature", 
+    "dewpoint_temperature", 
+    "relative_humidity", 
+    "potential_temperature"
+    ]
   pressure_levels: [1000, 925, 850, 700, 500, 300]
-  time_start: "2018-01-01T00:00:00"
+  time_start: "2007-01-01T00:00:00"
   time_end: "2024-12-31T23:59:00"
-  time_resolution: "3h"
+  time_resolution: "6h"
   coordinates: [0.25, 80, 130, 369.75]
   storage_options: {"token": "anon"}
   chunks: {"time": 1, "level": -1, "latitude": -1, "longitude": -1}
@@ -13,6 +25,16 @@ icechunk_storage_config:
   store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/icechunk/"
   branch_name: "main"
   commit_message: "Add raw ERA5 data for 2018-2024"
+
+slurm_config:
+  queue: "ai2es"
+  cores: 64
+  processes: 16
+  memory: "128GB"
+  walltime: "24:00:00"
+  stdout: "/ourdisk/hpc/ai2es/tman/logs/generate_%j_out.txt"
+  stderr: "/ourdisk/hpc/ai2es/tman/logs/generate_%j_err.txt"
+  n_jobs: 1
 
 
 

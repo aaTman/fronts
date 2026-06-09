@@ -59,6 +59,33 @@ class ERA5DataLoaderConfig:
 
 
 @dataclasses.dataclass
+class SlurmConfig:
+    """Configuration for the dask-jobqueue SLURMCluster used during derivation.
+
+    Attributes:
+        queue: SLURM partition name (e.g. "ai2es").
+        cores: Total CPU cores per SLURM job.
+        processes: Dask worker processes per job.
+        memory: Memory string per job (e.g. "128GB").
+        walltime: Wall time string (e.g. "12:00:00").
+        stdout: Path template for worker stdout logs. Use ``%j`` for the SLURM
+            job ID (e.g. ``/path/to/logs/generate_%j_out.txt``).
+        stderr: Path template for worker stderr logs. Use ``%j`` for the SLURM
+            job ID (e.g. ``/path/to/logs/generate_%j_err.txt``).
+        n_jobs: Number of SLURM jobs to scale the cluster to.
+    """
+
+    queue: str
+    cores: int
+    processes: int
+    memory: str
+    walltime: str
+    stdout: str
+    stderr: str
+    n_jobs: int
+
+
+@dataclasses.dataclass
 class DataConfig:
     """Configuration for loading and splitting ERA5 and fronts data.
 

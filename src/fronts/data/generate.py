@@ -10,7 +10,7 @@ import tqdm
 import xarray as xr
 
 from fronts import utils
-from fronts.data import config
+from fronts.data import config, derived
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -80,50 +80,72 @@ class WriteStrategy:
                 logger.info("Appending missing time steps to icechunk store...")
                 write_or_append_icechunk_store(icechunk_config, missing_ds)
             else:
-                data_config = dataclasses.replace(
+                narrow_config = dataclasses.replace(
                     era5_config,
                     time_start=self.missing_times[0].to_pydatetime(),
                     time_end=self.missing_times[-1].to_pydatetime(),
                 )
                 logger.info("Generating ERA5 data subset...")
-                era5_subset = generate_era5_data(data_config)
+                era5_subset = generate_era5_data(narrow_config)
                 logger.info("Writing ERA5 subset to icechunk store...")
                 write_or_append_icechunk_store(icechunk_config, era5_subset)
         else:
-            data_config = dataclasses.replace(era5_config, variables=self.missing_variables)
+            narrow_config = dataclasses.replace(era5_config, variables=self.missing_variables)
             logger.info("Generating ERA5 data subset...")
-            era5_subset = generate_era5_data(data_config)
+            era5_subset = generate_era5_data(narrow_config)
             logger.info("Writing ERA5 subset to icechunk store...")
             write_new_variables_to_icechunk_store(icechunk_config, era5_subset)
 
 
-def generate_era5_data(config: config.ERA5DataLoaderConfig) -> xr.Dataset:
+def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
     """Generate a subset of ERA5 data for model training, validation, and testing.
 
+    Variables are split into those available directly in the ARCO store and those
+    that must be derived. Direct variables are downloaded first; derived variables
+    are then computed from their required inputs. Intermediate inputs not in the
+    original variable list are dropped before returning.
+
     Args:
-        config: Configuration object containing all necessary parameters for data
-            generation.
+        era5_config: Configuration object containing all necessary parameters for
+            data generation.
 
     Returns:
         An xarray Dataset containing the subset of ERA5 data specified by the config.
+
+    Raises:
+        ValueError: If any requested variable is not in ARCO and has no registered
+            derivation function.
     """
     open_kwargs: dict = {"chunks": None}
-    if config.storage_options:
-        open_kwargs["storage_options"] = config.storage_options
-    ds = xr.open_zarr(config.era5_uri, **open_kwargs)
+    if era5_config.storage_options:
+        open_kwargs["storage_options"] = era5_config.storage_options
+    ds = xr.open_zarr(era5_config.era5_uri, **open_kwargs)
 
-    ds_variable_subset = ds[config.variables]
-    date_range = pd.date_range(config.time_start, config.time_end, freq=config.time_resolution)
+    direct_vars, derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in ds.data_vars})
+    download_vars = derived.resolve_download_variables(era5_config.variables, direct_vars, derived_vars)
+
+    date_range = pd.date_range(era5_config.time_start, era5_config.time_end, freq=era5_config.time_resolution)
 
     # Attach periodic index to longitude for > 360 to avoid wrap-crossing slice issues
-    ds_variable_subset = utils.attach_periodic_lon_index(ds_variable_subset)
-    ds_full_subset = ds_variable_subset.sel(
+    ds_download = utils.attach_periodic_lon_index(ds[download_vars])
+    ds_subset = ds_download.sel(
         time=date_range,
-        latitude=slice(config.coordinates.lat_max, config.coordinates.lat_min),
-        longitude=slice(config.coordinates.lon_min, config.coordinates.lon_max),
-        level=config.pressure_levels,
+        latitude=slice(era5_config.coordinates.lat_max, era5_config.coordinates.lat_min),
+        longitude=slice(era5_config.coordinates.lon_min, era5_config.coordinates.lon_max),
+        level=era5_config.pressure_levels,
     )
-    return ds_full_subset.chunk(config.chunks)
+
+    for var_name in derived_vars:
+        spec = derived.DERIVED_VARIABLE_REGISTRY[var_name]
+        logger.info(f"Computing derived variable '{var_name}' from {spec.required_inputs}")
+        ds_subset[var_name] = spec.compute(ds_subset)
+
+    requested_set = set(era5_config.variables)
+    vars_to_drop = [v for v in ds_subset.data_vars if v not in requested_set]
+    if vars_to_drop:
+        ds_subset = ds_subset.drop_vars(vars_to_drop)
+
+    return ds_subset.chunk(era5_config.chunks)
 
 
 def get_local_icechunk_repository(
@@ -327,13 +349,16 @@ def write_or_append_icechunk_store(
 
 
 def create_dask_client(
+    slurm_config: config.SlurmConfig,
     scheduler_options: dict | None = None,
 ):
-    """Create a Dask client for parallel processing.
+    """Create a Dask client backed by a SLURM cluster for parallel derivation.
 
-    This function sets up a Dask cluster using the SLURM job scheduler and returns
-    a client connected to that cluster. Adjust the cluster parameters as needed for
-    your specific computing environment.
+    Args:
+        slurm_config: SLURM cluster parameters (partition, account, cores, etc.).
+        scheduler_options: Optional overrides for the Dask scheduler (e.g. dashboard
+            port, network interface). Defaults to ``{"dashboard_address": ":13921",
+            "interface": "ib0"}``.
 
     Returns:
         A Dask Client object connected to the created cluster.
@@ -345,16 +370,19 @@ def create_dask_client(
         scheduler_options = {"dashboard_address": ":13921", "interface": "ib0"}
 
     slurm_cluster = dask_jobqueue.SLURMCluster(
-        queue="ai2es",
-        cores=64,
-        processes=16,
-        memory="128GB",
-        walltime="12:00:00",
+        queue=slurm_config.queue,
+        cores=slurm_config.cores,
+        processes=slurm_config.processes,
+        memory=slurm_config.memory,
+        walltime=slurm_config.walltime,
         shebang="#!/usr/bin/bash",
-        log_directory="/ourdisk/hpc/ai2es/tman/logs/",
+        job_extra_directives=[
+            f"--output={slurm_config.stdout}",
+            f"--error={slurm_config.stderr}",
+        ],
         scheduler_options=scheduler_options,
     )
-    slurm_cluster.scale(jobs=1)
+    slurm_cluster.scale(jobs=slurm_config.n_jobs)
     client = Client(slurm_cluster)
     return client
 
@@ -363,6 +391,11 @@ def main():
     """Entry point for generating ERA5 icechunk data from config."""
     parser = argparse.ArgumentParser(description="Generate ERA5 data and store in icechunk")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML data generation config")
+    parser.add_argument(
+        "--slurm",
+        action="store_true",
+        help="Launch a dask-jobqueue SLURM cluster for parallel derivation (requires slurm_config in YAML)",
+    )
     args = parser.parse_args()
 
     bounding_box_type_hook = {utils.BoundingBox: lambda d: utils.BoundingBox(*d)}
@@ -379,6 +412,12 @@ def main():
         args.config, config.IcechunkStorageConfig, config_key="icechunk_storage_config"
     )
     logger.info(f"Icechunk storage config loaded: {icechunk_config}")
+
+    if args.slurm:
+        slurm_config = utils.open_config_yaml_as_dataclass(args.config, config.SlurmConfig, config_key="slurm_config")
+        logger.info(f"SLURM config loaded: {slurm_config}")
+        client = create_dask_client(slurm_config)
+        logger.info(f"Dask client started: {client}")
 
     store_contents = inspect_store(icechunk_config)
     strategy = determine_write_strategy(era5_config, store_contents)
