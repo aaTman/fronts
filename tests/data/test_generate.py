@@ -4,6 +4,7 @@ import tempfile
 from datetime import datetime
 
 import dacite
+import dask.utils
 import icechunk as ic
 import numpy as np
 import pandas as pd
@@ -226,6 +227,54 @@ class TestWriteOrAppendIcechunkStore:
         session = repo.readonly_session("main")
         result = xr.open_zarr(session.store)
         assert result.sizes["time"] == len(write_ds.time) + len(second_ds.time)
+
+    def test_multi_chunk_write_is_single_commit(self, storage_config, write_ds):
+        slurm_config = config.SlurmConfig(
+            queue="ai2es",
+            cores=1,
+            processes=1,
+            memory="2KB",
+            walltime="01:00:00",
+            stdout="/tmp/out_%j.txt",
+            stderr="/tmp/err_%j.txt",
+            n_jobs=1,
+        )
+        assert generate._compute_time_chunk_size(write_ds, dask.utils.parse_bytes(slurm_config.memory)) == 1
+
+        generate.write_or_append_icechunk_store(storage_config, write_ds, slurm_config)
+
+        storage = ic.local_filesystem_storage(storage_config.store_path)
+        repo = ic.Repository.open(storage)
+        commits = list(repo.ancestry(branch="main"))
+        assert len(commits) == 2  # initial empty snapshot + one write commit
+
+        session = repo.readonly_session("main")
+        result = xr.open_zarr(session.store)
+        np.testing.assert_array_equal(result["temperature"].values, write_ds["temperature"].values)
+
+    def test_dry_run_does_not_create_commit(self, storage_config, write_ds):
+        generate.write_or_append_icechunk_store(storage_config, write_ds, dry_run=True)
+
+        storage = ic.local_filesystem_storage(storage_config.store_path)
+        repo = ic.Repository.open(storage)
+        commits = list(repo.ancestry(branch="main"))
+        assert len(commits) == 1  # only the initial empty snapshot
+
+
+class TestComputeTimeChunkSize:
+    def test_chunk_size_capped_at_total_times(self, write_ds):
+        result = generate._compute_time_chunk_size(write_ds, generate._FALLBACK_MEMORY_BYTES)
+        assert result == write_ds.sizes["time"]
+
+    def test_chunk_size_limited_by_memory(self, write_ds):
+        bytes_per_step = write_ds.nbytes / write_ds.sizes["time"]
+        memory_bytes = int(bytes_per_step / generate._WRITE_MEMORY_FRACTION * 2)
+        result = generate._compute_time_chunk_size(write_ds, memory_bytes)
+        assert result == 2
+
+    def test_chunk_size_at_least_one(self, write_ds):
+        result = generate._compute_time_chunk_size(write_ds, 1)
+        assert result == 1
 
 
 class TestInspectStore:

@@ -3,6 +3,7 @@ import dataclasses
 import logging
 import sys
 
+import dask.utils
 import icechunk as ic
 import icechunk.xarray
 import pandas as pd
@@ -66,6 +67,7 @@ class WriteStrategy:
         self,
         era5_config: config.ERA5DataLoaderConfig,
         icechunk_config: config.IcechunkStorageConfig,
+        slurm_config: config.SlurmConfig | None = None,
     ) -> None:
         """Generate and write the ERA5 data described by this strategy.
 
@@ -73,13 +75,15 @@ class WriteStrategy:
             era5_config: Base ERA5 configuration; time range or variables will be
                 narrowed to only what is missing before generating data.
             icechunk_config: Configuration for the target icechunk store.
+            slurm_config: SLURM cluster parameters, used to size write chunks by
+                available memory. If None, a fixed fallback memory budget is used.
         """
         if self.missing_times.size:
             if self.merge_required:
                 logger.info("Generating ERA5 data for missing time steps...")
                 missing_ds = generate_era5_data(era5_config).sel(time=self.missing_times)
                 logger.info("Appending missing time steps to icechunk store...")
-                write_or_append_icechunk_store(icechunk_config, missing_ds)
+                write_or_append_icechunk_store(icechunk_config, missing_ds, slurm_config)
             else:
                 narrow_config = dataclasses.replace(
                     era5_config,
@@ -89,7 +93,7 @@ class WriteStrategy:
                 logger.info("Generating ERA5 data for missing time steps...")
                 era5_subset = generate_era5_data(narrow_config)
                 logger.info("Writing ERA5 subset to icechunk store...")
-                write_or_append_icechunk_store(icechunk_config, era5_subset)
+                write_or_append_icechunk_store(icechunk_config, era5_subset, slurm_config)
 
         if self.missing_variables:
             narrow_config = dataclasses.replace(era5_config, variables=self.missing_variables)
@@ -300,17 +304,45 @@ def write_new_variables_to_icechunk_store(
     logger.info(log)
 
 
+_WRITE_MEMORY_FRACTION = 0.5
+_FALLBACK_MEMORY_BYTES = 32 * 1024**3  # 32GB, used when no slurm_config is available
+
+
+def _compute_time_chunk_size(ds: xr.Dataset | xr.DataArray, memory_bytes: int) -> int:
+    """Determine how many time steps can be safely materialized in one write chunk.
+
+    Args:
+        ds: Dataset to be written; used to compute the per-timestep byte footprint
+            via ``ds.nbytes`` (metadata-only, does not trigger computation).
+        memory_bytes: Total memory available for materializing one chunk.
+
+    Returns:
+        Number of time steps per write chunk, at least 1 and at most ``ds.sizes["time"]``.
+    """
+    n_times = ds.sizes["time"]
+    bytes_per_step = ds.nbytes / n_times
+    chunk_size = max(1, int(memory_bytes * _WRITE_MEMORY_FRACTION // bytes_per_step))
+    return min(chunk_size, n_times)
+
+
 def write_or_append_icechunk_store(
-    storage_config: config.IcechunkStorageConfig, ds: xr.Dataset | xr.DataArray, dry_run: bool = False
+    storage_config: config.IcechunkStorageConfig,
+    ds: xr.Dataset | xr.DataArray,
+    slurm_config: config.SlurmConfig | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Write or append an xarray Dataset to an icechunk store.
 
     If the store already exists, the new data will be appended along the time dimension.
+    The dataset is materialized and written in memory-sized chunks, but all chunks are
+    written to a single session and committed (or discarded, for a dry run) exactly once.
 
     Args:
         storage_config: Configuration object containing parameters for icechunk storage.
         ds: The xarray Dataset to write or append to the store.
-        dry_run: If True, perform a dry run without actually writing to the store.
+        slurm_config: SLURM cluster parameters; ``slurm_config.memory`` bounds the size of
+            each write chunk. If None, a fixed 32GB fallback budget is used.
+        dry_run: If True, perform a dry run without actually committing to the store.
     """
     # Drop encoding due to zarr v3 compatibility issues; see
     # https://github.com/pydata/xarray/issues/10032
@@ -324,25 +356,27 @@ def write_or_append_icechunk_store(
         f"{storage_config.store_path} with variables {list(ds.data_vars)} and shape {ds.sizes}"
     )
 
-    time_chunk_size = 1460
+    memory_bytes = dask.utils.parse_bytes(slurm_config.memory) if slurm_config else _FALLBACK_MEMORY_BYTES
+    time_chunk_size = _compute_time_chunk_size(ds, memory_bytes)
+
     times = ds.time.values
     chunks = range(0, len(times), time_chunk_size)
-    with tqdm.tqdm(chunks, unit="year", desc="Writing icechunk") as pbar:
+    session = repo.writable_session(storage_config.branch_name)
+    with tqdm.tqdm(chunks, unit="chunk", desc="Writing icechunk") as pbar:
         for i in pbar:
             time_slice = times[i : i + time_chunk_size]
-            ds_slice = ds.sel(time=time_slice)
+            ds_slice = ds.sel(time=time_slice).compute()
             ds_slice.attrs = global_attrs
 
-            pbar.set_postfix(year=str(time_slice[0])[:4], steps=f"{i}-{i + len(time_slice)}")
-            session = repo.writable_session(storage_config.branch_name)
+            pbar.set_postfix(start=str(time_slice[0])[:10], steps=f"{i}-{i + len(time_slice)}")
             icechunk.xarray.to_icechunk(ds_slice, session, append_dim=append, safe_chunks=False)
-            if dry_run:
-                logger.info(
-                    f"Dry run: would commit {len(time_slice)} time steps from {time_slice[0]} to {time_slice[-1]}"
-                )
-            else:
-                session.commit(f"{storage_config.commit_message}, time steps {i} to {i + len(time_slice)}")
             append = "time"  # always append after first write
+
+    if dry_run:
+        logger.info(f"Dry run: would commit {len(times)} time steps from {times[0]} to {times[-1]}")
+        session.discard_changes()
+    else:
+        session.commit(f"{storage_config.commit_message}, time steps 0 to {len(times)}")
 
 
 def create_dask_client(
@@ -410,6 +444,7 @@ def main():
     )
     logger.info(f"Icechunk storage config loaded: {icechunk_config}")
 
+    slurm_config: config.SlurmConfig | None = None
     if args.slurm:
         slurm_config = utils.open_config_yaml_as_dataclass(args.config, config.SlurmConfig, config_key="slurm_config")
         logger.info(f"SLURM config loaded: {slurm_config}")
@@ -427,7 +462,7 @@ def main():
 
     logger.info(f"Variables to add:      {strategy.missing_variables}")
     logger.info(f"Time steps to add:     {len(strategy.missing_times)}")
-    strategy.execute(era5_config, icechunk_config)
+    strategy.execute(era5_config, icechunk_config, slurm_config)
     logger.info("Data generation and storage complete.")
 
 
