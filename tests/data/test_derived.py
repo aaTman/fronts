@@ -154,10 +154,20 @@ class TestPressurePa:
     def test_lazy_when_input_is_dask(self, base_ds: xr.Dataset):
         chunked = base_ds["temperature"].chunk({"time": 1})
         result = derived._pressure_pa(chunked)
-        assert isinstance(result.data, dsa.Array)
+        assert isinstance(result.data, dsa.Array), "pressure must be dask-backed to avoid 361 GiB materialization"
+
+    def test_not_lazy_without_dask_input_is_fine(self, base_ds: xr.Dataset):
+        result = derived._pressure_pa(base_ds["temperature"])
+        assert not isinstance(result.data, dsa.Array)
 
     def test_values_correct(self, base_ds: xr.Dataset):
         result = derived._pressure_pa(base_ds["temperature"])
+        expected_pa = np.array(_LEVELS) * 100.0
+        np.testing.assert_array_equal(result.isel(time=0, latitude=0, longitude=0).values, expected_pa)
+
+    def test_values_correct_when_dask(self, base_ds: xr.Dataset):
+        chunked = base_ds["temperature"].chunk({"time": 1})
+        result = derived._pressure_pa(chunked)
         expected_pa = np.array(_LEVELS) * 100.0
         np.testing.assert_array_equal(result.isel(time=0, latitude=0, longitude=0).values, expected_pa)
 
