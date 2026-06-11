@@ -98,14 +98,13 @@ class WriteStrategy:
                 )
                 ds_download = generate_era5_download_data(narrow_config)
 
-            time_chunks = _compute_time_chunks(self.missing_times.values, ds_download, memory_bytes)
-
             logger.info("Phase 1: downloading raw ERA5 variables to icechunk store...")
-            write_or_append_icechunk_store(icechunk_config, ds_download, time_chunks=time_chunks)
+            write_or_append_icechunk_store(icechunk_config, ds_download)
 
             _, derived_vars = derived.classify_variables(era5_config.variables, set(ds_download.data_vars))
             if derived_vars:
                 logger.info("Phase 2: computing derived variables from local store...")
+                time_chunks = _compute_time_chunks(self.missing_times.values, ds_download, memory_bytes)
                 required_inputs = {
                     inp for v in derived_vars for inp in derived.DERIVED_VARIABLE_REGISTRY[v].required_inputs
                 }
@@ -517,26 +516,22 @@ def _compute_time_chunk_size(ds: xr.Dataset | xr.DataArray, memory_bytes: int) -
 def write_or_append_icechunk_store(
     storage_config: config.IcechunkStorageConfig,
     ds: xr.Dataset | xr.DataArray,
-    slurm_config: config.SlurmConfig | None = None,
     dry_run: bool = False,
     time_chunks: list[np.ndarray] | None = None,
 ) -> None:
     """Write or append an xarray Dataset to an icechunk store.
 
     If the store already exists, the new data will be appended along the time dimension.
-    The dataset is materialized and written in memory-sized chunks, but all chunks are
-    written to a single session and committed (or discarded, for a dry run) exactly once.
 
     Args:
         storage_config: Configuration object containing parameters for icechunk storage.
         ds: The xarray Dataset to write or append to the store.
-        slurm_config: SLURM cluster parameters; ``slurm_config.memory / slurm_config.cores``
-            (the per-thread memory budget, since multiple variables' finalize tasks can run
-            concurrently on the threads of a single worker) bounds the size of each write
-            chunk. If None, a fixed 32GB fallback budget is used.
         dry_run: If True, perform a dry run without actually committing to the store.
-        time_chunks: Precomputed time-value chunks to write, in order. If None, chunks
-            are computed from ``ds`` and ``slurm_config`` via ``_compute_time_chunks``.
+        time_chunks: Time-value chunks to materialize and write one at a time, in order.
+            If None (the default), ``ds`` is written directly in a single lazy
+            ``to_icechunk`` call, letting icechunk's internal I/O drive the dask graph
+            instead of eagerly computing each chunk. Pass explicit chunks to instead
+            materialize ``ds`` in memory-bounded pieces (e.g. for computed data).
     """
     # Drop encoding due to zarr v3 compatibility issues; see
     # https://github.com/pydata/xarray/issues/10032
@@ -550,20 +545,16 @@ def write_or_append_icechunk_store(
         f"{storage_config.store_path} with variables {list(ds.data_vars)} and shape {ds.sizes}"
     )
 
-    if time_chunks is None:
-        if slurm_config is not None:
-            memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.cores
-        else:
-            memory_bytes = _FALLBACK_MEMORY_BYTES
-        time_chunks = _compute_time_chunks(ds.time.values, ds, memory_bytes)
-
-    n_times = sum(len(time_slice) for time_slice in time_chunks)
+    n_times = ds.sizes["time"]
     session = repo.writable_session(storage_config.branch_name)
-    for _, _, ds_slice in _materialize_time_chunks(ds, time_chunks, global_attrs):
-        icechunk.xarray.to_icechunk(
-            ds_slice, session, append_dim=append, safe_chunks=False, group=storage_config.group_name
-        )
-        append = "time"  # always append after first write
+    if time_chunks is None:
+        icechunk.xarray.to_icechunk(ds, session, append_dim=append, safe_chunks=False, group=storage_config.group_name)
+    else:
+        for _, _, ds_slice in _materialize_time_chunks(ds, time_chunks, global_attrs):
+            icechunk.xarray.to_icechunk(
+                ds_slice, session, append_dim=append, safe_chunks=False, group=storage_config.group_name
+            )
+            append = "time"  # always append after first write
 
     if dry_run:
         logger.info(f"Dry run: would commit {n_times} time steps")
@@ -740,7 +731,18 @@ def main():
         action="store_true",
         help="Launch a dask-jobqueue SLURM cluster for parallel derivation (requires slurm_config in YAML)",
     )
+    parser.add_argument(
+        "--zarr-async-concurrency",
+        type=int,
+        default=None,
+        help="Override zarr's async.concurrency (max in-flight chunk requests per store). "
+        "Default is zarr's built-in default (10).",
+    )
     args = parser.parse_args()
+
+    if args.zarr_async_concurrency is not None:
+        zarr.config.set({"async.concurrency": args.zarr_async_concurrency})
+        logger.info(f"Set zarr async.concurrency to {args.zarr_async_concurrency}")
 
     bounding_box_type_hook = {utils.BoundingBox: lambda d: utils.BoundingBox(*d)}
 

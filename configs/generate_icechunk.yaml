@@ -19,7 +19,7 @@ era5_config:
   time_resolution: "6h"
   coordinates: [0.25, 80, 130, 369.75]
   storage_options: {"token": "anon"}
-  chunks: {"time": 1, "level": -1, "latitude": -1, "longitude": -1}
+  chunks: None
 
 icechunk_storage_config:
   store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/icechunk/"

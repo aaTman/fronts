@@ -242,6 +242,19 @@ class TestWriteOrAppendIcechunkStore:
         result = xr.open_zarr(session.store)
         np.testing.assert_array_equal(result["temperature"].values, write_ds["temperature"].values)
 
+    def test_default_no_time_chunks_writes_single_commit(self, storage_config, write_ds):
+        lazy_ds = write_ds.chunk({"time": 1})
+        generate.write_or_append_icechunk_store(storage_config, lazy_ds)
+
+        storage = ic.local_filesystem_storage(storage_config.store_path)
+        repo = ic.Repository.open(storage)
+        commits = list(repo.ancestry(branch="main"))
+        assert len(commits) == 2  # initial empty snapshot + one write commit
+
+        session = repo.readonly_session("main")
+        result = xr.open_zarr(session.store)
+        np.testing.assert_array_equal(result["temperature"].values, write_ds["temperature"].values)
+
     def test_append_increases_time_steps(self, storage_config, write_ds):
         second_time = pd.date_range("2019-01-02", periods=4, freq="6h")
         second_ds = write_ds.assign_coords(time=second_time)
@@ -256,19 +269,11 @@ class TestWriteOrAppendIcechunkStore:
         assert result.sizes["time"] == len(write_ds.time) + len(second_ds.time)
 
     def test_multi_chunk_write_is_single_commit(self, storage_config, write_ds):
-        slurm_config = config.SlurmConfig(
-            queue="ai2es",
-            cores=1,
-            processes=1,
-            memory="2KB",
-            walltime="01:00:00",
-            stdout="/tmp/out_%j.txt",
-            stderr="/tmp/err_%j.txt",
-            n_jobs=1,
-        )
-        assert generate._compute_time_chunk_size(write_ds, dask.utils.parse_bytes(slurm_config.memory)) == 1
+        memory_bytes = dask.utils.parse_bytes("2KB")
+        assert generate._compute_time_chunk_size(write_ds, memory_bytes) == 1
 
-        generate.write_or_append_icechunk_store(storage_config, write_ds, slurm_config)
+        time_chunks = generate._compute_time_chunks(write_ds.time.values, write_ds, memory_bytes)
+        generate.write_or_append_icechunk_store(storage_config, write_ds, time_chunks=time_chunks)
 
         storage = ic.local_filesystem_storage(storage_config.store_path)
         repo = ic.Repository.open(storage)
