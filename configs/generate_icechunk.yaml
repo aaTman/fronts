@@ -32,7 +32,7 @@ era5_config:
   zarr_async_concurrency: 128
 
 icechunk_storage_config:
-  store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/icechunk/"
+  store_path: "/tmp/icechunk/"
   branch_name: "main"
   commit_message: "Add ERA5 data from Arraylake 2007-2025"
   group_name: "era5"
