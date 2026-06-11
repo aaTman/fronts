@@ -70,7 +70,6 @@ gcsfs = ">=2026.2.0,<2027"
 icechunk = ">=2"
 
 [tool.pixi.feature.data.pypi-dependencies]
-atmos = { git = "https://github.com/aaTman/atmos" }
 obstore = "*"
 s3fs = ">=2024.6.0"
 
@@ -130,9 +129,6 @@ pandas = ">=2"
 numpy = ">=2,<2.1"
 hypothesis = ">=6.0"
 dask = ">=2023.3.0"
-
-[tool.pixi.feature.test.pypi-dependencies]
-atmos = { git = "https://github.com/aaTman/atmos" }
 
 [tool.pixi.feature.test.tasks]
 test = "PYTHONPATH=src python -m pytest tests/ -v"

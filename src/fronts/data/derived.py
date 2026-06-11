@@ -1,9 +1,8 @@
 import dataclasses
 from collections.abc import Callable
 
-import atmos.kinematic
-import numpy as np
 import xarray as xr
+import xarray.ufuncs as xu
 
 _R_D = 287.05  # dry air gas constant, J kg-1 K-1
 _C_PD = 1004.0  # specific heat of dry air at constant pressure, J kg-1 K-1
@@ -33,7 +32,7 @@ def _pressure_pa(da: xr.DataArray) -> xr.DataArray:
 
 def _saturation_vapour_pressure(temperature: xr.DataArray) -> xr.DataArray:
     """Saturation vapour pressure in hPa via Bolton (1980) eq. 10."""
-    return 6.112 * xr.apply_ufunc(np.exp, 17.67 * (temperature - 273.15) / (temperature - 29.65), dask="parallelized")
+    return 6.112 * xu.exp(17.67 * (temperature - 273.15) / (temperature - 29.65))
 
 
 def _vapour_pressure(specific_humidity: xr.DataArray, pressure_hpa: xr.DataArray) -> xr.DataArray:
@@ -46,7 +45,7 @@ def _compute_wind_speed(
     u_component_of_wind: xr.DataArray,
     v_component_of_wind: xr.DataArray,
 ) -> xr.DataArray:
-    return xr.apply_ufunc(atmos.kinematic.wind_speed, u_component_of_wind, v_component_of_wind, dask="parallelized")
+    return xu.hypot(u_component_of_wind, v_component_of_wind)
 
 
 def _compute_potential_temperature(temperature: xr.DataArray) -> xr.DataArray:
@@ -67,11 +66,11 @@ def _compute_equivalent_potential_temperature(
     p_hpa = p / 100.0
     e = _vapour_pressure(specific_humidity, p_hpa)
     r = specific_humidity / (1.0 - specific_humidity)
-    log_e = xr.apply_ufunc(np.log, e / 6.112, dask="parallelized")
+    log_e = xu.log(e / 6.112)
     t_d = 243.5 * log_e / (17.67 - log_e) + 273.15
-    t_l = 1.0 / (1.0 / (t_d - 56.0) + xr.apply_ufunc(np.log, temperature / t_d, dask="parallelized") / 800.0) + 56.0
+    t_l = 1.0 / (1.0 / (t_d - 56.0) + xu.log(temperature / t_d) / 800.0) + 56.0
     theta = temperature * (100000.0 / p) ** (_R_D / _C_PD)
-    return theta * xr.apply_ufunc(np.exp, (_L_V * r) / (_C_PD * t_l), dask="parallelized")
+    return theta * xu.exp((_L_V * r) / (_C_PD * t_l))
 
 
 def _compute_virtual_temperature(
@@ -89,7 +88,7 @@ def _compute_dewpoint_temperature(
     """Dewpoint temperature via Bolton (1980) eq. 11."""
     p_hpa = _pressure_pa(temperature) / 100.0
     e = _vapour_pressure(specific_humidity, p_hpa)
-    log_e = xr.apply_ufunc(np.log, e / 6.112, dask="parallelized")
+    log_e = xu.log(e / 6.112)
     return 243.5 * log_e / (17.67 - log_e) + 273.15
 
 
