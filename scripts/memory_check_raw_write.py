@@ -216,8 +216,8 @@ def main() -> None:
         "time": times,
         "level": args.pressure_levels,
     }
-
-    coords = {ARCO_ARRAYLAKE_COORD_MAPPING.get(coord, coord): sel for coord, sel in coords.items()}
+    if args.arraylake:
+        coords = {ARCO_ARRAYLAKE_COORD_MAPPING.get(coord, coord): sel for coord, sel in coords.items()}
     ds_subset = utils.attach_periodic_lon_index(ds[args.variables]).sel(**coords)
     print(f"RSS after subset:    {_rss_mb():.1f} MB  (dask-backed: {bool(ds_subset.chunks)})")
     print(f"Subset shape:        {dict(ds_subset.sizes)}")
