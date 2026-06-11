@@ -197,7 +197,7 @@ backend = { name = "pixi-build-python", version = "0.4.*" }
 
 [tool.pyrefly]
 python-interpreter = ".pixi/envs/default/bin/python"
-ignore-missing-imports = ["pytest", "tensorflow", "tensorflow.keras.layers", "tensorflow.keras.models", "wandb", "hypothesis"]
+ignore-missing-imports = ["pytest", "tensorflow", "tensorflow.keras.layers", "tensorflow.keras.models", "wandb", "hypothesis", "obstore.store"]
 
 [tool.ruff]
 line-length = 120

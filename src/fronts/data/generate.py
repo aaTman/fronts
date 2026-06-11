@@ -6,9 +6,11 @@ import sys
 import dask.utils
 import icechunk as ic
 import icechunk.xarray
+import obstore.store
 import pandas as pd
 import tqdm
 import xarray as xr
+import zarr.storage
 
 from fronts import utils
 from fronts.data import config, derived
@@ -103,6 +105,33 @@ class WriteStrategy:
             write_new_variables_to_icechunk_store(icechunk_config, era5_subset)
 
 
+def _open_era5_zarr_store(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
+    """Open the lazy ERA5 zarr dataset described by ``era5_config``.
+
+    For ``gs://`` URIs, the store is opened via obstore's GCS backend, which is
+    substantially faster than the default fsspec/gcsfs backend for the many
+    per-chunk reads done while writing icechunk stores. Other URIs (e.g. local
+    paths used in tests) are opened directly with ``xr.open_zarr``.
+
+    Args:
+        era5_config: Configuration containing the ERA5 URI and storage options.
+
+    Returns:
+        The opened (lazy, unchunked-per-zarr-chunk) ERA5 dataset.
+    """
+    if era5_config.era5_uri.startswith("gs://"):
+        gcs_config: dict = {}
+        if era5_config.storage_options and era5_config.storage_options.get("token") == "anon":
+            gcs_config["skip_signature"] = True
+        object_store = obstore.store.GCSStore.from_url(era5_config.era5_uri, config=gcs_config)
+        return xr.open_zarr(zarr.storage.ObjectStore(object_store, read_only=True), chunks={})
+
+    open_kwargs: dict = {"chunks": {}}
+    if era5_config.storage_options:
+        open_kwargs["storage_options"] = era5_config.storage_options
+    return xr.open_zarr(era5_config.era5_uri, **open_kwargs)
+
+
 def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
     """Generate a subset of ERA5 data for model training, validation, and testing.
 
@@ -122,10 +151,7 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
         ValueError: If any requested variable is not in ARCO and has no registered
             derivation function.
     """
-    open_kwargs: dict = {"chunks": {}}
-    if era5_config.storage_options:
-        open_kwargs["storage_options"] = era5_config.storage_options
-    ds = xr.open_zarr(era5_config.era5_uri, **open_kwargs)
+    ds = _open_era5_zarr_store(era5_config)
 
     direct_vars, derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in ds.data_vars})
     download_vars = derived.resolve_download_variables(era5_config.variables, direct_vars, derived_vars)
