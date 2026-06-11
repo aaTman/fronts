@@ -313,12 +313,13 @@ def _compute_time_chunk_size(ds: xr.Dataset | xr.DataArray, memory_bytes: int) -
 
     The chunk size is bounded by the largest single variable's per-timestep byte
     footprint, since ``.compute()`` on a distributed dask client finalizes
-    (concatenates) each variable's chunks on a single worker.
+    (concatenates) each variable's chunks independently, and several of these
+    finalize tasks can run concurrently on the threads of a single worker.
 
     Args:
         ds: Dataset to be written; used to compute the per-variable per-timestep
             byte footprint via ``nbytes`` (metadata-only, does not trigger computation).
-        memory_bytes: Memory available on a single worker for materializing one
+        memory_bytes: Memory available per dask thread for materializing one
             variable's chunk.
 
     Returns:
@@ -346,9 +347,10 @@ def write_or_append_icechunk_store(
     Args:
         storage_config: Configuration object containing parameters for icechunk storage.
         ds: The xarray Dataset to write or append to the store.
-        slurm_config: SLURM cluster parameters; ``slurm_config.memory / slurm_config.processes``
-            (the per-worker memory budget) bounds the size of each write chunk. If None, a
-            fixed 32GB fallback budget is used.
+        slurm_config: SLURM cluster parameters; ``slurm_config.memory / slurm_config.cores``
+            (the per-thread memory budget, since multiple variables' finalize tasks can run
+            concurrently on the threads of a single worker) bounds the size of each write
+            chunk. If None, a fixed 32GB fallback budget is used.
         dry_run: If True, perform a dry run without actually committing to the store.
     """
     # Drop encoding due to zarr v3 compatibility issues; see
@@ -364,7 +366,7 @@ def write_or_append_icechunk_store(
     )
 
     if slurm_config is not None:
-        memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.processes
+        memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.cores
     else:
         memory_bytes = _FALLBACK_MEMORY_BYTES
     time_chunk_size = _compute_time_chunk_size(ds, memory_bytes)
