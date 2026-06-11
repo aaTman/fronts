@@ -13,7 +13,7 @@ import yaml
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from fronts.data import config, generate
+from fronts.data import config, derived, generate
 from fronts.utils import BoundingBox
 
 ERA5_VARS = [
@@ -73,6 +73,8 @@ def era5_config(era5_zarr: pathlib.Path) -> config.ERA5DataLoaderConfig:
         time_resolution="6h",
         coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
         storage_options=None,
+        single_level_variables=[],
+        zarr_async_concurrency=10,
         chunks={"time": 1},
     )
 
@@ -284,6 +286,8 @@ class TestDetermineWriteStrategy:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
+            single_level_variables=[],
+            zarr_async_concurrency=10,
             chunks={"time": 1},
         )
 
@@ -432,6 +436,8 @@ class TestTimeResolution:
             time_resolution=resolution,
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
+            single_level_variables=[],
+            zarr_async_concurrency=10,
             chunks={"time": 1},
         )
 
@@ -532,6 +538,8 @@ _BASE_CONFIG = config.ERA5DataLoaderConfig(
     time_resolution="6h",
     coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
     storage_options=None,
+    single_level_variables=[],
+    zarr_async_concurrency=10,
     chunks={"time": 1},
 )
 
@@ -782,3 +790,151 @@ class TestPropertyBasedIO:
             generate.write_or_append_icechunk_store(sc, _ds(lat_a, lon_a, "temperature"))
             with pytest.raises(ValueError):
                 generate.write_new_variables_to_icechunk_store(sc, _ds(lat_b, lon_b, "specific_humidity"))
+
+
+class TestGroupAndSingleLevel:
+    def _grouped_storage(self, tmp_path: pathlib.Path) -> config.IcechunkStorageConfig:
+        return config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "grouped_store"),
+            branch_name="main",
+            group_name="era5",
+        )
+
+    def _mixed_ds(self, time_range: pd.DatetimeIndex) -> xr.Dataset:
+        rng = np.random.default_rng(11)
+        coords = {"time": time_range, "level": LEVELS, "latitude": LAT, "longitude": LON}
+        return xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    rng.standard_normal((4, 6, 8, 8)).astype(np.float32),
+                    dims=["time", "level", "latitude", "longitude"],
+                    coords=coords,
+                ),
+                "2m_temperature": xr.DataArray(
+                    rng.standard_normal((4, 8, 8)).astype(np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": time_range, "latitude": LAT, "longitude": LON},
+                ),
+            }
+        )
+
+    def test_write_and_inspect_group(self, tmp_path, time_range, write_ds):
+        sc = self._grouped_storage(tmp_path)
+        generate.write_or_append_icechunk_store(sc, write_ds)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert set(result.variables) == {"temperature"}
+
+    def test_inspect_missing_group_returns_none(self, tmp_path, write_ds):
+        sc = self._grouped_storage(tmp_path)
+        generate.write_or_append_icechunk_store(sc, write_ds)
+        other = dataclasses.replace(sc, group_name="hrrr")
+        assert generate.inspect_store(other) is None
+
+    def test_group_roundtrip_data(self, tmp_path, write_ds):
+        sc = self._grouped_storage(tmp_path)
+        generate.write_or_append_icechunk_store(sc, write_ds)
+        storage = ic.local_filesystem_storage(sc.store_path)
+        repo = ic.Repository.open(storage)
+        result = xr.open_zarr(repo.readonly_session("main").store, group="era5", consolidated=False)
+        np.testing.assert_array_equal(result["temperature"].values, write_ds["temperature"].values)
+
+    def test_single_level_variable_roundtrip(self, tmp_path, time_range):
+        sc = self._grouped_storage(tmp_path)
+        mixed = self._mixed_ds(time_range)
+        generate.write_or_append_icechunk_store(sc, mixed)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert set(result.variables) == {"temperature", "2m_temperature"}
+        assert result.levels == LEVELS
+
+    def test_single_level_only_store_has_empty_levels(self, tmp_path, time_range):
+        sc = self._grouped_storage(tmp_path)
+        mixed = self._mixed_ds(time_range)[["2m_temperature"]]
+        generate.write_or_append_icechunk_store(sc, mixed)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert result.levels == []
+
+    def test_group_append_increases_time_steps(self, tmp_path, time_range, write_ds):
+        sc = self._grouped_storage(tmp_path)
+        second_ds = write_ds.assign_coords(time=pd.date_range("2019-01-02", periods=4, freq="6h"))
+        generate.write_or_append_icechunk_store(sc, write_ds)
+        generate.write_or_append_icechunk_store(sc, second_ds)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert len(result.times) == 8
+
+
+class TestSingleLevelDownload:
+    @pytest.fixture
+    def mixed_zarr(self, tmp_path: pathlib.Path, minimal_ds: xr.Dataset, time_range) -> pathlib.Path:
+        rng = np.random.default_rng(12)
+        ds = minimal_ds.assign(
+            {
+                "2m_temperature": xr.DataArray(
+                    rng.standard_normal((4, 8, 8)).astype(np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": time_range, "latitude": LAT, "longitude": LON},
+                )
+            }
+        )
+        path = tmp_path / "era5_mixed.zarr"
+        ds.to_zarr(path)
+        return path
+
+    def test_single_level_variable_included(self, mixed_zarr, era5_config):
+        cfg = dataclasses.replace(era5_config, era5_uri=str(mixed_zarr), single_level_variables=["2m_temperature"])
+        result = generate.generate_era5_download_data(cfg)
+        assert "2m_temperature" in result.data_vars
+        assert "level" not in result["2m_temperature"].dims
+
+    def test_pressure_levels_still_subset(self, mixed_zarr, era5_config):
+        cfg = dataclasses.replace(
+            era5_config,
+            era5_uri=str(mixed_zarr),
+            single_level_variables=["2m_temperature"],
+            pressure_levels=[1000, 850],
+        )
+        result = generate.generate_era5_download_data(cfg)
+        assert list(result.level.values) == [1000, 850]
+
+
+class TestTwoPhaseExecute:
+    def test_raw_then_derived_committed_separately(self, tmp_path, era5_zarr, era5_config):
+        sc = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "two_phase_store"),
+            branch_name="main",
+            group_name="era5",
+        )
+        cfg = dataclasses.replace(
+            era5_config,
+            variables=["temperature", "specific_humidity", "potential_temperature"],
+        )
+        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(sc))
+        strategy.execute(cfg, sc)
+
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert {"temperature", "specific_humidity", "potential_temperature"} <= set(result.variables)
+
+        storage = ic.local_filesystem_storage(sc.store_path)
+        repo = ic.Repository.open(storage)
+        commits = list(repo.ancestry(branch="main"))
+        assert len(commits) >= 3  # repo init + raw commit + derived commit
+
+    def test_derived_values_match_direct_computation(self, tmp_path, era5_zarr, era5_config):
+        sc = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "two_phase_values"),
+            branch_name="main",
+            group_name="era5",
+        )
+        cfg = dataclasses.replace(era5_config, variables=["temperature", "potential_temperature"])
+        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(sc))
+        strategy.execute(cfg, sc)
+
+        storage = ic.local_filesystem_storage(sc.store_path)
+        repo = ic.Repository.open(storage)
+        result = xr.open_zarr(repo.readonly_session("main").store, group="era5", consolidated=False)
+        expected = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(result["temperature"])
+        np.testing.assert_allclose(result["potential_temperature"].values, expected.values, rtol=1e-5)

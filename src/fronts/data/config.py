@@ -33,8 +33,12 @@ class ERA5DataLoaderConfig:
     """Configuration for downloading remote ERA5 data for model training and evaluation.
 
     Attributes:
-        era5_uri: URI to the ERA5 data in Zarr format.
-        variables: List of variable names to load from the ERA5 dataset.
+        era5_uri: URI to the ERA5 data in Zarr format. URIs of the form
+            ``arraylake://org/repo`` are opened via the Arraylake client.
+        variables: List of pressure-level variable names (Google ARCO naming) to load
+            from the ERA5 dataset, including derived variables.
+        single_level_variables: List of single-level variable names (Google ARCO
+            naming) to load, e.g. ``mean_sea_level_pressure``.
         pressure_levels: List of pressure levels to load for each variable.
         time_start: Start of the time range to load.
         time_end: End of the time range to load.
@@ -45,10 +49,13 @@ class ERA5DataLoaderConfig:
         storage_options: Optional dictionary of storage options for xarray's open_zarr.
         chunks: Dictionary specifying chunk sizes after subsetting, e.g.,
             {"time": 100, "latitude": 64, "longitude": 64}.
+        zarr_async_concurrency: Maximum in-flight chunk requests per zarr store,
+            applied via ``zarr.config.set({"async.concurrency": ...})``.
     """
 
     era5_uri: str
     variables: list[str]
+    single_level_variables: list[str]
     pressure_levels: list[int]
     time_start: datetime.datetime
     time_end: datetime.datetime
@@ -56,6 +63,34 @@ class ERA5DataLoaderConfig:
     coordinates: utils.BoundingBox
     storage_options: dict | None
     chunks: dict[str, int]
+    zarr_async_concurrency: int
+
+
+@dataclasses.dataclass
+class SlurmConfig:
+    """Configuration for the dask-jobqueue SLURMCluster used during derivation.
+
+    Attributes:
+        queue: SLURM partition name (e.g. "ai2es").
+        cores: Total CPU cores per SLURM job.
+        processes: Dask worker processes per job.
+        memory: Memory string per job (e.g. "128GB").
+        walltime: Wall time string (e.g. "12:00:00").
+        stdout: Path template for worker stdout logs. Use ``%j`` for the SLURM
+            job ID (e.g. ``/path/to/logs/generate_%j_out.txt``).
+        stderr: Path template for worker stderr logs. Use ``%j`` for the SLURM
+            job ID (e.g. ``/path/to/logs/generate_%j_err.txt``).
+        n_jobs: Number of SLURM jobs to scale the cluster to.
+    """
+
+    queue: str
+    cores: int
+    processes: int
+    memory: str
+    walltime: str
+    stdout: str
+    stderr: str
+    n_jobs: int
 
 
 @dataclasses.dataclass
