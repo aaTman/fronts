@@ -4,7 +4,7 @@ learning_rate: 0.0001
 
 data_config:
   era5_icechunk_config:
-    store_path: "/ourdisk/hpc/ai2es/tman/era5/fronts_icechunk"
+    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/icechunk"
     branch_name: "main"
   fronts_icechunk_config:
     store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
@@ -12,21 +12,25 @@ data_config:
     virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
   batch_size: 32
   train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
   steps_per_epoch: 30
   load_chunk_steps: 5
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
+  time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
   variables: [
     geopotential, 
     temperature, 
     u_component_of_wind, 
     v_component_of_wind, 
-    specific_humidity
+    specific_humidity,
+    vertical_velocity
     ]
 
 model_config:
   n_classes: 6
-  n_channels: 30
+  n_channels: 36
   levels: 4
   filter_num: [16, 32, 64, 128]
   pool_size: [2, 2]
@@ -42,8 +46,8 @@ model_config:
 callbacks_config:
   monitor: "val_loss"
   patience: 16
-  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/"
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/test_split_6h/"
   
 wandb_config:
   project_name: "fronts"
-  run_name: "with_dilation"
+  run_name: "test_split_6h"

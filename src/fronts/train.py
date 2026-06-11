@@ -30,6 +30,7 @@ import zarr
 
 from fronts import model, utils
 from fronts.data import config, inputs, targets
+from fronts.utils import apply_time_resolution
 from fronts.layers import losses, metrics
 
 logger = logging.getLogger(__name__)
@@ -227,7 +228,7 @@ def load_training_data(
 
     Opens both icechunk stores, deduplicates the fronts time index, aligns to
     the intersection of available timestamps, and returns lazy DataArrays ready
-    for xbatcher.
+    for batching.
 
     Args:
         data_config: DataConfig specifying store paths, branch names, and splits.
@@ -245,6 +246,7 @@ def load_training_data(
         zarr_format=data_config.era5_icechunk_config.zarr_format,
         virtual_chunk_local_path=data_config.era5_icechunk_config.virtual_chunk_local_path,
     )
+    logger.info(f"ERA5 store: {era5_ds}")
     logger.info("Loading fronts...")
     fronts_da = utils.open_readonly_icechunk_store(
         store_path=data_config.fronts_icechunk_config.store_path,
@@ -253,8 +255,13 @@ def load_training_data(
         zarr_format=data_config.fronts_icechunk_config.zarr_format,
         virtual_chunk_local_path=data_config.fronts_icechunk_config.virtual_chunk_local_path,
     )["identifier"]
+    logger.info(f"Fronts store: {fronts_da}")
+    era5_ds = utils.drop_duplicate_times(era5_ds)
     fronts_da = fronts_da.isel(time=~fronts_da.indexes["time"].duplicated(keep="first"))
     common_times = np.intersect1d(era5_ds.time.values, fronts_da.time.values)
+    if data_config.time_resolution is not None:
+        common_times = apply_time_resolution(common_times, data_config.time_resolution)
+        logger.info(f"After time_resolution={data_config.time_resolution!r} filter: {len(common_times)} steps")
     rng = np.random.default_rng(seed)
     keep = targets.filter_timesteps(fronts_da.sel(time=common_times), rng)
     common_times = common_times[keep]
@@ -440,20 +447,29 @@ def main():
     era5_da, front_da = load_training_data(cfg.data_config, seed=cfg.seed)
 
     rng = np.random.default_rng(cfg.seed)
-    all_indices = np.arange(era5_da.sizes["time"])
-    shuffled = rng.permutation(all_indices)
-    n_train = int(len(shuffled) * cfg.data_config.train_split)
-    train_indices = sorted(shuffled[:n_train].tolist())
-    val_indices = sorted(shuffled[n_train:].tolist())
+    n_total = era5_da.sizes["time"]
+    test_mask = targets.seasonal_test_split(era5_da.time.values, cfg.data_config.test_split, rng)
+    remaining_indices = np.where(~test_mask)[0]
+    test_indices = sorted(np.where(test_mask)[0].tolist())
+    shuffled = rng.permutation(remaining_indices)
+    n_val = round(n_total * cfg.data_config.val_split)
+    val_indices = sorted(shuffled[:n_val].tolist())
+    train_indices = sorted(shuffled[n_val:].tolist())
     train_era5 = era5_da.isel(time=train_indices)
     val_era5 = era5_da.isel(time=val_indices)
     train_front = front_da.isel(time=train_indices)
     val_front = front_da.isel(time=val_indices)
 
+    test_times = era5_da.time.values[test_mask]
+    test_months = test_times.astype("datetime64[M]").astype(int) % 12 + 1
+    test_seasons = targets._SEASON_BY_MONTH[test_months]
+    season_counts = {name: int((test_seasons == i).sum()) for i, name in enumerate(targets._SEASON_NAMES)}
+    logger.info(
+        "Test timesteps: %d total — %s",
+        len(test_indices),
+        ", ".join(f"{k}={v}" for k, v in season_counts.items()),
+    )
     logger.info(f"Train timesteps: {train_era5.sizes['time']}, Val timesteps: {val_era5.sizes['time']}")
-
-    n_lat = train_era5.sizes["latitude"]
-    n_lon = train_era5.sizes["longitude"]
 
     t0 = time.time()
     norm_mean, norm_variance = inputs.compute_norm_stats(train_era5)
@@ -475,7 +491,7 @@ def main():
 
     with strategy.scope():
         unet = model.UNet3Plus(
-            input_shape=(n_lat, n_lon, cfg.model_config.n_channels),
+            input_shape=(None, None, cfg.model_config.n_channels),
             num_classes=cfg.model_config.n_classes,
             levels=cfg.model_config.levels,
             filter_num=cfg.model_config.filter_num,

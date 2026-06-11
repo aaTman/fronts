@@ -65,23 +65,34 @@ class DataConfig:
     Attributes:
         era5_icechunk_config: Icechunk store config for ERA5 data.
         fronts_icechunk_config: Icechunk store config for fronts data.
-        train_split: Fraction of time steps to use for training; remaining go to validation.
+        train_split: Fraction of all filtered time steps to use for training.
+        val_split: Fraction of all filtered time steps to use for validation.
+        test_split: Fraction of timesteps per meteorological season to hold out as a sequestered
+            test set (never seen during training or validation). train_split + val_split +
+            test_split should sum to 1.
         batch_size: Number of timesteps per training batch.
         class_weights: Per-class loss weights. None means equal weighting.
         front_dilation: Number of binary dilation iterations applied to each non-background
             front class. 0 means no dilation.
+        time_resolution: Optional pandas offset string (e.g. ``"6h"``) used to subsample
+            the loaded timesteps. Only timestamps whose hour is already aligned to this
+            interval are kept (e.g. ``"6h"`` retains 00, 06, 12, 18 UTC). ``None`` keeps
+            all available timesteps.
     """
 
     era5_icechunk_config: IcechunkStorageConfig
     fronts_icechunk_config: IcechunkStorageConfig
     variables: list[str]
-    train_split: float = 0.8
+    train_split: float
+    val_split: float
+    test_split: float
     batch_size: int = 4
     steps_per_epoch: int | None = None
     load_chunk_steps: int | None = None
     prefetch_chunks: int = 2
     class_weights: list[float] | None = None
     front_dilation: int = 0
+    time_resolution: str | None = None
 
 
 @dataclasses.dataclass
@@ -96,7 +107,7 @@ class EvalConfig:
         front_dilation: Binary dilation iterations applied to truth labels. None uses
             the value from the paired DataConfig.
         coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
-            Defaults to CONUS extent.
+            Defaults to full USAD extent.
         gpu_device: GPU index to use. None runs on CPU.
         time_start: Restrict evaluation to timesteps on or after this date. None means no lower bound.
         time_end: Restrict evaluation to timesteps before this date. None means no upper bound.
