@@ -32,10 +32,23 @@ import psutil
 import xarray as xr
 import zarr
 import zarr.core.codec_pipeline
-from tqdm.asyncio import tqdm as tqdm_asyncio
 from arraylake import Client as ArraylakeClient
+from tqdm.asyncio import tqdm as tqdm_asyncio
 
 from fronts import utils
+
+ARCO_ARRAYLAKE_MAPPING = {
+    "geopotential": "z",
+    "temperature": "t",
+    "u_component_of_wind": "u",
+    "v_component_of_wind": "v",
+    "specific_humidity": "q",
+}
+
+ARCO_ARRAYLAKE_COORD_MAPPING = {
+    "time": "valid_time",
+    "level": "pressure_level",
+}
 
 
 def _rss_mb() -> float:
@@ -182,6 +195,7 @@ def main() -> None:
     if storage_options:
         open_kwargs["storage_options"] = storage_options
     if args.arraylake:
+        args.variables = [ARCO_ARRAYLAKE_MAPPING.get(var, var) for var in args.variables]
         ds = open_arraylake_subset(
             args.variables,
             pd.date_range(args.time_start, args.time_end, freq=args.time_resolution),
@@ -196,12 +210,15 @@ def main() -> None:
     print(f"RSS after open:      {_rss_mb():.1f} MB  (dask-backed: {bool(ds.chunks)})")
 
     times = pd.date_range(args.time_start, args.time_end, freq=args.time_resolution)
-    ds_subset = utils.attach_periodic_lon_index(ds[args.variables]).sel(
-        time=times,
-        latitude=slice(args.lat_max, args.lat_min),
-        longitude=slice(args.lon_min, args.lon_max),
-        level=args.pressure_levels,
-    )
+    coords = {
+        "latitude": slice(args.lat_max, args.lat_min),
+        "longitude": slice(args.lon_min, args.lon_max),
+        "time": times,
+        "level": args.pressure_levels,
+    }
+
+    coords = {ARCO_ARRAYLAKE_COORD_MAPPING.get(coord, coord): sel for coord, sel in coords.items()}
+    ds_subset = utils.attach_periodic_lon_index(ds[args.variables]).sel(**coords)
     print(f"RSS after subset:    {_rss_mb():.1f} MB  (dask-backed: {bool(ds_subset.chunks)})")
     print(f"Subset shape:        {dict(ds_subset.sizes)}")
     print(f"Subset uncompressed: {ds_subset.nbytes / 1024**2:.1f} MB")
