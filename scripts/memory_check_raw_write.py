@@ -33,6 +33,7 @@ import xarray as xr
 import zarr
 import zarr.core.codec_pipeline
 from tqdm.asyncio import tqdm as tqdm_asyncio
+from arraylake import Client as ArraylakeClient
 
 from fronts import utils
 
@@ -100,12 +101,49 @@ def chunk_progress_bar():
         zarr.core.codec_pipeline.concurrent_map = original
 
 
+def open_arco_subset(variables: list[str], time_range, pressure_levels) -> xr.Dataset:
+    """Open and subset the Google ARCO ERA5 Zarr store.
+
+    Open and subset the store to the specified variables, time range, pressure levels, and spatial domain.
+
+    Returns:
+        An xarray Dataset containing the subset of ARCO ERA5 data.
+    """
+    era5_uri = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+    ds = xr.open_zarr(era5_uri, chunks=None, storage_options={"token": "anon"})
+    return ds[variables].sel(time=time_range, level=pressure_levels)
+
+
+def open_arraylake_subset(variables: list[str], time_range, pressure_levels) -> xr.Dataset:
+    """Open and subset the Earthmover Arraylake ERA5 Icechunk store.
+
+    Open and subset the store to the specified variables, time range, pressure levels, and spatial domain.
+
+    Returns:
+        An xarray Dataset containing the subset of Arraylake ERA5 data.
+    """
+    # Earthmover's Arraylake ERA5 Zarr store, which is publicly accessible with an anonymous token.
+    arraylake_repo = "earthmover-public/era5"
+
+    # The group within the Arraylake repo where the pressure level ERA5 data is stored chunked pancake-style
+    group = "pressure/spatial"
+
+    client = ArraylakeClient()
+    repo = client.get_repo(arraylake_repo)
+    session = repo.readonly_session("main")
+    ds = xr.open_zarr(session.store, group=group, chunks=None)
+    return ds[variables].sel(valid_time=time_range, pressure_level=pressure_levels)
+
+
 def main() -> None:
     """Run the memory check described in this module's docstring."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--era5-uri",
         default="gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3",
+    )
+    parser.add_argument(
+        "--arraylake", action="store_true", help="Use the Earthmover Arraylake ERA5 store instead of ARCO"
     )
     parser.add_argument("--time-start", default="2019-01-01")
     parser.add_argument("--time-end", default="2019-01-02")
@@ -143,7 +181,18 @@ def main() -> None:
     open_kwargs: dict = {"chunks": None}
     if storage_options:
         open_kwargs["storage_options"] = storage_options
-    ds = xr.open_zarr(args.era5_uri, **open_kwargs)
+    if args.arraylake:
+        ds = open_arraylake_subset(
+            args.variables,
+            pd.date_range(args.time_start, args.time_end, freq=args.time_resolution),
+            args.pressure_levels,
+        )
+    else:
+        ds = open_arco_subset(
+            args.variables,
+            pd.date_range(args.time_start, args.time_end, freq=args.time_resolution),
+            args.pressure_levels,
+        )
     print(f"RSS after open:      {_rss_mb():.1f} MB  (dask-backed: {bool(ds.chunks)})")
 
     times = pd.date_range(args.time_start, args.time_end, freq=args.time_resolution)
