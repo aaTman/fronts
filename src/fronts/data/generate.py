@@ -311,17 +311,23 @@ _FALLBACK_MEMORY_BYTES = 32 * 1024**3  # 32GB, used when no slurm_config is avai
 def _compute_time_chunk_size(ds: xr.Dataset | xr.DataArray, memory_bytes: int) -> int:
     """Determine how many time steps can be safely materialized in one write chunk.
 
+    The chunk size is bounded by the largest single variable's per-timestep byte
+    footprint, since ``.compute()`` on a distributed dask client finalizes
+    (concatenates) each variable's chunks on a single worker.
+
     Args:
-        ds: Dataset to be written; used to compute the per-timestep byte footprint
-            via ``ds.nbytes`` (metadata-only, does not trigger computation).
-        memory_bytes: Total memory available for materializing one chunk.
+        ds: Dataset to be written; used to compute the per-variable per-timestep
+            byte footprint via ``nbytes`` (metadata-only, does not trigger computation).
+        memory_bytes: Memory available on a single worker for materializing one
+            variable's chunk.
 
     Returns:
         Number of time steps per write chunk, at least 1 and at most ``ds.sizes["time"]``.
     """
     n_times = ds.sizes["time"]
-    bytes_per_step = ds.nbytes / n_times
-    chunk_size = max(1, int(memory_bytes * _WRITE_MEMORY_FRACTION // bytes_per_step))
+    arrays = ds.data_vars.values() if isinstance(ds, xr.Dataset) else [ds]
+    max_bytes_per_step = max(array.nbytes / n_times for array in arrays)
+    chunk_size = max(1, int(memory_bytes * _WRITE_MEMORY_FRACTION // max_bytes_per_step))
     return min(chunk_size, n_times)
 
 
@@ -340,8 +346,9 @@ def write_or_append_icechunk_store(
     Args:
         storage_config: Configuration object containing parameters for icechunk storage.
         ds: The xarray Dataset to write or append to the store.
-        slurm_config: SLURM cluster parameters; ``slurm_config.memory`` bounds the size of
-            each write chunk. If None, a fixed 32GB fallback budget is used.
+        slurm_config: SLURM cluster parameters; ``slurm_config.memory / slurm_config.processes``
+            (the per-worker memory budget) bounds the size of each write chunk. If None, a
+            fixed 32GB fallback budget is used.
         dry_run: If True, perform a dry run without actually committing to the store.
     """
     # Drop encoding due to zarr v3 compatibility issues; see
@@ -356,7 +363,10 @@ def write_or_append_icechunk_store(
         f"{storage_config.store_path} with variables {list(ds.data_vars)} and shape {ds.sizes}"
     )
 
-    memory_bytes = dask.utils.parse_bytes(slurm_config.memory) if slurm_config else _FALLBACK_MEMORY_BYTES
+    if slurm_config is not None:
+        memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.processes
+    else:
+        memory_bytes = _FALLBACK_MEMORY_BYTES
     time_chunk_size = _compute_time_chunk_size(ds, memory_bytes)
 
     times = ds.time.values
