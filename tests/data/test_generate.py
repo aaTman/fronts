@@ -14,6 +14,7 @@ import yaml
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+from fronts import utils
 from fronts.data import config, generate
 from fronts.utils import BoundingBox
 
@@ -134,6 +135,32 @@ def minimal_ds_3h(time_range_3h: pd.DatetimeIndex) -> xr.Dataset:
 def era5_zarr_3h(tmp_path: pathlib.Path, minimal_ds_3h: xr.Dataset) -> pathlib.Path:
     path = tmp_path / "era5_3h.zarr"
     minimal_ds_3h.to_zarr(path)
+    return path
+
+
+@pytest.fixture
+def time_range_6() -> pd.DatetimeIndex:
+    return pd.date_range("2019-01-01", periods=6, freq="6h")
+
+
+@pytest.fixture
+def minimal_ds_6(time_range_6: pd.DatetimeIndex) -> xr.Dataset:
+    rng = np.random.default_rng(11)
+    data_vars = {
+        var: xr.DataArray(
+            rng.standard_normal((6, 6, 8, 8)).astype(np.float32),
+            dims=["time", "level", "latitude", "longitude"],
+            coords={"time": time_range_6, "level": LEVELS, "latitude": LAT, "longitude": LON},
+        )
+        for var in ERA5_VARS
+    }
+    return xr.Dataset(data_vars)
+
+
+@pytest.fixture
+def era5_zarr_6(tmp_path: pathlib.Path, minimal_ds_6: xr.Dataset) -> pathlib.Path:
+    path = tmp_path / "era5_6.zarr"
+    minimal_ds_6.to_zarr(path)
     return path
 
 
@@ -260,6 +287,19 @@ class TestWriteOrAppendIcechunkStore:
         commits = list(repo.ancestry(branch="main"))
         assert len(commits) == 1  # only the initial empty snapshot
 
+    def test_explicit_time_chunks_override_default_sizing(self, storage_config, write_ds):
+        times = write_ds.time.values
+        generate.write_or_append_icechunk_store(storage_config, write_ds, time_chunks=[times[:2]])
+
+        storage = ic.local_filesystem_storage(storage_config.store_path)
+        repo = ic.Repository.open(storage)
+        session = repo.readonly_session("main")
+        result = xr.open_zarr(session.store)
+        assert result.sizes["time"] == 2
+        np.testing.assert_array_equal(
+            result["temperature"].values, write_ds["temperature"].isel(time=slice(0, 2)).values
+        )
+
 
 class TestComputeTimeChunkSize:
     def test_chunk_size_capped_at_total_times(self, write_ds):
@@ -320,6 +360,22 @@ class TestInspectStore:
         assert result is not None
         assert result.coordinates.lon_min == pytest.approx(330.0)
         assert result.coordinates.lon_max == pytest.approx(380.0)
+
+    def test_group_name_isolates_store_contents(self, tmp_path, write_ds):
+        grouped_config = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "icechunk_store"),
+            branch_name="main",
+            group_name="era5",
+        )
+        generate.write_or_append_icechunk_store(grouped_config, write_ds)
+
+        result = generate.inspect_store(grouped_config)
+        assert result is not None
+        assert "temperature" in result.variables
+
+        root_config = dataclasses.replace(grouped_config, group_name=None)
+        root_result = generate.inspect_store(root_config)
+        assert root_result is None or "temperature" not in root_result.variables
 
 
 class TestDetermineWriteStrategy:
@@ -414,6 +470,69 @@ class TestDetermineWriteStrategy:
         assert strategy.missing_times.size
 
 
+class TestPhasedExecute:
+    def _config(
+        self, era5_zarr: pathlib.Path, time_end: datetime, variables: list[str] | None = None
+    ) -> config.ERA5DataLoaderConfig:
+        return config.ERA5DataLoaderConfig(
+            era5_uri=str(era5_zarr),
+            variables=variables if variables is not None else [*ERA5_VARS, "wind_speed"],
+            pressure_levels=list(LEVELS),
+            time_start=datetime(2019, 1, 1),
+            time_end=time_end,
+            time_resolution="6h",
+            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+            storage_options=None,
+            chunks={"time": 1},
+        )
+
+    def _read_store(self, storage_config: config.IcechunkStorageConfig) -> xr.Dataset:
+        return utils.open_readonly_icechunk_store(
+            storage_config.store_path,
+            storage_config.branch_name,
+            group=storage_config.group_name,
+            zarr_format=storage_config.zarr_format,
+        )
+
+    def _assert_wind_speed_correct(self, ds: xr.Dataset) -> None:
+        expected = np.sqrt(ds["u_component_of_wind"] ** 2 + ds["v_component_of_wind"] ** 2)
+        np.testing.assert_allclose(ds["wind_speed"].values, expected.values, rtol=1e-5)
+
+    def test_fresh_store_full_backfill_with_derived_variable(self, era5_zarr, storage_config):
+        cfg = self._config(era5_zarr, datetime(2019, 1, 1, 18))
+
+        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(storage_config))
+        strategy.execute(cfg, storage_config)
+
+        result = generate.inspect_store(storage_config)
+        assert result is not None
+        assert "wind_speed" in result.variables
+        assert "temperature" in result.variables
+        assert len(result.times) == 4
+
+        self._assert_wind_speed_correct(self._read_store(storage_config))
+
+    def test_tail_append_extends_derived_variable(self, era5_zarr_6, storage_config):
+        initial_cfg = self._config(era5_zarr_6, datetime(2019, 1, 1, 6))
+        strategy = generate.determine_write_strategy(initial_cfg, generate.inspect_store(storage_config))
+        strategy.execute(initial_cfg, storage_config)
+
+        full_cfg = self._config(era5_zarr_6, datetime(2019, 1, 1, 18))
+        store_contents = generate.inspect_store(storage_config)
+        strategy = generate.determine_write_strategy(full_cfg, store_contents)
+        assert not strategy.merge_required
+        assert len(strategy.missing_times) == 2
+
+        strategy.execute(full_cfg, storage_config)
+
+        result = generate.inspect_store(storage_config)
+        assert result is not None
+        assert "wind_speed" in result.variables
+        assert len(result.times) == 4
+
+        self._assert_wind_speed_correct(self._read_store(storage_config))
+
+
 class TestWriteNewVariablesToIcechunkStore:
     def test_new_variable_present_after_write(self, storage_config, write_ds, new_variable_ds):
         generate.write_or_append_icechunk_store(storage_config, write_ds)
@@ -445,6 +564,80 @@ class TestWriteNewVariablesToIcechunkStore:
         session = repo.readonly_session("main")
         result = xr.open_zarr(session.store, consolidated=False)
         np.testing.assert_array_equal(result["vertical_velocity"].values, new_variable_ds["vertical_velocity"].values)
+
+
+class TestWriteVariablesToIcechunkStore:
+    def test_new_derived_variable_present_with_correct_shape_and_values(self, storage_config, write_ds, time_range):
+        generate.write_or_append_icechunk_store(storage_config, write_ds)
+
+        wind_speed_ds = write_ds.rename({"temperature": "wind_speed"})
+        times = time_range.values
+        generate.write_variables_to_icechunk_store(storage_config, wind_speed_ds, time_chunks=[times[:2], times[2:]])
+
+        result = generate.utils.open_readonly_icechunk_store(storage_config.store_path, storage_config.branch_name)
+        assert "wind_speed" in result.data_vars
+        assert result.sizes["time"] == len(time_range)
+        np.testing.assert_array_equal(result["wind_speed"].values, wind_speed_ds["wind_speed"].values)
+        np.testing.assert_array_equal(result["temperature"].values, write_ds["temperature"].values)
+
+    def test_append_to_existing_derived_variable(self, storage_config, write_ds, time_range):
+        generate.write_or_append_icechunk_store(storage_config, write_ds)
+
+        wind_speed_ds_1 = write_ds.rename({"temperature": "wind_speed"})
+        times_1 = time_range.values
+        generate.write_variables_to_icechunk_store(
+            storage_config, wind_speed_ds_1, time_chunks=[times_1[:2], times_1[2:]]
+        )
+
+        second_time = pd.date_range("2019-01-02", periods=4, freq="6h")
+        second_temperature_ds = write_ds.assign_coords(time=second_time)
+        generate.write_or_append_icechunk_store(storage_config, second_temperature_ds)
+
+        wind_speed_ds_2 = second_temperature_ds.rename({"temperature": "wind_speed"})
+        times_2 = second_time.values
+        generate.write_variables_to_icechunk_store(
+            storage_config, wind_speed_ds_2, time_chunks=[times_2[:2], times_2[2:]]
+        )
+
+        result = generate.utils.open_readonly_icechunk_store(storage_config.store_path, storage_config.branch_name)
+        assert result.sizes["time"] == len(time_range) + len(second_time)
+        expected = np.concatenate([wind_speed_ds_1["wind_speed"].values, wind_speed_ds_2["wind_speed"].values], axis=0)
+        np.testing.assert_array_equal(result["wind_speed"].values, expected)
+
+    def test_dry_run_does_not_create_commit(self, storage_config, write_ds, time_range):
+        generate.write_or_append_icechunk_store(storage_config, write_ds)
+
+        wind_speed_ds = write_ds.rename({"temperature": "wind_speed"})
+        times = time_range.values
+
+        storage = ic.local_filesystem_storage(storage_config.store_path)
+        repo = ic.Repository.open(storage)
+        commits_before = list(repo.ancestry(branch="main"))
+
+        generate.write_variables_to_icechunk_store(
+            storage_config, wind_speed_ds, time_chunks=[times[:2], times[2:]], dry_run=True
+        )
+
+        commits_after = list(repo.ancestry(branch="main"))
+        assert len(commits_after) == len(commits_before)
+
+    def test_multi_chunk_write_is_single_commit(self, storage_config, write_ds, time_range):
+        generate.write_or_append_icechunk_store(storage_config, write_ds)
+
+        wind_speed_ds = write_ds.rename({"temperature": "wind_speed"})
+        times = time_range.values
+
+        generate.write_variables_to_icechunk_store(
+            storage_config, wind_speed_ds, time_chunks=[times[:1], times[1:2], times[2:3], times[3:]]
+        )
+
+        storage = ic.local_filesystem_storage(storage_config.store_path)
+        repo = ic.Repository.open(storage)
+        commits = list(repo.ancestry(branch="main"))
+        assert len(commits) == 3  # initial empty snapshot + temperature write + wind_speed write
+
+        result = generate.utils.open_readonly_icechunk_store(storage_config.store_path, storage_config.branch_name)
+        np.testing.assert_array_equal(result["wind_speed"].values, wind_speed_ds["wind_speed"].values)
 
 
 class TestAttributePreservation:

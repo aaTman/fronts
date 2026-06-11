@@ -2,10 +2,12 @@ import argparse
 import dataclasses
 import logging
 import sys
+from collections.abc import Iterator
 
 import dask.utils
 import icechunk as ic
 import icechunk.xarray
+import numpy as np
 import obstore.store
 import pandas as pd
 import tqdm
@@ -80,29 +82,82 @@ class WriteStrategy:
             slurm_config: SLURM cluster parameters, used to size write chunks by
                 available memory. If None, a fixed fallback memory budget is used.
         """
+        if slurm_config is not None:
+            memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.cores
+        else:
+            memory_bytes = _FALLBACK_MEMORY_BYTES
+
         if self.missing_times.size:
             if self.merge_required:
-                logger.info("Generating ERA5 data for missing time steps...")
-                missing_ds = generate_era5_data(era5_config).sel(time=self.missing_times)
-                logger.info("Appending missing time steps to icechunk store...")
-                write_or_append_icechunk_store(icechunk_config, missing_ds, slurm_config)
+                ds_download = generate_era5_download_data(era5_config).sel(time=self.missing_times)
             else:
                 narrow_config = dataclasses.replace(
                     era5_config,
                     time_start=self.missing_times[0].to_pydatetime(),
                     time_end=self.missing_times[-1].to_pydatetime(),
                 )
-                logger.info("Generating ERA5 data for missing time steps...")
-                era5_subset = generate_era5_data(narrow_config)
-                logger.info("Writing ERA5 subset to icechunk store...")
-                write_or_append_icechunk_store(icechunk_config, era5_subset, slurm_config)
+                ds_download = generate_era5_download_data(narrow_config)
+
+            time_chunks = _compute_time_chunks(self.missing_times.values, ds_download, memory_bytes)
+
+            logger.info("Phase 1: downloading raw ERA5 variables to icechunk store...")
+            write_or_append_icechunk_store(icechunk_config, ds_download, time_chunks=time_chunks)
+
+            _, derived_vars = derived.classify_variables(era5_config.variables, set(ds_download.data_vars))
+            if derived_vars:
+                logger.info("Phase 2: computing derived variables from local store...")
+                required_inputs = {
+                    inp for v in derived_vars for inp in derived.DERIVED_VARIABLE_REGISTRY[v].required_inputs
+                }
+                local_ds = utils.open_readonly_icechunk_store(
+                    icechunk_config.store_path,
+                    icechunk_config.branch_name,
+                    group=icechunk_config.group_name,
+                    zarr_format=icechunk_config.zarr_format,
+                    drop_variables=_non_input_data_variables(icechunk_config, required_inputs),
+                ).sel(time=self.missing_times)
+                if not local_ds.chunks:
+                    local_ds = local_ds.chunk(era5_config.chunks)
+                derived_config = dataclasses.replace(era5_config, variables=derived_vars)
+                ds_derived = generate_era5_derived_data(derived_config, local_ds)
+                write_variables_to_icechunk_store(icechunk_config, ds_derived, time_chunks=time_chunks)
 
         if self.missing_variables:
-            narrow_config = dataclasses.replace(era5_config, variables=self.missing_variables)
-            logger.info("Generating ERA5 data for missing variables...")
-            era5_subset = generate_era5_data(narrow_config)
-            logger.info("Writing new variables to icechunk store...")
-            write_new_variables_to_icechunk_store(icechunk_config, era5_subset)
+            current_store = inspect_store(icechunk_config)
+            still_missing = [v for v in self.missing_variables if v not in current_store.variables]
+            if still_missing:
+                narrow_config = dataclasses.replace(era5_config, variables=still_missing)
+                logger.info("Generating ERA5 data for missing variables...")
+                all_times = current_store.times
+                ds_download = generate_era5_download_data(narrow_config).sel(time=all_times)
+
+                time_chunks = _compute_time_chunks(all_times.values, ds_download, memory_bytes)
+
+                vars_to_download = [v for v in ds_download.data_vars if v not in current_store.variables]
+                if vars_to_download:
+                    logger.info("Writing missing direct variables to icechunk store...")
+                    write_variables_to_icechunk_store(
+                        icechunk_config, ds_download[vars_to_download], time_chunks=time_chunks
+                    )
+
+                _, derived_vars = derived.classify_variables(narrow_config.variables, set(ds_download.data_vars))
+                if derived_vars:
+                    logger.info("Computing and writing missing derived variables...")
+                    required_inputs = {
+                        inp for v in derived_vars for inp in derived.DERIVED_VARIABLE_REGISTRY[v].required_inputs
+                    }
+                    local_ds = utils.open_readonly_icechunk_store(
+                        icechunk_config.store_path,
+                        icechunk_config.branch_name,
+                        group=icechunk_config.group_name,
+                        zarr_format=icechunk_config.zarr_format,
+                        drop_variables=_non_input_data_variables(icechunk_config, required_inputs),
+                    ).sel(time=all_times)
+                    if not local_ds.chunks:
+                        local_ds = local_ds.chunk(era5_config.chunks)
+                    derived_config = dataclasses.replace(narrow_config, variables=derived_vars)
+                    ds_derived = generate_era5_derived_data(derived_config, local_ds)
+                    write_variables_to_icechunk_store(icechunk_config, ds_derived, time_chunks=time_chunks)
 
 
 def _open_era5_zarr_store(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
@@ -132,20 +187,22 @@ def _open_era5_zarr_store(era5_config: config.ERA5DataLoaderConfig) -> xr.Datase
     return xr.open_zarr(era5_config.era5_uri, **open_kwargs)
 
 
-def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
-    """Generate a subset of ERA5 data for model training, validation, and testing.
+def generate_era5_download_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
+    """Open ARCO and subset to the variables that must be downloaded.
 
-    Variables are split into those available directly in the ARCO store and those
-    that must be derived. Direct variables are downloaded first; derived variables
-    are then computed from their required inputs. Intermediate inputs not in the
-    original variable list are dropped before returning.
+    This deliberately excludes derived-variable computation, so the returned
+    dataset's dask graph covers only remote zarr reads and subsetting (level,
+    time, and spatial bounding box). Derived variables should be computed by
+    ``generate_era5_derived_data`` from the materialized output of this function,
+    keeping remote I/O and derivation in separate dask graphs.
 
     Args:
         era5_config: Configuration object containing all necessary parameters for
             data generation.
 
     Returns:
-        An xarray Dataset containing the subset of ERA5 data specified by the config.
+        Lazy dataset of download variables, subset and chunked per
+        ``era5_config.chunks``.
 
     Raises:
         ValueError: If any requested variable is not in ARCO and has no registered
@@ -167,17 +224,64 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
         level=era5_config.pressure_levels,
     )
 
+    return ds_subset.chunk(era5_config.chunks)
+
+
+def generate_era5_derived_data(era5_config: config.ERA5DataLoaderConfig, source_ds: xr.Dataset) -> xr.Dataset:
+    """Compute requested derived variables from their required inputs.
+
+    Args:
+        era5_config: Configuration whose ``variables`` determine which derived
+            variables to compute.
+        source_ds: Dataset containing at least the inputs required by each
+            derived variable, e.g. the output of ``generate_era5_download_data``
+            or a dataset read back from a local icechunk store.
+
+    Returns:
+        Dataset containing only the derived variables requested in
+        ``era5_config.variables``, with the same dask-or-eager backing as
+        ``source_ds``.
+    """
+    _, derived_vars = derived.classify_variables(era5_config.variables, set(source_ds.data_vars))
+
+    ds_derived = xr.Dataset()
     for var_name in derived_vars:
         spec = derived.DERIVED_VARIABLE_REGISTRY[var_name]
         logger.info(f"Computing derived variable '{var_name}' from {spec.required_inputs}")
-        ds_subset[var_name] = spec.compute(*[ds_subset[inp] for inp in spec.required_inputs])
+        ds_derived[var_name] = spec.compute(*[source_ds[inp] for inp in spec.required_inputs])
+
+    return ds_derived
+
+
+def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
+    """Generate a subset of ERA5 data for model training, validation, and testing.
+
+    Variables are split into those available directly in the ARCO store and those
+    that must be derived. Direct variables are downloaded first; derived variables
+    are then computed from their required inputs. Intermediate inputs not in the
+    original variable list are dropped before returning.
+
+    Args:
+        era5_config: Configuration object containing all necessary parameters for
+            data generation.
+
+    Returns:
+        An xarray Dataset containing the subset of ERA5 data specified by the config.
+
+    Raises:
+        ValueError: If any requested variable is not in ARCO and has no registered
+            derivation function.
+    """
+    ds_download = generate_era5_download_data(era5_config)
+    ds_derived = generate_era5_derived_data(era5_config, ds_download)
+    ds = ds_download.assign(**{name: ds_derived[name] for name in ds_derived.data_vars})
 
     requested_set = set(era5_config.variables)
-    vars_to_drop = [v for v in ds_subset.data_vars if v not in requested_set]
+    vars_to_drop = [v for v in ds.data_vars if v not in requested_set]
     if vars_to_drop:
-        ds_subset = ds_subset.drop_vars(vars_to_drop)
+        ds = ds.drop_vars(vars_to_drop)
 
-    return ds_subset.chunk(era5_config.chunks)
+    return ds.chunk(era5_config.chunks)
 
 
 def get_local_icechunk_repository(
@@ -215,7 +319,14 @@ def inspect_store(storage_config: config.IcechunkStorageConfig) -> StoreContents
     storage = ic.local_filesystem_storage(storage_config.store_path)
     if not ic.Repository.exists(storage):
         return None
-    ds = utils.open_readonly_icechunk_store(storage_config.store_path, storage_config.branch_name)
+    ds = utils.open_readonly_icechunk_store(
+        storage_config.store_path,
+        storage_config.branch_name,
+        group=storage_config.group_name,
+        zarr_format=storage_config.zarr_format,
+    )
+    if not ds.data_vars:
+        return None
     ds = utils.unwrap_longitude(ds)
     return StoreContents(
         variables=[str(k) for k in ds.data_vars],
@@ -334,6 +445,51 @@ _WRITE_MEMORY_FRACTION = 0.5
 _FALLBACK_MEMORY_BYTES = 32 * 1024**3  # 32GB, used when no slurm_config is available
 
 
+def _compute_time_chunks(
+    times: np.ndarray,
+    ds_for_sizing: xr.Dataset | xr.DataArray,
+    memory_bytes: int,
+) -> list[np.ndarray]:
+    """Split ``times`` into write-sized chunks based on ``ds_for_sizing``'s footprint.
+
+    Args:
+        times: Time values to split into chunks, in order.
+        ds_for_sizing: Dataset whose per-variable per-timestep byte footprint
+            determines the chunk size, via ``_compute_time_chunk_size``.
+        memory_bytes: Memory available per dask thread for materializing one
+            variable's chunk.
+
+    Returns:
+        ``times`` split into consecutive, non-overlapping chunks of at most
+        ``_compute_time_chunk_size(ds_for_sizing, memory_bytes)`` time steps.
+    """
+    time_chunk_size = _compute_time_chunk_size(ds_for_sizing, memory_bytes)
+    return [times[i : i + time_chunk_size] for i in range(0, len(times), time_chunk_size)]
+
+
+def _materialize_time_chunks(
+    ds: xr.Dataset | xr.DataArray,
+    time_chunks: list[np.ndarray],
+    global_attrs: dict,
+) -> Iterator[tuple[int, np.ndarray, xr.Dataset | xr.DataArray]]:
+    """Materialize ``ds`` one time chunk at a time, reporting progress via tqdm.
+
+    Args:
+        ds: Lazy dataset to select from and compute, one time chunk at a time.
+        time_chunks: Time-value chunks to iterate over, in order.
+        global_attrs: Attributes to assign to each materialized chunk.
+
+    Yields:
+        Tuples of (chunk index, time values for this chunk, materialized chunk).
+    """
+    with tqdm.tqdm(time_chunks, unit="chunk", desc="Writing icechunk") as pbar:
+        for i, time_slice in enumerate(pbar):
+            ds_slice = ds.sel(time=time_slice).compute()
+            ds_slice.attrs = global_attrs
+            pbar.set_postfix(start=str(time_slice[0])[:10], steps=f"{len(time_slice)} steps")
+            yield i, time_slice, ds_slice
+
+
 def _compute_time_chunk_size(ds: xr.Dataset | xr.DataArray, memory_bytes: int) -> int:
     """Determine how many time steps can be safely materialized in one write chunk.
 
@@ -363,6 +519,7 @@ def write_or_append_icechunk_store(
     ds: xr.Dataset | xr.DataArray,
     slurm_config: config.SlurmConfig | None = None,
     dry_run: bool = False,
+    time_chunks: list[np.ndarray] | None = None,
 ) -> None:
     """Write or append an xarray Dataset to an icechunk store.
 
@@ -378,6 +535,8 @@ def write_or_append_icechunk_store(
             concurrently on the threads of a single worker) bounds the size of each write
             chunk. If None, a fixed 32GB fallback budget is used.
         dry_run: If True, perform a dry run without actually committing to the store.
+        time_chunks: Precomputed time-value chunks to write, in order. If None, chunks
+            are computed from ``ds`` and ``slurm_config`` via ``_compute_time_chunks``.
     """
     # Drop encoding due to zarr v3 compatibility issues; see
     # https://github.com/pydata/xarray/issues/10032
@@ -391,30 +550,146 @@ def write_or_append_icechunk_store(
         f"{storage_config.store_path} with variables {list(ds.data_vars)} and shape {ds.sizes}"
     )
 
-    if slurm_config is not None:
-        memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.cores
-    else:
-        memory_bytes = _FALLBACK_MEMORY_BYTES
-    time_chunk_size = _compute_time_chunk_size(ds, memory_bytes)
+    if time_chunks is None:
+        if slurm_config is not None:
+            memory_bytes = dask.utils.parse_bytes(slurm_config.memory) // slurm_config.cores
+        else:
+            memory_bytes = _FALLBACK_MEMORY_BYTES
+        time_chunks = _compute_time_chunks(ds.time.values, ds, memory_bytes)
 
-    times = ds.time.values
-    chunks = range(0, len(times), time_chunk_size)
+    n_times = sum(len(time_slice) for time_slice in time_chunks)
     session = repo.writable_session(storage_config.branch_name)
-    with tqdm.tqdm(chunks, unit="chunk", desc="Writing icechunk") as pbar:
-        for i in pbar:
-            time_slice = times[i : i + time_chunk_size]
-            ds_slice = ds.sel(time=time_slice).compute()
-            ds_slice.attrs = global_attrs
-
-            pbar.set_postfix(start=str(time_slice[0])[:10], steps=f"{i}-{i + len(time_slice)}")
-            icechunk.xarray.to_icechunk(ds_slice, session, append_dim=append, safe_chunks=False)
-            append = "time"  # always append after first write
+    for _, _, ds_slice in _materialize_time_chunks(ds, time_chunks, global_attrs):
+        icechunk.xarray.to_icechunk(
+            ds_slice, session, append_dim=append, safe_chunks=False, group=storage_config.group_name
+        )
+        append = "time"  # always append after first write
 
     if dry_run:
-        logger.info(f"Dry run: would commit {len(times)} time steps from {times[0]} to {times[-1]}")
+        logger.info(f"Dry run: would commit {n_times} time steps")
         session.discard_changes()
     else:
-        session.commit(f"{storage_config.commit_message}, time steps 0 to {len(times)}")
+        session.commit(f"{storage_config.commit_message}, time steps 0 to {n_times}")
+
+
+def _non_input_data_variables(storage_config: config.IcechunkStorageConfig, required_inputs: set[str]) -> list[str]:
+    """List existing store data variables that are not required derived-variable inputs.
+
+    Excluding these when reading the store back avoids cross-variable
+    dimension-size conflicts that arise mid-pipeline, when some variables have
+    been extended to a new time range and others have not yet.
+
+    Args:
+        storage_config: Configuration for the icechunk store to inspect.
+        required_inputs: Variable names needed to compute the requested derived
+            variables; these are kept regardless of their current dimensions.
+
+    Returns:
+        Names of data variables present in the store but not in
+        ``required_inputs``.
+    """
+    storage = ic.local_filesystem_storage(storage_config.store_path)
+    repo = ic.Repository.open(storage)
+    session = repo.readonly_session(storage_config.branch_name)
+    group = zarr.open_group(
+        store=session.store,
+        path=storage_config.group_name or "",
+        mode="r",
+        zarr_format=storage_config.zarr_format,
+    )
+
+    def _dims(name: str) -> list[str]:
+        array = group[name]
+        dimension_names = getattr(array.metadata, "dimension_names", None)
+        if dimension_names is not None:
+            return list(dimension_names)
+        return list(array.attrs.get("_ARRAY_DIMENSIONS", []))
+
+    return [name for name in group.array_keys() if _dims(name) != [name] and name not in required_inputs]
+
+
+def write_variables_to_icechunk_store(
+    storage_config: config.IcechunkStorageConfig,
+    ds: xr.Dataset,
+    time_chunks: list[np.ndarray],
+    dry_run: bool = False,
+) -> None:
+    """Write one or more variables into an existing icechunk store, chunked along time.
+
+    Variables not yet present in the store are created at the size of the first time
+    chunk only (independent of other variables' larger time extent), without writing
+    any coordinate arrays. Every chunk, including the first, is then appended along the
+    time dimension for variables already present in the store. Positional alignment
+    with the store's existing arrays requires ``time_chunks`` to match the chunk
+    boundaries used to write those arrays (e.g. via ``write_or_append_icechunk_store``).
+
+    Args:
+        storage_config: Configuration for the icechunk store.
+        ds: Dataset containing the variables to write, possibly a mix of variables
+            already present in the store and new variables.
+        time_chunks: Time-value chunks to write, in order, aligned with the store's
+            existing arrays.
+        dry_run: If True, perform a dry run without actually committing to the store.
+    """
+    ds = ds.drop_encoding()
+    global_attrs = ds.attrs
+
+    storage = ic.local_filesystem_storage(storage_config.store_path)
+    repo = ic.Repository.open(storage)
+
+    # Variables in the store may currently have mismatched time extents (e.g. a
+    # download variable just extended by write_or_append_icechunk_store, but a
+    # derived variable from a previous write_variables_to_icechunk_store call still
+    # at its old length), so list arrays directly via zarr rather than
+    # utils.open_readonly_icechunk_store, which builds an xarray Dataset and requires
+    # all variables sharing a dimension to have consistent sizes.
+    readonly_session = repo.readonly_session(storage_config.branch_name)
+    existing_group = zarr.open_group(
+        store=readonly_session.store,
+        path=storage_config.group_name or "",
+        mode="r",
+        zarr_format=storage_config.zarr_format,
+    )
+    existing_array_names = set(existing_group.array_keys())
+    new_vars = [name for name in ds.data_vars if name not in existing_array_names]
+
+    logger.info(
+        f"Writing variables {list(ds.data_vars)} (new: {new_vars}) to icechunk store at {storage_config.store_path}"
+    )
+
+    n_times = sum(len(time_slice) for time_slice in time_chunks)
+    session = repo.writable_session(storage_config.branch_name)
+    for i, _, ds_slice in _materialize_time_chunks(ds, time_chunks, global_attrs):
+        # Write only bare data arrays (no coordinate variables): the store's coordinate
+        # arrays are already fully populated by the corresponding write_or_append_icechunk_store
+        # call, so re-writing or re-appending them here would desynchronize their length
+        # from these variables', which are appended one chunk at a time.
+        bare_ds = xr.Dataset(
+            {name: xr.DataArray(da.data, dims=list(da.dims), attrs=da.attrs) for name, da in ds_slice.data_vars.items()}
+        )
+        if i == 0 and new_vars:
+            icechunk.xarray.to_icechunk(
+                bare_ds[new_vars], session, mode="a", safe_chunks=False, group=storage_config.group_name
+            )
+            existing_vars = [name for name in ds_slice.data_vars if name not in new_vars]
+            if existing_vars:
+                icechunk.xarray.to_icechunk(
+                    bare_ds[existing_vars],
+                    session,
+                    append_dim="time",
+                    safe_chunks=False,
+                    group=storage_config.group_name,
+                )
+        else:
+            icechunk.xarray.to_icechunk(
+                bare_ds, session, append_dim="time", safe_chunks=False, group=storage_config.group_name
+            )
+
+    if dry_run:
+        logger.info(f"Dry run: would commit {n_times} time steps")
+        session.discard_changes()
+    else:
+        session.commit(f"{storage_config.commit_message}, time steps 0 to {n_times}")
 
 
 def create_dask_client(

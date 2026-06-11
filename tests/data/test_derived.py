@@ -265,6 +265,81 @@ class TestRelativeHumidityCompute:
         assert np.all(result.values <= 1.0 + 1e-6)
 
 
+class TestGenerateEra5DownloadData:
+    def test_excludes_derived_variable_names(self, arco_zarr: pathlib.Path):
+        cfg = config.ERA5DataLoaderConfig(
+            era5_uri=str(arco_zarr),
+            variables=["wind_speed"],
+            pressure_levels=_LEVELS,
+            time_start=datetime(2019, 1, 1),
+            time_end=datetime(2019, 1, 1, 12),
+            time_resolution="6h",
+            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+            storage_options=None,
+            chunks={"time": 1},
+        )
+        ds = generate.generate_era5_download_data(cfg)
+        assert "wind_speed" not in ds.data_vars
+        assert "u_component_of_wind" in ds.data_vars
+        assert "v_component_of_wind" in ds.data_vars
+
+    def test_direct_and_derived_mix(self, arco_zarr: pathlib.Path):
+        cfg = config.ERA5DataLoaderConfig(
+            era5_uri=str(arco_zarr),
+            variables=["temperature", "wind_speed"],
+            pressure_levels=_LEVELS,
+            time_start=datetime(2019, 1, 1),
+            time_end=datetime(2019, 1, 1, 12),
+            time_resolution="6h",
+            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+            storage_options=None,
+            chunks={"time": 1},
+        )
+        ds = generate.generate_era5_download_data(cfg)
+        assert "wind_speed" not in ds.data_vars
+        assert set(ds.data_vars) == {"temperature", "u_component_of_wind", "v_component_of_wind"}
+
+
+class TestGenerateEra5DerivedData:
+    def test_returns_only_requested_derived_vars_lazily(self, physical_ds: xr.Dataset):
+        cfg = config.ERA5DataLoaderConfig(
+            era5_uri="unused",
+            variables=["wind_speed", "potential_temperature"],
+            pressure_levels=_LEVELS,
+            time_start=datetime(2019, 1, 1),
+            time_end=datetime(2019, 1, 1, 12),
+            time_resolution="6h",
+            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+            storage_options=None,
+            chunks={"time": 1},
+        )
+        source_ds = physical_ds.chunk({"time": 1})
+        result = generate.generate_era5_derived_data(cfg, source_ds)
+
+        assert set(result.data_vars) == {"wind_speed", "potential_temperature"}
+        assert isinstance(result["wind_speed"].data, dsa.Array)
+
+        expected_wind_speed = derived.DERIVED_VARIABLE_REGISTRY["wind_speed"].compute(
+            physical_ds["u_component_of_wind"], physical_ds["v_component_of_wind"]
+        )
+        np.testing.assert_allclose(result["wind_speed"].compute().values, expected_wind_speed.values, rtol=1e-5)
+
+    def test_returns_empty_dataset_when_no_derived_vars_requested(self, physical_ds: xr.Dataset):
+        cfg = config.ERA5DataLoaderConfig(
+            era5_uri="unused",
+            variables=["temperature"],
+            pressure_levels=_LEVELS,
+            time_start=datetime(2019, 1, 1),
+            time_end=datetime(2019, 1, 1, 12),
+            time_resolution="6h",
+            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+            storage_options=None,
+            chunks={"time": 1},
+        )
+        result = generate.generate_era5_derived_data(cfg, physical_ds.chunk({"time": 1}))
+        assert len(result.data_vars) == 0
+
+
 class TestGenerateEra5DataWithDerived:
     def test_derived_variable_in_output(self, arco_zarr: pathlib.Path):
         cfg = config.ERA5DataLoaderConfig(
@@ -330,3 +405,23 @@ class TestGenerateEra5DataWithDerived:
         assert "u_component_of_wind" in ds.data_vars
         assert "v_component_of_wind" in ds.data_vars
         assert "wind_speed" in ds.data_vars
+
+    def test_equals_download_plus_derived(self, arco_zarr: pathlib.Path):
+        cfg = config.ERA5DataLoaderConfig(
+            era5_uri=str(arco_zarr),
+            variables=["temperature", "wind_speed"],
+            pressure_levels=_LEVELS,
+            time_start=datetime(2019, 1, 1),
+            time_end=datetime(2019, 1, 1, 12),
+            time_resolution="6h",
+            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
+            storage_options=None,
+            chunks={"time": 1},
+        )
+        ds_download = generate.generate_era5_download_data(cfg)
+        ds_derived = generate.generate_era5_derived_data(cfg, ds_download)
+        expected = ds_download.assign(**{name: ds_derived[name] for name in ds_derived.data_vars})
+        expected = expected.drop_vars([v for v in expected.data_vars if v not in cfg.variables])
+
+        result = generate.generate_era5_data(cfg)
+        xr.testing.assert_allclose(result.compute(), expected.compute())
