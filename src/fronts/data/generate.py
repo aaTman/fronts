@@ -420,16 +420,19 @@ def write_new_variables_to_icechunk_store(
 def write_or_append_icechunk_store(
     storage_config: config.IcechunkStorageConfig, ds: xr.Dataset | xr.DataArray, dry_run: bool = False
 ) -> None:
-    """Write or append an xarray Dataset to an icechunk store in a single commit.
+    """Write or append an xarray Dataset to an icechunk store.
 
     If the configured group already contains data, the new data is appended along
-    the time dimension; otherwise the group is created. The whole dataset is
-    written in one ``to_icechunk`` call and committed once.
+    the time dimension; otherwise the group is created. When
+    ``storage_config.write_batch_size`` is set, the dataset is written in batches
+    of that many time steps, each loaded eagerly and committed before the next is
+    read, so peak memory stays bounded without dask. Otherwise the whole dataset
+    is written in one commit.
 
     Args:
         storage_config: Configuration object containing parameters for icechunk storage.
         ds: The xarray Dataset to write or append to the store.
-        dry_run: If True, perform the write without committing.
+        dry_run: If True, perform the first batch's write without committing.
     """
     # Drop encoding due to zarr v3 compatibility issues; see
     # https://github.com/pydata/xarray/issues/10032
@@ -441,18 +444,32 @@ def write_or_append_icechunk_store(
     storage = ic.local_filesystem_storage(storage_config.store_path)
     repo = ic.Repository.open_or_create(storage)
 
+    n_times = ds.sizes.get("time", 0)
+    batch_size = storage_config.write_batch_size or n_times or 1
+
     logger.info(
         f"{'Appending to' if append else 'Writing new'} icechunk store at "
         f"{storage_config.store_path} (group={storage_config.group_name}) "
-        f"with variables {list(ds.data_vars)} and shape {ds.sizes}"
+        f"with variables {list(ds.data_vars)}, shape {ds.sizes}, "
+        f"in batches of {batch_size} time steps"
     )
 
-    session = repo.writable_session(storage_config.branch_name)
-    icechunk.xarray.to_icechunk(ds, session, group=storage_config.group_name, append_dim=append, safe_chunks=False)
-    if dry_run:
-        logger.info(f"Dry run: would commit {ds.sizes.get('time', 0)} time steps")
-        return
-    session.commit(f"{storage_config.commit_message}, {ds.sizes.get('time', 0)} time steps")
+    for start in range(0, max(n_times, 1), batch_size):
+        ds_batch = ds.isel(time=slice(start, start + batch_size)) if n_times else ds
+        ds_batch = ds_batch.compute()
+        session = repo.writable_session(storage_config.branch_name)
+        icechunk.xarray.to_icechunk(
+            ds_batch, session, group=storage_config.group_name, append_dim=append, safe_chunks=False
+        )
+        if dry_run:
+            logger.info(f"Dry run: would commit {ds_batch.sizes.get('time', 0)} time steps")
+            return
+        batch_times = ds_batch.sizes.get("time", 0)
+        log = f"{storage_config.commit_message}, time steps {start}-{start + batch_times} of {n_times}"
+        session.commit(log)
+        logger.info(log)
+        append = "time"
+        del ds_batch
 
 
 def create_dask_client(slurm_config: config.SlurmConfig, scheduler_options: dict | None = None):

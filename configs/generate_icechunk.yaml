@@ -36,6 +36,7 @@ icechunk_storage_config:
   branch_name: "main"
   commit_message: "Add ERA5 data from Arraylake 2007-2025"
   group_name: "era5"
+  write_batch_size: 1000
 
 slurm_config:
   queue: "ai2es"

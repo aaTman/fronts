@@ -18,6 +18,10 @@ class IcechunkStorageConfig:
             netcdf files, set this to the directory those files live in (e.g.
             ``/ourdisk/hpc/ai2es/tman/data/netcdf/``). The ``file://`` URL prefix is
             derived automatically. Leave None for stores with no virtual chunks.
+        write_batch_size: Number of time steps to load and commit per write when
+            writing or appending. Bounds peak memory without dask: each batch is
+            loaded eagerly, appended along time, and committed before the next
+            batch is read. None writes the whole dataset in one commit.
     """
 
     store_path: str
@@ -26,6 +30,7 @@ class IcechunkStorageConfig:
     zarr_format: int = 3
     group_name: str | None = None
     virtual_chunk_local_path: str | None = None
+    write_batch_size: int | None = None
 
 
 @dataclasses.dataclass
