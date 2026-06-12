@@ -125,7 +125,9 @@ class WriteStrategy:
                     narrow_config = dataclasses.replace(
                         era5_config, variables=direct_vars, single_level_variables=missing_single
                     )
-                    ds_download = generate_era5_download_data(narrow_config).sel(time=store_contents.times)
+                    ds_download = generate_era5_download_data(narrow_config)
+                    if "time" in ds_download.dims:
+                        ds_download = ds_download.sel(time=store_contents.times)
                     write_new_variables_to_icechunk_store(icechunk_config, ds_download)
                 if derived_vars:
                     logger.info(f"Computing missing derived variables {derived_vars}...")
@@ -189,16 +191,19 @@ def generate_era5_download_data(era5_config: config.ERA5DataLoaderConfig) -> xr.
     # Attach periodic index to longitude for > 360 to avoid wrap-crossing slice issues
     ds = utils.attach_periodic_lon_index(ds)
     selection: dict = {
-        "time": date_range,
         "latitude": slice(era5_config.coordinates.lat_max, era5_config.coordinates.lat_min),
         "longitude": slice(era5_config.coordinates.lon_min, era5_config.coordinates.lon_max),
     }
+    if "time" in ds.dims:
+        selection["time"] = date_range
     if "level" in ds.dims:
         selection["level"] = era5_config.pressure_levels
     ds_subset = ds.sel(**selection)
 
     if era5_config.chunks:
-        return ds_subset.chunk(era5_config.chunks)
+        applicable_chunks = {dim: size for dim, size in era5_config.chunks.items() if dim in ds_subset.dims}
+        if applicable_chunks:
+            return ds_subset.chunk(applicable_chunks)
     return ds_subset
 
 
@@ -469,6 +474,11 @@ def write_or_append_icechunk_store(
 
     for start in range(0, max(n_times, 1), batch_size):
         ds_batch = ds.isel(time=slice(start, start + batch_size)) if n_times else ds
+        if append == "time":
+            static_vars = [str(v) for v in ds_batch.data_vars if "time" not in ds_batch[v].dims]
+            if static_vars:
+                logger.info(f"Skipping time-invariant variables when appending along time: {static_vars}")
+                ds_batch = ds_batch.drop_vars(static_vars)
         ds_batch = ds_batch.compute()
         session = repo.writable_session(storage_config.branch_name)
         icechunk.xarray.to_icechunk(

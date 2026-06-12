@@ -964,3 +964,81 @@ class TestDerivationChunks:
         result = generate.inspect_store(sc)
         assert result is not None
         assert "potential_temperature" in result.variables
+
+
+class TestStaticSingleLevelVariables:
+    @pytest.fixture
+    def static_zarr(self, tmp_path: pathlib.Path, minimal_ds: xr.Dataset) -> pathlib.Path:
+        rng = np.random.default_rng(13)
+        ds = minimal_ds.assign(
+            {
+                "land_sea_mask": xr.DataArray(
+                    rng.random((8, 8)).astype(np.float32),
+                    dims=["latitude", "longitude"],
+                    coords={"latitude": LAT, "longitude": LON},
+                )
+            }
+        )
+        path = tmp_path / "era5_static.zarr"
+        ds.to_zarr(path)
+        return path
+
+    def test_download_with_static_variable(self, static_zarr, era5_config):
+        cfg = dataclasses.replace(era5_config, era5_uri=str(static_zarr), single_level_variables=["land_sea_mask"])
+        result = generate.generate_era5_download_data(cfg)
+        assert "land_sea_mask" in result.data_vars
+        assert "time" not in result["land_sea_mask"].dims
+
+    def test_download_static_variable_only(self, static_zarr, era5_config):
+        cfg = dataclasses.replace(
+            era5_config,
+            era5_uri=str(static_zarr),
+            variables=[],
+            single_level_variables=["land_sea_mask"],
+        )
+        result = generate.generate_era5_download_data(cfg)
+        assert set(result.data_vars) == {"land_sea_mask"}
+        assert "time" not in result.dims
+
+    def test_execute_adds_missing_static_variable(self, tmp_path, static_zarr, era5_config, minimal_ds):
+        sc = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "static_missing_store"),
+            branch_name="main",
+            group_name="era5",
+        )
+        generate.write_or_append_icechunk_store(sc, minimal_ds)
+        cfg = dataclasses.replace(
+            era5_config,
+            era5_uri=str(static_zarr),
+            time_end=datetime(2019, 1, 1, 18),
+            single_level_variables=["land_sea_mask"],
+        )
+        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(sc))
+        assert strategy.missing_variables == ["land_sea_mask"]
+        strategy.execute(cfg, sc)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert "land_sea_mask" in result.variables
+
+    def test_batched_write_skips_static_variable_on_append(self, tmp_path, time_range, write_ds):
+        rng = np.random.default_rng(14)
+        ds = write_ds.assign(
+            {
+                "land_sea_mask": xr.DataArray(
+                    rng.random((8, 8)).astype(np.float32),
+                    dims=["latitude", "longitude"],
+                    coords={"latitude": LAT, "longitude": LON},
+                )
+            }
+        )
+        sc = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "static_batched_store"),
+            branch_name="main",
+            group_name="era5",
+            write_batch_size=2,
+        )
+        generate.write_or_append_icechunk_store(sc, ds)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert "land_sea_mask" in result.variables
+        assert len(result.times) == 4
