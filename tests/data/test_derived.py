@@ -438,7 +438,7 @@ class TestGenerateEra5DataWithDerived:
         )
         ds_download = generate.generate_era5_download_data(cfg)
         ds_derived = generate.generate_era5_derived_data(cfg, ds_download)
-        expected = ds_download.assign(**{name: ds_derived[name] for name in ds_derived.data_vars})
+        expected = ds_download.assign({str(name): ds_derived[name] for name in ds_derived.data_vars})
         expected = expected.drop_vars([v for v in expected.data_vars if v not in cfg.variables])
 
         result = generate.generate_era5_data(cfg)

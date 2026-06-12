@@ -95,7 +95,7 @@ class WriteStrategy:
                 )
                 ds_download = generate_era5_download_data(narrow_config)
 
-            _, derived_vars = derived.classify_variables(era5_config.variables, set(ds_download.data_vars))
+            _, derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in ds_download.data_vars})
             stored_derived = (
                 [v for v in derived_vars if v in store_contents.variables] if store_contents is not None else []
             )
@@ -222,7 +222,7 @@ def generate_era5_derived_data(era5_config: config.ERA5DataLoaderConfig, source_
         ``era5_config.variables``, with the same dask-or-eager backing as
         ``source_ds``.
     """
-    _, derived_vars = derived.classify_variables(era5_config.variables, set(source_ds.data_vars))
+    _, derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in source_ds.data_vars})
 
     ds_derived = xr.Dataset()
     for var_name in derived_vars:
@@ -245,7 +245,7 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
     """
     ds_download = generate_era5_download_data(era5_config)
     ds_derived = generate_era5_derived_data(era5_config, ds_download)
-    ds = ds_download.assign(**{str(name): ds_derived[name] for name in ds_derived.data_vars})
+    ds = ds_download.assign({str(name): ds_derived[name] for name in ds_derived.data_vars})
     requested = set(era5_config.variables) | set(era5_config.single_level_variables)
     return ds.drop_vars([v for v in ds.data_vars if v not in requested])
 

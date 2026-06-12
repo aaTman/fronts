@@ -99,18 +99,45 @@ class SlurmConfig:
 
 
 @dataclasses.dataclass
+class InputSourceConfig:
+    """Configuration for one gridded input source used during training.
+
+    Each source maps to a group within an icechunk store (e.g. ``era5``,
+    ``satellite``) whose variables are converted to input channels and
+    concatenated channel-wise with the other sources.
+
+    Attributes:
+        name: Human-readable source name used in logs (e.g. "satellite").
+        icechunk_config: Icechunk store config for the source, including the
+            group_name of the group holding its data.
+        variables: Variable names to load from the source as input channels.
+    """
+
+    name: str
+    icechunk_config: IcechunkStorageConfig
+    variables: list[str]
+
+
+@dataclasses.dataclass
 class DataConfig:
     """Configuration for loading and splitting ERA5 and fronts data.
 
     Attributes:
         era5_icechunk_config: Icechunk store config for ERA5 data.
         fronts_icechunk_config: Icechunk store config for fronts data.
+        variables: ERA5 variable names to load as input channels.
         train_split: Fraction of all filtered time steps to use for training.
         val_split: Fraction of all filtered time steps to use for validation.
         test_split: Fraction of timesteps per meteorological season to hold out as a sequestered
             test set (never seen during training or validation). train_split + val_split +
             test_split should sum to 1.
         batch_size: Number of timesteps per training batch.
+        steps_per_epoch: Number of batches per epoch passed to model.fit. None lets
+            the dataset size determine it.
+        load_chunk_steps: Number of steps' worth of samples to load per background
+            prefetch. None falls back to steps_per_epoch.
+        prefetch_chunks: Number of chunks to keep loaded in RAM ahead of the batch
+            generator.
         class_weights: Per-class loss weights. None means equal weighting.
         front_dilation: Number of binary dilation iterations applied to each non-background
             front class. 0 means no dilation.
@@ -118,6 +145,10 @@ class DataConfig:
             the loaded timesteps. Only timestamps whose hour is already aligned to this
             interval are kept (e.g. ``"6h"`` retains 00, 06, 12, 18 UTC). ``None`` keeps
             all available timesteps.
+        input_sources: Optional additional gridded input sources (e.g. satellite
+            groups). Their channels are concatenated after the ERA5 channels in
+            the order listed, and their timestamps are intersected with ERA5 and
+            fronts when aligning training data.
     """
 
     era5_icechunk_config: IcechunkStorageConfig
@@ -133,6 +164,7 @@ class DataConfig:
     class_weights: list[float] | None = None
     front_dilation: int = 0
     time_resolution: str | None = None
+    input_sources: list[InputSourceConfig] | None = None
 
 
 @dataclasses.dataclass
@@ -142,12 +174,12 @@ class EvalConfig:
     Attributes:
         model_path: Path to the saved .keras model checkpoint.
         outdir: Directory to write stats_aggregate_{mask}.nc and stats_spatial_{mask}.nc.
+        coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
+            Defaults to full USAD extent.
         front_types: Front type labels in class order (excluding background class 0).
         mask: Restrict statistics to "land" or "ocean" grid points. None means all points.
         front_dilation: Binary dilation iterations applied to truth labels. None uses
             the value from the paired DataConfig.
-        coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
-            Defaults to full USAD extent.
         gpu_device: GPU index to use. None runs on CPU.
         time_start: Restrict evaluation to timesteps on or after this date. None means no lower bound.
         time_end: Restrict evaluation to timesteps before this date. None means no upper bound.
