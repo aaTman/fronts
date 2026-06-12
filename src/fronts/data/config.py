@@ -40,11 +40,11 @@ class ERA5DataLoaderConfig:
     Attributes:
         era5_uri: URI to the ERA5 data in Zarr format. URIs of the form
             ``arraylake://org/repo`` are opened via the Arraylake client.
-        variables: List of pressure-level variable names (Google ARCO naming) to load
-            from the ERA5 dataset, including derived variables.
-        single_level_variables: List of single-level variable names (Google ARCO
-            naming) to load, e.g. ``mean_sea_level_pressure``.
-        pressure_levels: List of pressure levels to load for each variable.
+        variables: List of variable names (Google ARCO naming) to load from the
+            ERA5 dataset. May mix pressure-level, single-level (e.g.
+            ``mean_sea_level_pressure``), and derived variables; each is
+            classified internally.
+        pressure_levels: List of pressure levels to load for each pressure-level variable.
         time_start: Start of the time range to load.
         time_end: End of the time range to load.
         time_resolution: Temporal resolution of the data (e.g., "6h" for
@@ -60,7 +60,6 @@ class ERA5DataLoaderConfig:
 
     era5_uri: str
     variables: list[str]
-    single_level_variables: list[str]
     pressure_levels: list[int]
     time_start: datetime.datetime
     time_end: datetime.datetime

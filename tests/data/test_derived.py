@@ -276,7 +276,6 @@ class TestGenerateEra5DownloadData:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -295,7 +294,6 @@ class TestGenerateEra5DownloadData:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -315,7 +313,6 @@ class TestGenerateEra5DerivedData:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -340,7 +337,6 @@ class TestGenerateEra5DerivedData:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -359,7 +355,6 @@ class TestGenerateEra5DataWithDerived:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -377,7 +372,6 @@ class TestGenerateEra5DataWithDerived:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -396,7 +390,6 @@ class TestGenerateEra5DataWithDerived:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -413,7 +406,6 @@ class TestGenerateEra5DataWithDerived:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -432,7 +424,6 @@ class TestGenerateEra5DataWithDerived:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )

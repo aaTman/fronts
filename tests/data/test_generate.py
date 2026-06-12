@@ -73,7 +73,6 @@ def era5_config(era5_zarr: pathlib.Path) -> config.ERA5DataLoaderConfig:
         time_resolution="6h",
         coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
         storage_options=None,
-        single_level_variables=[],
         zarr_async_concurrency=10,
         chunks={"time": 1},
     )
@@ -286,7 +285,6 @@ class TestDetermineWriteStrategy:
             time_resolution="6h",
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -436,7 +434,6 @@ class TestTimeResolution:
             time_resolution=resolution,
             coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
             storage_options=None,
-            single_level_variables=[],
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
@@ -538,7 +535,6 @@ _BASE_CONFIG = config.ERA5DataLoaderConfig(
     time_resolution="6h",
     coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
     storage_options=None,
-    single_level_variables=[],
     zarr_async_concurrency=10,
     chunks={"time": 1},
 )
@@ -884,7 +880,7 @@ class TestSingleLevelDownload:
         return path
 
     def test_single_level_variable_included(self, mixed_zarr, era5_config):
-        cfg = dataclasses.replace(era5_config, era5_uri=str(mixed_zarr), single_level_variables=["2m_temperature"])
+        cfg = dataclasses.replace(era5_config, era5_uri=str(mixed_zarr), variables=[*ERA5_VARS, "2m_temperature"])
         result = generate.generate_era5_download_data(cfg)
         assert "2m_temperature" in result.data_vars
         assert "level" not in result["2m_temperature"].dims
@@ -893,7 +889,7 @@ class TestSingleLevelDownload:
         cfg = dataclasses.replace(
             era5_config,
             era5_uri=str(mixed_zarr),
-            single_level_variables=["2m_temperature"],
+            variables=[*ERA5_VARS, "2m_temperature"],
             pressure_levels=[1000, 850],
         )
         result = generate.generate_era5_download_data(cfg)
@@ -984,7 +980,7 @@ class TestStaticSingleLevelVariables:
         return path
 
     def test_download_with_static_variable(self, static_zarr, era5_config):
-        cfg = dataclasses.replace(era5_config, era5_uri=str(static_zarr), single_level_variables=["land_sea_mask"])
+        cfg = dataclasses.replace(era5_config, era5_uri=str(static_zarr), variables=[*ERA5_VARS, "land_sea_mask"])
         result = generate.generate_era5_download_data(cfg)
         assert "land_sea_mask" in result.data_vars
         assert "time" not in result["land_sea_mask"].dims
@@ -993,8 +989,7 @@ class TestStaticSingleLevelVariables:
         cfg = dataclasses.replace(
             era5_config,
             era5_uri=str(static_zarr),
-            variables=[],
-            single_level_variables=["land_sea_mask"],
+            variables=["land_sea_mask"],
         )
         result = generate.generate_era5_download_data(cfg)
         assert set(result.data_vars) == {"land_sea_mask"}
@@ -1011,7 +1006,7 @@ class TestStaticSingleLevelVariables:
             era5_config,
             era5_uri=str(static_zarr),
             time_end=datetime(2019, 1, 1, 18),
-            single_level_variables=["land_sea_mask"],
+            variables=[*ERA5_VARS, "land_sea_mask"],
         )
         strategy = generate.determine_write_strategy(cfg, generate.inspect_store(sc))
         assert strategy.missing_variables == ["land_sea_mask"]

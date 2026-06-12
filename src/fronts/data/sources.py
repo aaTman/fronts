@@ -10,6 +10,8 @@ ARRAYLAKE_URI_PREFIX = "arraylake://"
 ARRAYLAKE_PRESSURE_GROUP = "pressure/spatial"
 ARRAYLAKE_SINGLE_GROUP = "single/spatial"
 
+# Note that these mappings are not fixed; we can expand them over time.
+# Prefer to use the long names instead of short names in the data
 GOOGLE_TO_ARRAYLAKE_PRESSURE = {
     "geopotential": "z",
     "temperature": "t",

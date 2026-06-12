@@ -12,9 +12,7 @@ era5_config:
     "virtual_temperature",
     "dewpoint_temperature",
     "relative_humidity",
-    "potential_temperature"
-    ]
-  single_level_variables: [
+    "potential_temperature",
     "mean_sea_level_pressure",
     "2m_temperature",
     "10m_u_component_of_wind",

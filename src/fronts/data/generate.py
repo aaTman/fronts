@@ -116,15 +116,11 @@ class WriteStrategy:
         if self.missing_variables and store_contents is not None:
             still_missing = [v for v in self.missing_variables if v not in store_contents.variables]
             if still_missing:
-                missing_pressure = [v for v in still_missing if v not in era5_config.single_level_variables]
-                missing_single = [v for v in still_missing if v in era5_config.single_level_variables]
-                direct_vars, derived_vars = _classify_missing(era5_config, missing_pressure)
+                direct_vars, derived_vars = _classify_missing(era5_config, still_missing)
 
-                if direct_vars or missing_single:
-                    logger.info(f"Downloading missing variables {direct_vars + missing_single}...")
-                    narrow_config = dataclasses.replace(
-                        era5_config, variables=direct_vars, single_level_variables=missing_single
-                    )
+                if direct_vars:
+                    logger.info(f"Downloading missing variables {direct_vars}...")
+                    narrow_config = dataclasses.replace(era5_config, variables=direct_vars)
                     ds_download = generate_era5_download_data(narrow_config)
                     if "time" in ds_download.dims:
                         ds_download = ds_download.sel(time=store_contents.times)
@@ -135,15 +131,15 @@ class WriteStrategy:
 
 
 def _classify_missing(
-    era5_config: config.ERA5DataLoaderConfig, missing_pressure: list[str]
+    era5_config: config.ERA5DataLoaderConfig, missing_variables: list[str]
 ) -> tuple[list[str], list[str]]:
-    """Split missing pressure-level variables into directly downloadable and derived."""
+    """Split missing variables into directly downloadable (any level type) and derived."""
     if era5_config.era5_uri.startswith(sources.ARRAYLAKE_URI_PREFIX):
-        available = set(sources.GOOGLE_TO_ARRAYLAKE_PRESSURE)
+        available = set(sources.GOOGLE_TO_ARRAYLAKE_PRESSURE) | set(sources.GOOGLE_TO_ARRAYLAKE_SINGLE)
     else:
         ds = _open_source_dataset(era5_config)
         available = {str(k) for k in ds.data_vars}
-    return derived.classify_variables(missing_pressure, available)
+    return derived.classify_variables(missing_variables, available)
 
 
 def _open_source_dataset(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
@@ -175,16 +171,18 @@ def generate_era5_download_data(era5_config: config.ERA5DataLoaderConfig) -> xr.
             no registered derivation function.
     """
     if era5_config.era5_uri.startswith(sources.ARRAYLAKE_URI_PREFIX):
+        single_vars = [v for v in era5_config.variables if v in sources.GOOGLE_TO_ARRAYLAKE_SINGLE]
+        pressure_requested = [v for v in era5_config.variables if v not in sources.GOOGLE_TO_ARRAYLAKE_SINGLE]
         available = set(sources.GOOGLE_TO_ARRAYLAKE_PRESSURE)
-        direct_vars, derived_vars = derived.classify_variables(era5_config.variables, available)
-        download_vars = derived.resolve_download_variables(era5_config.variables, direct_vars, derived_vars)
-        ds = sources.open_arraylake_era5(era5_config.era5_uri, download_vars, era5_config.single_level_variables)
+        direct_vars, derived_vars = derived.classify_variables(pressure_requested, available)
+        download_vars = derived.resolve_download_variables(pressure_requested, direct_vars, derived_vars)
+        ds = sources.open_arraylake_era5(era5_config.era5_uri, download_vars, single_vars)
     else:
         ds = _open_source_dataset(era5_config)
         available = {str(k) for k in ds.data_vars}
         direct_vars, derived_vars = derived.classify_variables(era5_config.variables, available)
         download_vars = derived.resolve_download_variables(era5_config.variables, direct_vars, derived_vars)
-        ds = ds[download_vars + era5_config.single_level_variables]
+        ds = ds[download_vars]
 
     date_range = pd.date_range(era5_config.time_start, era5_config.time_end, freq=era5_config.time_resolution)
 
@@ -246,7 +244,7 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
     ds_download = generate_era5_download_data(era5_config)
     ds_derived = generate_era5_derived_data(era5_config, ds_download)
     ds = ds_download.assign({str(name): ds_derived[name] for name in ds_derived.data_vars})
-    requested = set(era5_config.variables) | set(era5_config.single_level_variables)
+    requested = set(era5_config.variables)
     return ds.drop_vars([v for v in ds.data_vars if v not in requested])
 
 
@@ -341,7 +339,7 @@ def determine_write_strategy(
         WriteStrategy describing what action to take.
     """
     requested_times = pd.date_range(era5_config.time_start, era5_config.time_end, freq=era5_config.time_resolution)
-    requested_variables = list(era5_config.variables) + list(era5_config.single_level_variables)
+    requested_variables = list(era5_config.variables)
     missing_variables: list[str] = []
     missing_times: pd.DatetimeIndex = pd.DatetimeIndex([])
     skip_reason = ""
