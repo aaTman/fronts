@@ -938,3 +938,29 @@ class TestTwoPhaseExecute:
         result = xr.open_zarr(repo.readonly_session("main").store, group="era5", consolidated=False)
         expected = derived.DERIVED_VARIABLE_REGISTRY["potential_temperature"].compute(result["temperature"])
         np.testing.assert_allclose(result["potential_temperature"].values, expected.values, rtol=1e-5)
+
+
+class TestDerivationChunks:
+    def test_time_chunked_other_dims_whole(self, minimal_ds):
+        chunks = generate._derivation_chunks(minimal_ds)
+        assert chunks["time"] == generate._DERIVATION_TIME_CHUNK
+        assert chunks["level"] == -1
+        assert chunks["latitude"] == -1
+        assert chunks["longitude"] == -1
+
+    def test_two_phase_execute_with_no_configured_chunks(self, tmp_path, era5_config):
+        sc = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "no_chunks_store"),
+            branch_name="main",
+            group_name="era5",
+        )
+        cfg = dataclasses.replace(
+            era5_config,
+            variables=["temperature", "potential_temperature"],
+            chunks=None,
+        )
+        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(sc))
+        strategy.execute(cfg, sc)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert "potential_temperature" in result.variables

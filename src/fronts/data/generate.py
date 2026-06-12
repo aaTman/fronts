@@ -245,6 +245,19 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
     return ds.drop_vars([v for v in ds.data_vars if v not in requested])
 
 
+_DERIVATION_TIME_CHUNK = 24
+
+
+def _derivation_chunks(ds: xr.Dataset) -> dict[str, int]:
+    """Uniform chunking for derivation: small time chunks, whole arrays elsewhere.
+
+    Dask's ``"auto"`` chunking can merge the remainder into a final chunk larger
+    than the others, which zarr rejects when writing; uniform time chunks always
+    leave the final chunk the same size or smaller.
+    """
+    return {str(dim): _DERIVATION_TIME_CHUNK if dim == "time" else -1 for dim in ds.dims}
+
+
 def write_derived_variables(
     era5_config: config.ERA5DataLoaderConfig,
     icechunk_config: config.IcechunkStorageConfig,
@@ -266,7 +279,7 @@ def write_derived_variables(
         group=icechunk_config.group_name,
         zarr_format=icechunk_config.zarr_format,
     )[required_inputs]
-    local_ds = local_ds.chunk(era5_config.chunks or "auto")
+    local_ds = local_ds.chunk(era5_config.chunks or _derivation_chunks(local_ds))
     derived_config = dataclasses.replace(era5_config, variables=list(derived_vars))
     ds_derived = generate_era5_derived_data(derived_config, local_ds)
     write_new_variables_to_icechunk_store(icechunk_config, ds_derived)
