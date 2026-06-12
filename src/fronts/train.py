@@ -271,7 +271,7 @@ def load_training_data(
         virtual_chunk_local_path=data_config.fronts_icechunk_config.virtual_chunk_local_path,
     )["identifier"]
     logger.info(f"Fronts store: {fronts_da}")
-    fronts_da = fronts_da.isel(time=~fronts_da.indexes["time"].duplicated(keep="first"))
+    fronts_da = utils.drop_duplicate_times(fronts_da)
 
     common_times = fronts_da.time.values
     for ds in source_datasets:

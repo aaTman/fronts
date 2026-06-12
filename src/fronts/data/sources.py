@@ -2,6 +2,7 @@
 
 import logging
 
+import arraylake
 import xarray as xr
 
 logger = logging.getLogger(__name__)
@@ -61,26 +62,26 @@ def _rename_to_google(ds: xr.Dataset, variable_mapping: dict[str, str]) -> xr.Da
     return ds.rename({**short_to_google, **coord_renames})
 
 
-def open_arraylake_era5(
-    era5_uri: str,
-    pressure_variables: list[str],
-    single_level_variables: list[str],
-) -> xr.Dataset:
+def available_arraylake_variables() -> set[str]:
+    """Return all variable names (Google naming) available from the Arraylake ERA5 store."""
+    return set(GOOGLE_TO_ARRAYLAKE_PRESSURE) | set(GOOGLE_TO_ARRAYLAKE_SINGLE)
+
+
+def open_arraylake_era5(era5_uri: str, variables: list[str]) -> xr.Dataset:
     """Open the Arraylake ERA5 store and return requested variables with Google naming.
 
-    Pressure-level variables come from the ``pressure/spatial`` group and
-    single-level variables from the ``single/spatial`` group. Variables and
-    coordinates are renamed from Arraylake short names (e.g. ``t``,
-    ``valid_time``) to Google ARCO conventions (e.g. ``temperature``, ``time``)
-    before the groups are merged into a single dataset. Single-level variables
-    simply lack the ``level`` dimension in the merged dataset.
+    Variables are split internally by the mappings: pressure-level variables come
+    from the ``pressure/spatial`` group and single-level variables from the
+    ``single/spatial`` group. Variables and coordinates are renamed from
+    Arraylake short names (e.g. ``t``, ``valid_time``) to Google ARCO
+    conventions (e.g. ``temperature``, ``time``) before the groups are merged
+    into a single dataset. Single-level variables simply lack the ``level``
+    dimension in the merged dataset.
 
     Args:
         era5_uri: URI of the form ``arraylake://org/repo``.
-        pressure_variables: Pressure-level variable names (Google naming) to load.
-            Every name must be a key of ``GOOGLE_TO_ARRAYLAKE_PRESSURE``.
-        single_level_variables: Single-level variable names (Google naming) to load.
-            Every name must be a key of ``GOOGLE_TO_ARRAYLAKE_SINGLE``.
+        variables: Variable names (Google naming) to load. Every name must be a
+            key of ``GOOGLE_TO_ARRAYLAKE_PRESSURE`` or ``GOOGLE_TO_ARRAYLAKE_SINGLE``.
 
     Returns:
         A lazy (non-dask, ``chunks=None``) merged dataset with Google naming.
@@ -88,11 +89,9 @@ def open_arraylake_era5(
     Raises:
         ValueError: If a requested variable has no known Arraylake mapping.
     """
-    import arraylake
-
-    unknown = [v for v in pressure_variables if v not in GOOGLE_TO_ARRAYLAKE_PRESSURE] + [
-        v for v in single_level_variables if v not in GOOGLE_TO_ARRAYLAKE_SINGLE
-    ]
+    single_level_variables = [v for v in variables if v in GOOGLE_TO_ARRAYLAKE_SINGLE]
+    pressure_variables = [v for v in variables if v not in GOOGLE_TO_ARRAYLAKE_SINGLE]
+    unknown = [v for v in pressure_variables if v not in GOOGLE_TO_ARRAYLAKE_PRESSURE]
     if unknown:
         raise ValueError(f"Variables with no known Arraylake mapping: {unknown}")
 

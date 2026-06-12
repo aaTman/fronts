@@ -850,7 +850,7 @@ class TestGroupAndSingleLevel:
         generate.write_or_append_icechunk_store(sc, mixed)
         result = generate.inspect_store(sc)
         assert result is not None
-        assert result.levels == []
+        assert result.levels is None
 
     def test_group_append_increases_time_steps(self, tmp_path, time_range, write_ds):
         sc = self._grouped_storage(tmp_path)

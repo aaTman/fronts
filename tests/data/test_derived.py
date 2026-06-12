@@ -126,27 +126,27 @@ class TestClassifyVariables:
 class TestResolveDownloadVariables:
     def test_no_derived_unchanged(self):
         direct = ["temperature", "geopotential"]
-        result = derived.resolve_download_variables(direct, direct, [])
+        result = derived.resolve_download_variables(direct, [])
         assert result == direct
 
     def test_adds_required_inputs_not_in_direct(self):
         direct = ["geopotential"]
         derived_vars = ["wind_speed"]
-        result = derived.resolve_download_variables(direct + derived_vars, direct, derived_vars)
+        result = derived.resolve_download_variables(direct, derived_vars)
         assert "u_component_of_wind" in result
         assert "v_component_of_wind" in result
 
     def test_does_not_duplicate_if_already_in_direct(self):
         direct = ["u_component_of_wind", "v_component_of_wind"]
         derived_vars = ["wind_speed"]
-        result = derived.resolve_download_variables(direct + derived_vars, direct, derived_vars)
+        result = derived.resolve_download_variables(direct, derived_vars)
         assert result.count("u_component_of_wind") == 1
         assert result.count("v_component_of_wind") == 1
 
     def test_multiple_derived_share_input(self):
         direct = ["geopotential"]
         derived_vars = ["potential_temperature", "wind_speed"]
-        result = derived.resolve_download_variables(direct + derived_vars, direct, derived_vars)
+        result = derived.resolve_download_variables(direct, derived_vars)
         assert result.count("temperature") == 1
 
 
@@ -304,20 +304,8 @@ class TestGenerateEra5DownloadData:
 
 class TestGenerateEra5DerivedData:
     def test_returns_only_requested_derived_vars_lazily(self, physical_ds: xr.Dataset):
-        cfg = config.ERA5DataLoaderConfig(
-            era5_uri="unused",
-            variables=["wind_speed", "potential_temperature"],
-            pressure_levels=_LEVELS,
-            time_start=datetime(2019, 1, 1),
-            time_end=datetime(2019, 1, 1, 12),
-            time_resolution="6h",
-            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
-            storage_options=None,
-            zarr_async_concurrency=10,
-            chunks={"time": 1},
-        )
         source_ds = physical_ds.chunk({"time": 1})
-        result = generate.generate_era5_derived_data(cfg, source_ds)
+        result = generate.generate_era5_derived_data(["wind_speed", "potential_temperature"], source_ds)
 
         assert set(result.data_vars) == {"wind_speed", "potential_temperature"}
         assert isinstance(result["wind_speed"].data, dsa.Array)
@@ -328,19 +316,7 @@ class TestGenerateEra5DerivedData:
         np.testing.assert_allclose(result["wind_speed"].compute().values, expected_wind_speed.values, rtol=1e-5)
 
     def test_returns_empty_dataset_when_no_derived_vars_requested(self, physical_ds: xr.Dataset):
-        cfg = config.ERA5DataLoaderConfig(
-            era5_uri="unused",
-            variables=["temperature"],
-            pressure_levels=_LEVELS,
-            time_start=datetime(2019, 1, 1),
-            time_end=datetime(2019, 1, 1, 12),
-            time_resolution="6h",
-            coordinates=BoundingBox(lat_min=25.0, lat_max=45.0, lon_min=-110.0, lon_max=-70.0),
-            storage_options=None,
-            zarr_async_concurrency=10,
-            chunks={"time": 1},
-        )
-        result = generate.generate_era5_derived_data(cfg, physical_ds.chunk({"time": 1}))
+        result = generate.generate_era5_derived_data([], physical_ds.chunk({"time": 1}))
         assert len(result.data_vars) == 0
 
 
@@ -428,7 +404,7 @@ class TestGenerateEra5DataWithDerived:
             chunks={"time": 1},
         )
         ds_download = generate.generate_era5_download_data(cfg)
-        ds_derived = generate.generate_era5_derived_data(cfg, ds_download)
+        ds_derived = generate.generate_era5_derived_data(["wind_speed"], ds_download)
         expected = ds_download.assign({str(name): ds_derived[name] for name in ds_derived.data_vars})
         expected = expected.drop_vars([v for v in expected.data_vars if v not in cfg.variables])
 

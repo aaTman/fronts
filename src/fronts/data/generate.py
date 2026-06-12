@@ -3,12 +3,14 @@ import dataclasses
 import logging
 import sys
 
+import dask_jobqueue  # type: ignore
 import icechunk as ic
 import icechunk.xarray
 import pandas as pd
 import xarray as xr
 import zarr
 import zarr.errors
+from dask.distributed import Client
 
 from fronts import utils
 from fronts.data import config, derived, sources
@@ -30,14 +32,14 @@ class StoreContents:
     Attributes:
         variables: Data variable names found in the store.
         times: DatetimeIndex of time steps present.
-        levels: Pressure levels stored. Empty when the store holds only
-            single-level variables.
+        levels: Pressure levels stored. None when the store has no level
+            dimension (only single-level variables).
         coordinates: Spatial bounding box of stored data.
     """
 
     variables: list[str]
     times: pd.DatetimeIndex
-    levels: list[int]
+    levels: list[int] | None
     coordinates: utils.BoundingBox
 
 
@@ -55,6 +57,8 @@ class WriteStrategy:
         missing_times: Time steps present in the request but absent from the store.
         skip_reason: Non-empty when no write is needed; human-readable explanation.
         error_reason: Non-empty when write is impossible; raised as ValueError.
+        store_contents: Store snapshot the strategy was computed from; None when
+            the store does not exist yet.
     """
 
     missing_variables: list[str]
@@ -62,6 +66,7 @@ class WriteStrategy:
     skip_reason: str
     error_reason: str
     merge_required: bool
+    store_contents: "StoreContents | None"
 
     def execute(
         self,
@@ -82,7 +87,7 @@ class WriteStrategy:
                 narrowed to only what is missing before generating data.
             icechunk_config: Configuration for the target icechunk store.
         """
-        store_contents = inspect_store(icechunk_config)
+        store_contents = self.store_contents
 
         if self.missing_times.size:
             if self.merge_required:
@@ -102,8 +107,8 @@ class WriteStrategy:
 
             if stored_derived:
                 logger.info("Appending raw and derived variables together to keep time axis aligned...")
-                derived_config = dataclasses.replace(era5_config, variables=derived_vars)
-                ds_derived = generate_era5_derived_data(derived_config, ds_download)
+                source = ds_download.chunk(era5_config.chunks or _derivation_chunks(ds_download))
+                ds_derived = generate_era5_derived_data(derived_vars, source)
                 write_or_append_icechunk_store(icechunk_config, xr.merge([ds_download, ds_derived]))
             else:
                 logger.info("Phase 1: writing raw ERA5 variables to icechunk store...")
@@ -130,16 +135,26 @@ class WriteStrategy:
                     write_derived_variables(era5_config, icechunk_config, derived_vars)
 
 
+def _available_variables(era5_config: config.ERA5DataLoaderConfig, ds: xr.Dataset | None = None) -> set[str]:
+    """Return the variable names the configured source can provide directly.
+
+    Args:
+        era5_config: Configuration identifying the source.
+        ds: Already-opened source dataset to read variable names from, avoiding
+            a second open for non-arraylake sources. Ignored for arraylake URIs.
+    """
+    if era5_config.era5_uri.startswith(sources.ARRAYLAKE_URI_PREFIX):
+        return sources.available_arraylake_variables()
+    if ds is None:
+        ds = _open_source_dataset(era5_config)
+    return {str(k) for k in ds.data_vars}
+
+
 def _classify_missing(
     era5_config: config.ERA5DataLoaderConfig, missing_variables: list[str]
 ) -> tuple[list[str], list[str]]:
     """Split missing variables into directly downloadable (any level type) and derived."""
-    if era5_config.era5_uri.startswith(sources.ARRAYLAKE_URI_PREFIX):
-        available = set(sources.GOOGLE_TO_ARRAYLAKE_PRESSURE) | set(sources.GOOGLE_TO_ARRAYLAKE_SINGLE)
-    else:
-        ds = _open_source_dataset(era5_config)
-        available = {str(k) for k in ds.data_vars}
-    return derived.classify_variables(missing_variables, available)
+    return derived.classify_variables(missing_variables, _available_variables(era5_config))
 
 
 def _open_source_dataset(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
@@ -171,29 +186,23 @@ def generate_era5_download_data(era5_config: config.ERA5DataLoaderConfig) -> xr.
             no registered derivation function.
     """
     if era5_config.era5_uri.startswith(sources.ARRAYLAKE_URI_PREFIX):
-        single_vars = [v for v in era5_config.variables if v in sources.GOOGLE_TO_ARRAYLAKE_SINGLE]
-        pressure_requested = [v for v in era5_config.variables if v not in sources.GOOGLE_TO_ARRAYLAKE_SINGLE]
-        available = set(sources.GOOGLE_TO_ARRAYLAKE_PRESSURE)
-        direct_vars, derived_vars = derived.classify_variables(pressure_requested, available)
-        download_vars = derived.resolve_download_variables(pressure_requested, direct_vars, derived_vars)
-        ds = sources.open_arraylake_era5(era5_config.era5_uri, download_vars, single_vars)
+        direct_vars, derived_vars = derived.classify_variables(era5_config.variables, _available_variables(era5_config))
+        download_vars = derived.resolve_download_variables(direct_vars, derived_vars)
+        ds = sources.open_arraylake_era5(era5_config.era5_uri, download_vars)
     else:
         ds = _open_source_dataset(era5_config)
-        available = {str(k) for k in ds.data_vars}
-        direct_vars, derived_vars = derived.classify_variables(era5_config.variables, available)
-        download_vars = derived.resolve_download_variables(era5_config.variables, direct_vars, derived_vars)
+        direct_vars, derived_vars = derived.classify_variables(
+            era5_config.variables, _available_variables(era5_config, ds)
+        )
+        download_vars = derived.resolve_download_variables(direct_vars, derived_vars)
         ds = ds[download_vars]
 
-    date_range = pd.date_range(era5_config.time_start, era5_config.time_end, freq=era5_config.time_resolution)
-
-    # Attach periodic index to longitude for > 360 to avoid wrap-crossing slice issues
-    ds = utils.attach_periodic_lon_index(ds)
-    selection: dict = {
-        "latitude": slice(era5_config.coordinates.lat_max, era5_config.coordinates.lat_min),
-        "longitude": slice(era5_config.coordinates.lon_min, era5_config.coordinates.lon_max),
-    }
+    ds = utils.select_spatial_domain(ds, era5_config.coordinates)
+    selection: dict = {}
     if "time" in ds.dims:
-        selection["time"] = date_range
+        selection["time"] = pd.date_range(
+            era5_config.time_start, era5_config.time_end, freq=era5_config.time_resolution
+        )
     if "level" in ds.dims:
         selection["level"] = era5_config.pressure_levels
     ds_subset = ds.sel(**selection)
@@ -205,23 +214,19 @@ def generate_era5_download_data(era5_config: config.ERA5DataLoaderConfig) -> xr.
     return ds_subset
 
 
-def generate_era5_derived_data(era5_config: config.ERA5DataLoaderConfig, source_ds: xr.Dataset) -> xr.Dataset:
-    """Compute requested derived variables from their required inputs.
+def generate_era5_derived_data(derived_vars: list[str], source_ds: xr.Dataset) -> xr.Dataset:
+    """Compute the given derived variables from their required inputs.
 
     Args:
-        era5_config: Configuration whose ``variables`` determine which derived
-            variables to compute.
+        derived_vars: Names of registered derived variables to compute.
         source_ds: Dataset containing at least the inputs required by each
             derived variable, e.g. the output of ``generate_era5_download_data``
             or a dataset read back from a local icechunk store.
 
     Returns:
-        Dataset containing only the derived variables requested in
-        ``era5_config.variables``, with the same dask-or-eager backing as
-        ``source_ds``.
+        Dataset containing only the requested derived variables, with the same
+        dask-or-eager backing as ``source_ds``.
     """
-    _, derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in source_ds.data_vars})
-
     ds_derived = xr.Dataset()
     for var_name in derived_vars:
         spec = derived.DERIVED_VARIABLE_REGISTRY[var_name]
@@ -242,7 +247,8 @@ def generate_era5_data(era5_config: config.ERA5DataLoaderConfig) -> xr.Dataset:
         single-level variables.
     """
     ds_download = generate_era5_download_data(era5_config)
-    ds_derived = generate_era5_derived_data(era5_config, ds_download)
+    _, derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in ds_download.data_vars})
+    ds_derived = generate_era5_derived_data(derived_vars, ds_download)
     ds = ds_download.assign({str(name): ds_derived[name] for name in ds_derived.data_vars})
     requested = set(era5_config.variables)
     return ds.drop_vars([v for v in ds.data_vars if v not in requested])
@@ -283,8 +289,7 @@ def write_derived_variables(
         zarr_format=icechunk_config.zarr_format,
     )[required_inputs]
     local_ds = local_ds.chunk(era5_config.chunks or _derivation_chunks(local_ds))
-    derived_config = dataclasses.replace(era5_config, variables=list(derived_vars))
-    ds_derived = generate_era5_derived_data(derived_config, local_ds)
+    ds_derived = generate_era5_derived_data(derived_vars, local_ds)
     write_new_variables_to_icechunk_store(icechunk_config, ds_derived)
 
 
@@ -315,7 +320,7 @@ def inspect_store(storage_config: config.IcechunkStorageConfig) -> StoreContents
     return StoreContents(
         variables=[str(k) for k in ds.data_vars],
         times=pd.DatetimeIndex(ds.time.values),
-        levels=list(map(int, ds.level.values)) if "level" in ds.coords else [],
+        levels=list(map(int, ds.level.values)) if "level" in ds.coords else None,
         coordinates=utils.BoundingBox(
             lat_min=float(ds.latitude.min()),
             lat_max=float(ds.latitude.max()),
@@ -339,7 +344,6 @@ def determine_write_strategy(
         WriteStrategy describing what action to take.
     """
     requested_times = pd.date_range(era5_config.time_start, era5_config.time_end, freq=era5_config.time_resolution)
-    requested_variables = list(era5_config.variables)
     missing_variables: list[str] = []
     missing_times: pd.DatetimeIndex = pd.DatetimeIndex([])
     skip_reason = ""
@@ -347,9 +351,9 @@ def determine_write_strategy(
     merge_required = False
 
     if store_contents is None:
-        missing_variables = requested_variables
+        missing_variables = list(era5_config.variables)
         missing_times = requested_times
-    elif (store_contents.levels and list(era5_config.pressure_levels) != store_contents.levels) or (
+    elif (store_contents.levels is not None and list(era5_config.pressure_levels) != store_contents.levels) or (
         era5_config.coordinates != store_contents.coordinates
     ):
         error_reason = (
@@ -357,7 +361,7 @@ def determine_write_strategy(
             "Delete the store and rerun to regenerate with the new configuration."
         )
     else:
-        missing_variables = [v for v in requested_variables if v not in store_contents.variables]
+        missing_variables = [v for v in era5_config.variables if v not in store_contents.variables]
         missing_times = requested_times[~requested_times.isin(store_contents.times)]
 
         if len(missing_variables) > 0 and len(missing_times) > 0:
@@ -379,6 +383,7 @@ def determine_write_strategy(
         skip_reason=skip_reason,
         error_reason=error_reason,
         merge_required=merge_required,
+        store_contents=store_contents,
     )
 
 
@@ -460,33 +465,39 @@ def write_or_append_icechunk_store(
     storage = ic.local_filesystem_storage(storage_config.store_path)
     repo = ic.Repository.open_or_create(storage)
 
-    n_times = ds.sizes.get("time", 0)
-    batch_size = storage_config.write_batch_size or n_times or 1
-
     logger.info(
         f"{'Appending to' if append else 'Writing new'} icechunk store at "
         f"{storage_config.store_path} (group={storage_config.group_name}) "
-        f"with variables {list(ds.data_vars)}, shape {ds.sizes}, "
-        f"in batches of {batch_size} time steps"
+        f"with variables {list(ds.data_vars)} and shape {ds.sizes}"
     )
 
-    for start in range(0, max(n_times, 1), batch_size):
-        ds_batch = ds.isel(time=slice(start, start + batch_size)) if n_times else ds
-        if append == "time":
-            static_vars = [str(v) for v in ds_batch.data_vars if "time" not in ds_batch[v].dims]
-            if static_vars:
-                logger.info(f"Skipping time-invariant variables when appending along time: {static_vars}")
-                ds_batch = ds_batch.drop_vars(static_vars)
+    if "time" not in ds.dims:
+        session = repo.writable_session(storage_config.branch_name)
+        icechunk.xarray.to_icechunk(ds.compute(), session, group=storage_config.group_name, safe_chunks=False)
+        if dry_run:
+            logger.info("Dry run: would commit time-invariant dataset")
+            return
+        session.commit(storage_config.commit_message)
+        return
+
+    static_vars = [str(v) for v in ds.data_vars if "time" not in ds[v].dims]
+    n_times = ds.sizes["time"]
+    batch_size = storage_config.write_batch_size or n_times
+
+    for start in range(0, n_times, batch_size):
+        ds_batch = ds.isel(time=slice(start, start + batch_size))
+        if append == "time" and static_vars:
+            logger.info(f"Skipping time-invariant variables when appending along time: {static_vars}")
+            ds_batch = ds_batch.drop_vars(static_vars)
         ds_batch = ds_batch.compute()
         session = repo.writable_session(storage_config.branch_name)
         icechunk.xarray.to_icechunk(
             ds_batch, session, group=storage_config.group_name, append_dim=append, safe_chunks=False
         )
         if dry_run:
-            logger.info(f"Dry run: would commit {ds_batch.sizes.get('time', 0)} time steps")
+            logger.info(f"Dry run: would commit {ds_batch.sizes['time']} time steps")
             return
-        batch_times = ds_batch.sizes.get("time", 0)
-        log = f"{storage_config.commit_message}, time steps {start}-{start + batch_times} of {n_times}"
+        log = f"{storage_config.commit_message}, time steps {start}-{start + ds_batch.sizes['time']} of {n_times}"
         session.commit(log)
         logger.info(log)
         append = "time"
@@ -504,9 +515,6 @@ def create_dask_client(slurm_config: config.SlurmConfig, scheduler_options: dict
     Returns:
         A Dask Client object connected to the created cluster.
     """
-    import dask_jobqueue  # type: ignore
-    from dask.distributed import Client
-
     if scheduler_options is None:
         scheduler_options = {"dashboard_address": ":13921", "interface": "ib0"}
 

@@ -114,10 +114,6 @@ class TestMergedGroups:
 
 
 class TestOpenArraylakeEra5Validation:
-    def test_unknown_pressure_variable_raises(self):
+    def test_unknown_variable_raises(self):
         with pytest.raises(ValueError, match="no known Arraylake mapping"):
-            sources.open_arraylake_era5("arraylake://earthmover-public/era5", ["not_a_variable"], [])
-
-    def test_unknown_single_variable_raises(self):
-        with pytest.raises(ValueError, match="no known Arraylake mapping"):
-            sources.open_arraylake_era5("arraylake://earthmover-public/era5", [], ["not_a_variable"])
+            sources.open_arraylake_era5("arraylake://earthmover-public/era5", ["not_a_variable"])

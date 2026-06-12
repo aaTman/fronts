@@ -171,33 +171,29 @@ def classify_variables(
 
 
 def resolve_download_variables(
-    requested: list[str],
     direct_vars: list[str],
     derived_vars: list[str],
 ) -> list[str]:
-    """Return the full list of variables to download from ARCO.
+    """Return the full list of variables to download from the source.
 
     Includes all direct variables plus any required inputs for derived variables
     that are not already in the direct list.
 
     Args:
-        requested: The original variable list from config (preserves order for directs).
-        direct_vars: Variables available directly in ARCO.
+        direct_vars: Variables available directly in the source.
         derived_vars: Variables that require derivation.
 
     Returns:
-        Deduplicated list of variable names to fetch from ARCO.
+        Deduplicated list of variable names to fetch from the source.
     """
     to_download: list[str] = list(direct_vars)
-    requested_set = set(requested)
     seen = set(direct_vars)
 
     for var in derived_vars:
         spec = DERIVED_VARIABLE_REGISTRY[var]
         for inp in spec.required_inputs:
             if inp not in seen:
-                if inp not in requested_set:
-                    to_download.append(inp)
+                to_download.append(inp)
                 seen.add(inp)
 
     return to_download
