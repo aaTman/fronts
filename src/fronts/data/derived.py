@@ -8,6 +8,7 @@ _R_D = 287.05  # dry air gas constant, J kg-1 K-1
 _C_PD = 1004.0  # specific heat of dry air at constant pressure, J kg-1 K-1
 _L_V = 2.501e6  # latent heat of vaporization at 0 °C, J kg-1
 _EPSILON = 0.622  # ratio of molar masses of water vapour to dry air
+_MIN_SPECIFIC_HUMIDITY = 1e-9  # kg kg-1; ERA5 spectral artifacts yield q <= 0, which makes log(e) NaN
 
 
 @dataclasses.dataclass
@@ -35,9 +36,21 @@ def _saturation_vapour_pressure(temperature: xr.DataArray) -> xr.DataArray:
     return 6.112 * xu.exp(17.67 * (temperature - 273.15) / (temperature - 29.65))
 
 
+def _clamped_specific_humidity(specific_humidity: xr.DataArray) -> xr.DataArray:
+    """Clamp specific humidity to a tiny positive floor.
+
+    ERA5 specific humidity contains zero and slightly negative values in cold,
+    dry upper-level air (spectral truncation artifacts); without a floor the
+    vapour pressure is non-positive and log-based formulas (dewpoint,
+    equivalent potential temperature) produce NaN.
+    """
+    return specific_humidity.clip(min=_MIN_SPECIFIC_HUMIDITY)
+
+
 def _vapour_pressure(specific_humidity: xr.DataArray, pressure_hpa: xr.DataArray) -> xr.DataArray:
     """Actual vapour pressure in hPa from specific humidity and pressure (hPa)."""
-    r = specific_humidity / (1.0 - specific_humidity)
+    q = _clamped_specific_humidity(specific_humidity)
+    r = q / (1.0 - q)
     return r / (_EPSILON + r) * pressure_hpa
 
 
@@ -64,8 +77,9 @@ def _compute_equivalent_potential_temperature(
     """
     p = _pressure_pa(temperature)
     p_hpa = p / 100.0
-    e = _vapour_pressure(specific_humidity, p_hpa)
-    r = specific_humidity / (1.0 - specific_humidity)
+    q = _clamped_specific_humidity(specific_humidity)
+    e = _vapour_pressure(q, p_hpa)
+    r = q / (1.0 - q)
     log_e = xu.log(e / 6.112)
     t_d = 243.5 * log_e / (17.67 - log_e) + 273.15
     t_l = 1.0 / (1.0 / (t_d - 56.0) + xu.log(temperature / t_d) / 800.0) + 56.0
