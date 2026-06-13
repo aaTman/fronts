@@ -92,7 +92,8 @@ def _compute_virtual_temperature(
     specific_humidity: xr.DataArray,
 ) -> xr.DataArray:
     """Virtual temperature: T_v = T (1 + q/ε) / (1 + q)."""
-    return temperature * (1.0 + specific_humidity / _EPSILON) / (1.0 + specific_humidity)
+    q = _clamped_specific_humidity(specific_humidity)
+    return temperature * (1.0 + q / _EPSILON) / (1.0 + q)
 
 
 def _compute_dewpoint_temperature(
@@ -101,7 +102,7 @@ def _compute_dewpoint_temperature(
 ) -> xr.DataArray:
     """Dewpoint temperature via Bolton (1980) eq. 11."""
     p_hpa = _pressure_pa(temperature) / 100.0
-    e = _vapour_pressure(specific_humidity, p_hpa)
+    e = _vapour_pressure(_clamped_specific_humidity(specific_humidity), p_hpa)
     log_e = xu.log(e / 6.112)
     return 243.5 * log_e / (17.67 - log_e) + 273.15
 
@@ -112,7 +113,7 @@ def _compute_relative_humidity(
 ) -> xr.DataArray:
     """Relative humidity as a fraction (0-1) from specific humidity and pressure."""
     p_hpa = _pressure_pa(temperature) / 100.0
-    e = _vapour_pressure(specific_humidity, p_hpa)
+    e = _vapour_pressure(_clamped_specific_humidity(specific_humidity), p_hpa)
     e_s = _saturation_vapour_pressure(temperature)
     return e / e_s
 
