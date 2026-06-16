@@ -18,6 +18,7 @@ import xarray as xr
 
 from fronts import utils
 from fronts.data import inputs
+from fronts.data.batching import make_batch_dataset
 from fronts.model import UNet3Plus
 from fronts.train import (
     TrainConfig,
@@ -27,7 +28,6 @@ from fronts.train import (
     _set_seed,
     _show_input_sample,
     load_training_data,
-    make_batch_dataset,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,9 @@ def main():
     model_config = cfg.model_config
     callbacks_config = cfg.callbacks_config
 
-    era5_da, front_da, _input_sources, _target_source = load_training_data(data_config)
+    training_data = load_training_data(data_config)
+    era5_da = training_data.input_aligned
+    front_da = training_data.target_aligned
 
     train_era5 = era5_da.isel(time=slice(None, data_config.train_split))
     val_era5 = era5_da.isel(time=slice(data_config.train_split, None))

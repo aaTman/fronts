@@ -6,7 +6,7 @@ from fronts.data.batching import ChunkPrefetcher, make_batch_dataset
 from fronts.data.inputs import LazyTimeSource
 
 try:
-    import tensorflow as tf  # noqa: F401
+    import tensorflow as tf
 
     _TF_AVAILABLE = True
 except ImportError:

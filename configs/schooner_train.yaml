@@ -73,7 +73,9 @@ callbacks_config:
   monitor: "val_loss"
   patience: 16
   model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/derived_2007_2024/"
-  
+  gc_collect_every: 5 # full gc.collect() every N epochs; raise to shrink the per-epoch pause, lower if RAM climbs
+
+
 wandb_config:
   project_name: "fronts"
   run_name: "derived_2007_2024"

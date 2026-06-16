@@ -44,7 +44,7 @@ class LazyTimeSource:
         """
         return cls(array=array, positions=native_positions(native_times, wanted_times))
 
-    def select(self, idxs: np.ndarray) -> "LazyTimeSource":
+    def select(self, idxs: "np.ndarray | list[int]") -> "LazyTimeSource":
         """Return a new source restricted to the given logical sample indices.
 
         The underlying ``array`` is shared; only the ``positions`` map is re-indexed,
@@ -58,13 +58,16 @@ class LazyTimeSource:
         """
         return LazyTimeSource(array=self.array, positions=self.positions[np.asarray(idxs)])
 
-    def gather(self, local_idxs: np.ndarray, subblock: int) -> xr.DataArray:
-        """Materialize the given logical samples with a single positional take per sub-block.
+    def gather(self, local_idxs: "np.ndarray | list[int]", subblock: int) -> xr.DataArray:
+        """Materialize the given logical samples, reading native timesteps in sorted order.
 
-        A single fancy ``isel`` over a whole chunk makes dask's shuffle-based vindex
-        collapse the gathered time axis into one output block and copy it whole, which
-        for a large chunk is many GiB. Gathering in sub-blocks of at most ``subblock``
-        timesteps caps each materialized block.
+        The requested samples are read in ascending native-time order (sub-blocked at most
+        ``subblock`` timesteps per dask ``compute``) and then reordered back to the requested
+        order in memory. Reading in sorted order means each touched store chunk is visited at
+        most once and monotonically, avoiding the chunk re-reads and backtracking that a
+        scattered fancy ``isel`` incurs on a chunked or remote store. Sub-blocking caps each
+        materialized block, since a single fancy ``isel`` over a whole chunk makes dask's
+        shuffle-based vindex copy the gathered block whole (many GiB for a large chunk).
 
         Args:
             local_idxs: Logical sample indices into ``positions``, in output order.
@@ -74,13 +77,21 @@ class LazyTimeSource:
             An eager (numpy-backed) DataArray of the selected timesteps in ``local_idxs`` order.
         """
         native = self.positions[np.asarray(local_idxs)]
-        if len(native) <= subblock:
-            return self.array.isel(time=native).compute()
-        parts = [
-            self.array.isel(time=native[start : start + subblock]).compute()
-            for start in range(0, len(native), subblock)
-        ]
-        return xr.concat(parts, dim="time")
+        sort_order = np.argsort(native, kind="stable")
+        sorted_native = native[sort_order]
+        if len(sorted_native) <= subblock:
+            block = self.array.isel(time=sorted_native).compute()
+        else:
+            block = xr.concat(
+                [
+                    self.array.isel(time=sorted_native[start : start + subblock]).compute()
+                    for start in range(0, len(sorted_native), subblock)
+                ],
+                dim="time",
+            )
+        inverse = np.empty(len(sort_order), dtype=np.intp)
+        inverse[sort_order] = np.arange(len(sort_order))
+        return block.isel(time=inverse)
 
 
 def native_positions(native_times: np.ndarray, wanted_times: np.ndarray) -> np.ndarray:

@@ -51,9 +51,7 @@ def _preload(
     with dask.config.set(scheduler="threads", num_workers=16), ProgressBar():
         inputs_full = _gather_inputs(input_sources, full, load_subblock)
         targets_full = target_source.gather(full, load_subblock)
-    logger.info(
-        "Pre-load complete (inputs %.1f GB, process RSS %.1f GB).", inputs_full.nbytes / 1e9, process_rss_gb()
-    )
+    logger.info("Pre-load complete (inputs %.1f GB, process RSS %.1f GB).", inputs_full.nbytes / 1e9, process_rss_gb())
     return [LazyTimeSource(inputs_full, full)], LazyTimeSource(targets_full, full)
 
 

@@ -293,3 +293,14 @@ class TestLazyTimeSourceGather:
             source.gather(local, subblock=2).values,
             source.gather(local, subblock=64).values,
         )
+
+    def test_sorted_read_matches_naive_scattered(self):
+        # Scattered, unsorted native positions: sorted-read-then-reorder must equal the
+        # naive fancy isel in the requested order, regardless of sub-block size.
+        da = _make_time_source(n_time=10, chunk=3)
+        positions = np.array([9, 1, 7, 0, 4, 8, 2])
+        source = LazyTimeSource(da, positions)
+        local = np.arange(len(positions))
+        expected = da.isel(time=positions).compute()
+        for subblock in (1, 2, 3, 64):
+            np.testing.assert_array_equal(source.gather(local, subblock=subblock).values, expected.values)
