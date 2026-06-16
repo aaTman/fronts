@@ -30,6 +30,58 @@ class LazyTimeSource:
     array: xr.DataArray
     positions: np.ndarray
 
+    @classmethod
+    def aligned(cls, array: xr.DataArray, native_times: np.ndarray, wanted_times: np.ndarray) -> "LazyTimeSource":
+        """Build a source whose positions map ``wanted_times`` onto ``array``'s native time axis.
+
+        Args:
+            array: DataArray on its raw store time axis (no prior positional take).
+            native_times: Datetime64 values of ``array``'s native time axis; may contain duplicates.
+            wanted_times: Datetime64 values to align to, in the desired sample order.
+
+        Returns:
+            A ``LazyTimeSource`` with one position per entry in ``wanted_times``.
+        """
+        return cls(array=array, positions=native_positions(native_times, wanted_times))
+
+    def select(self, idxs: np.ndarray) -> "LazyTimeSource":
+        """Return a new source restricted to the given logical sample indices.
+
+        The underlying ``array`` is shared; only the ``positions`` map is re-indexed,
+        so no data is copied or materialized.
+
+        Args:
+            idxs: Logical sample indices into ``positions``.
+
+        Returns:
+            A ``LazyTimeSource`` whose positions are ``positions[idxs]``.
+        """
+        return LazyTimeSource(array=self.array, positions=self.positions[np.asarray(idxs)])
+
+    def gather(self, local_idxs: np.ndarray, subblock: int) -> xr.DataArray:
+        """Materialize the given logical samples with a single positional take per sub-block.
+
+        A single fancy ``isel`` over a whole chunk makes dask's shuffle-based vindex
+        collapse the gathered time axis into one output block and copy it whole, which
+        for a large chunk is many GiB. Gathering in sub-blocks of at most ``subblock``
+        timesteps caps each materialized block.
+
+        Args:
+            local_idxs: Logical sample indices into ``positions``, in output order.
+            subblock: Maximum number of timesteps materialized per dask ``compute``.
+
+        Returns:
+            An eager (numpy-backed) DataArray of the selected timesteps in ``local_idxs`` order.
+        """
+        native = self.positions[np.asarray(local_idxs)]
+        if len(native) <= subblock:
+            return self.array.isel(time=native).compute()
+        parts = [
+            self.array.isel(time=native[start : start + subblock]).compute()
+            for start in range(0, len(native), subblock)
+        ]
+        return xr.concat(parts, dim="time")
+
 
 def native_positions(native_times: np.ndarray, wanted_times: np.ndarray) -> np.ndarray:
     """Map each timestamp in ``wanted_times`` to its first index in ``native_times``.

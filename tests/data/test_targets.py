@@ -2,7 +2,14 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.data.targets import dilate_fronts, one_hot_encode_to_dataarray, seasonal_test_split
+from fronts.data.targets import (
+    FRONT_CLASS_MAP,
+    dilate_fronts,
+    encode_targets,
+    one_hot_encode_to_dataarray,
+    remap_fronts,
+    seasonal_test_split,
+)
 
 N_TIME = 5
 N_LAT = 80
@@ -157,3 +164,45 @@ class TestSeasonalTestSplit:
         mask = seasonal_test_split(times, 0.1, rng)
         assert mask.shape == (92,)
         assert mask.any()
+
+
+def _make_raw_fronts(seed: int = 0, n_time: int = N_TIME, lat: int = 8, lon: int = 8) -> xr.DataArray:
+    """Build a raw (time, lat, lon) fronts DataArray of original front codes (incl. background and noise)."""
+    rng = np.random.default_rng(seed)
+    codes = np.array([*FRONT_CLASS_MAP.keys(), 0, 99], dtype=np.int32)  # include background and an out-of-map code
+    data = rng.choice(codes, size=(n_time, lat, lon)).astype(np.int32)
+    return xr.DataArray(data, dims=["time", "latitude", "longitude"], coords={"time": np.arange(n_time)})
+
+
+class TestEncodeTargets:
+    def test_matches_inline_composition_no_dilation(self):
+        raw = _make_raw_fronts()
+        expected = one_hot_encode_to_dataarray(remap_fronts(raw)).values
+        np.testing.assert_array_equal(encode_targets(raw, 0).values, expected)
+
+    def test_matches_inline_composition_with_dilation(self):
+        raw = _make_raw_fronts()
+        expected = dilate_fronts(one_hot_encode_to_dataarray(remap_fronts(raw)), 1).values
+        np.testing.assert_array_equal(encode_targets(raw, 1).values, expected)
+
+    def test_shape_dims_and_dtype(self):
+        raw = _make_raw_fronts()
+        result = encode_targets(raw, 1)
+        assert list(result.dims) == ["time", "latitude", "longitude", "class"]
+        assert result.shape == (N_TIME, 8, 8, N_CLASSES)
+        assert result.dtype == np.float32
+
+    def test_one_hot_when_no_dilation(self):
+        raw = _make_raw_fronts()
+        result = encode_targets(raw, 0).values
+        np.testing.assert_array_almost_equal(result.sum(axis=-1), np.ones(result.shape[:-1]))
+
+    def test_out_of_map_codes_become_background(self):
+        raw = xr.DataArray(
+            np.full((1, 4, 4), 99, dtype=np.int32),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": np.arange(1)},
+        )
+        result = encode_targets(raw, 0).values
+        assert (result[..., 0] == 1.0).all()
+        assert (result[..., 1:] == 0.0).all()

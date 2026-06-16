@@ -8,6 +8,7 @@ import dacite
 import icechunk as ic
 import numpy as np
 import pandas as pd
+import psutil
 import xarray as xr
 import yaml
 from xarray.core.indexes import IndexSelResult, PandasIndex, _query_slice
@@ -16,6 +17,15 @@ from xarray.core.indexing import _expand_slice
 T = TypeVar("T")
 _XArray = TypeVar("_XArray", xr.Dataset, xr.DataArray)
 BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
+
+
+def process_rss_gb() -> float:
+    """Return the current process resident set size in gigabytes.
+
+    Returns:
+        Resident set size of the calling process in gigabytes (base-10).
+    """
+    return psutil.Process().memory_info().rss / 1e9
 
 
 class PeriodicBoundaryIndex(PandasIndex):

@@ -2,7 +2,13 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.data.inputs import compute_norm_stats, era5_to_dataarray, load_or_compute_norm_stats
+from fronts.data.inputs import (
+    LazyTimeSource,
+    compute_norm_stats,
+    era5_to_dataarray,
+    load_or_compute_norm_stats,
+    native_positions,
+)
 
 N_TIME = 5
 N_LAT = 32
@@ -210,3 +216,80 @@ class TestLoadOrComputeNormStats:
         assert cache_dir.exists()
         assert mean.shape == (4,)
         assert variance.shape == (4,)
+
+
+def _make_time_source(n_time: int = 8, n_channels: int = 3, chunk: int = 2, seed: int = 5) -> xr.DataArray:
+    rng = np.random.default_rng(seed)
+    data = rng.standard_normal((n_time, N_LAT, N_LON, n_channels)).astype(np.float32)
+    da = xr.DataArray(
+        data,
+        dims=["time", "latitude", "longitude", "channel"],
+        coords={"time": np.arange(n_time)},
+    )
+    return da.chunk({"time": chunk})
+
+
+class TestLazyTimeSourceAligned:
+    def test_positions_match_native_positions(self):
+        da = _make_time_source()
+        native = np.arange("2020-01-01", "2020-01-09", dtype="datetime64[D]")
+        wanted = native[[5, 2, 7]]
+        source = LazyTimeSource.aligned(da, native, wanted)
+        np.testing.assert_array_equal(source.positions, native_positions(native, wanted))
+        np.testing.assert_array_equal(source.positions, [5, 2, 7])
+
+    def test_array_is_unchanged(self):
+        da = _make_time_source()
+        native = np.arange(8)
+        source = LazyTimeSource.aligned(da, native, native[[1, 3]])
+        assert source.array is da
+
+
+class TestLazyTimeSourceSelect:
+    def test_reindexes_positions_and_keeps_array(self):
+        da = _make_time_source()
+        source = LazyTimeSource(da, np.array([4, 5, 6, 7]))
+        selected = source.select([2, 0])
+        np.testing.assert_array_equal(selected.positions, [6, 4])
+        assert selected.array is da
+
+    def test_does_not_mutate_original(self):
+        da = _make_time_source()
+        source = LazyTimeSource(da, np.array([0, 1, 2, 3]))
+        source.select([3, 1])
+        np.testing.assert_array_equal(source.positions, [0, 1, 2, 3])
+
+
+class TestLazyTimeSourceGather:
+    def test_single_block_matches_isel(self):
+        da = _make_time_source()
+        source = LazyTimeSource(da, np.array([0, 1, 2, 3, 4, 5, 6, 7]))
+        gathered = source.gather(np.array([3, 1]), subblock=8)
+        expected = da.isel(time=[3, 1]).compute()
+        np.testing.assert_array_equal(gathered.values, expected.values)
+
+    def test_subblock_gather_preserves_order_and_values(self):
+        da = _make_time_source()
+        positions = np.array([4, 0, 3, 1, 2, 7])
+        source = LazyTimeSource(da, positions)
+        local = np.array([0, 1, 2, 3, 4, 5])
+        gathered = source.gather(local, subblock=2)
+        assert gathered.sizes["time"] == len(local)
+        for i, native in enumerate(positions):
+            np.testing.assert_array_equal(gathered.isel(time=i).values, da.isel(time=native).values)
+
+    def test_gather_maps_through_positions(self):
+        da = _make_time_source()
+        source = LazyTimeSource(da, np.array([7, 6, 5, 4, 3, 2, 1, 0]))
+        gathered = source.gather(np.array([0, 2]), subblock=8)
+        np.testing.assert_array_equal(gathered.isel(time=0).values, da.isel(time=7).values)
+        np.testing.assert_array_equal(gathered.isel(time=1).values, da.isel(time=5).values)
+
+    def test_subblock_equals_single_block(self):
+        da = _make_time_source()
+        source = LazyTimeSource(da, np.arange(8))
+        local = np.array([6, 1, 4, 0, 2])
+        np.testing.assert_array_equal(
+            source.gather(local, subblock=2).values,
+            source.gather(local, subblock=64).values,
+        )

@@ -171,3 +171,23 @@ def one_hot_encode_to_dataarray(da: xr.DataArray, num_classes: int = 6) -> xr.Da
     """
     classes = xr.DataArray(np.arange(num_classes), dims=["class"])
     return (da == classes).astype(np.float32)
+
+
+def encode_targets(fronts_da: xr.DataArray, dilation: int) -> xr.DataArray:
+    """Remap raw front codes, one-hot encode, and optionally dilate, all lazily.
+
+    Composes ``remap_fronts`` -> ``one_hot_encode_to_dataarray`` -> ``dilate_fronts``.
+    ``dilate_fronts`` returns its input unchanged when ``dilation`` is 0, so no dilation
+    work is added in that case.
+
+    Args:
+        fronts_da: Raw identifier DataArray of shape (time, latitude, longitude) with original
+            front codes (see ``FRONT_CLASS_MAP``).
+        dilation: Number of binary dilation iterations applied to each non-background class.
+            0 disables dilation.
+
+    Returns:
+        Lazy float32 DataArray of shape (time, latitude, longitude, class).
+    """
+    encoded = one_hot_encode_to_dataarray(remap_fronts(fronts_da))
+    return dilate_fronts(encoded, dilation)
