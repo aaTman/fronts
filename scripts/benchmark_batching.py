@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import gc
 import itertools
 import logging
 import time
@@ -38,21 +39,38 @@ def _run_one(
 
     Returns:
         Dict with samples_per_sec, mb_per_sec, peak_rss_gb, and elapsed_s.
+
+    Breaking out of ``iter_samples`` early still leaves its background
+    ``ThreadPoolExecutor`` with in-flight (and possibly queued) chunk loads; without an
+    explicit shutdown those keep running after this call returns, inflating the next
+    sweep entry's timing and RSS reading with leftover I/O from this one. ``gen.close()``
+    stops the generator from submitting further work, and ``shutdown(cancel_futures=True)``
+    drops anything still queued and blocks until whatever's already running finishes
+    before we measure or move on.
     """
     n_samples_target = prefetcher.chunk_size * n_chunks
+    gc.collect()
     rss_before = process_rss_gb()
     peak_rss = rss_before
     n_samples = 0
     n_bytes = 0
     t0 = time.monotonic()
-    for x, _y in prefetcher.iter_samples():
-        n_samples += 1
-        n_bytes += x.nbytes
-        if n_samples % max(prefetcher.batch_size, 1) == 0:
-            peak_rss = max(peak_rss, process_rss_gb())
-        if n_samples >= n_samples_target:
-            break
+    gen = prefetcher.iter_samples()
+    try:
+        for x, _ in gen:
+            n_samples += 1
+            n_bytes += x.nbytes
+            if n_samples % max(prefetcher.batch_size, 1) == 0:
+                peak_rss = max(peak_rss, process_rss_gb())
+            if n_samples >= n_samples_target:
+                break
+    finally:
+        gen.close()
+        if prefetcher._pool is not None:
+            prefetcher._pool.shutdown(wait=True, cancel_futures=True)
     elapsed = time.monotonic() - t0
+    peak_rss = max(peak_rss, process_rss_gb())
+    gc.collect()
     peak_rss = max(peak_rss, process_rss_gb())
     return {
         "samples_per_sec": n_samples / max(elapsed, 1e-9),
