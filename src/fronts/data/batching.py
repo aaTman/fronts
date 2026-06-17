@@ -10,6 +10,7 @@ imported lazily inside it.
 import concurrent.futures
 import logging
 import math
+import time
 from collections import deque
 from typing import Any
 
@@ -129,8 +130,25 @@ class ChunkPrefetcher:
 
     def _load_chunk(self, local_idxs: np.ndarray) -> tuple[xr.DataArray, xr.DataArray]:
         with dask.config.set(scheduler="threads", num_workers=self.load_num_workers):
+            t0 = time.monotonic()
             chunk_x = _gather_inputs(self.input_sources, local_idxs, self.load_subblock)
+            input_dt = time.monotonic() - t0
+            t1 = time.monotonic()
             chunk_y = self.target_source.gather(local_idxs, self.load_subblock)
+            target_dt = time.monotonic() - t1
+        logger.info(
+            "chunk load (%d samples, %d workers): inputs %.2fs (%.0f MB, %.0f MB/s), "
+            "targets %.2fs (%.0f MB, %.0f MB/s), process RSS %.1f GB",
+            len(local_idxs),
+            self.load_num_workers,
+            input_dt,
+            chunk_x.nbytes / 1e6,
+            chunk_x.nbytes / 1e6 / max(input_dt, 1e-9),
+            target_dt,
+            chunk_y.nbytes / 1e6,
+            chunk_y.nbytes / 1e6 / max(target_dt, 1e-9),
+            process_rss_gb(),
+        )
         return chunk_x, chunk_y
 
     def _iter_chunk(self, chunk_x: xr.DataArray, chunk_y: xr.DataArray):
@@ -157,11 +175,21 @@ class ChunkPrefetcher:
             inflight.append(self._pool.submit(self._load_chunk, chunks[next_chunk]))
             next_chunk += 1
         while inflight:
+            wait_t0 = time.monotonic()
             chunk_x, chunk_y = inflight.popleft().result()
+            wait_dt = time.monotonic() - wait_t0
             if next_chunk < len(chunks):
                 inflight.append(self._pool.submit(self._load_chunk, chunks[next_chunk]))
                 next_chunk += 1
+            consume_t0 = time.monotonic()
             yield from self._iter_chunk(chunk_x, chunk_y)
+            consume_dt = time.monotonic() - consume_t0
+            logger.info(
+                "chunk cycle: blocked on data %.2fs, consumed by training %.2fs (idle fraction %.0f%%)",
+                wait_dt,
+                consume_dt,
+                100 * wait_dt / max(wait_dt + consume_dt, 1e-9),
+            )
             del chunk_x, chunk_y
 
 

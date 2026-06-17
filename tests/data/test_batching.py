@@ -180,6 +180,15 @@ class TestChunkPrefetcher:
         with pytest.raises(ValueError, match="prefetch_chunks"):
             _prefetcher(_input_da(8), _target_da(8), prefetch_chunks=0)
 
+    def test_chunk_load_logs_timing(self, caplog):
+        import logging
+
+        prefetcher = _prefetcher(_input_da(8), _target_da(8))
+        with caplog.at_level(logging.INFO, logger="fronts.data.batching"):
+            list(prefetcher.iter_samples())
+        assert any("chunk load" in r.message and "MB/s" in r.message for r in caplog.records)
+        assert any("chunk cycle" in r.message and "idle fraction" in r.message for r in caplog.records)
+
     def test_mismatched_lengths_raise(self):
         with pytest.raises(ValueError, match="time lengths differ"):
             ChunkPrefetcher(
