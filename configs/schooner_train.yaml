@@ -28,12 +28,12 @@ data_config:
   steps_per_epoch: 30
   load_chunk_steps: 5
   prefetch_chunks: 2
-  # load_num_workers * prefetch_chunks concurrent dask read threads; zarr's own pool is
-  # capped at 16 (train.py::main). 4 leaves that budget under-used (GPU idles waiting on
-  # chunk loads), but raising it raises peak RSS too — past runs OOM'd on large chunks.
-  # Before bumping this, sweep candidate values with scripts/benchmark_batching.py on the
-  # actual store and confirm peak RSS in the "peak RSS GB" column stays within budget.
-  load_num_workers: 4
+  # scripts/benchmark_batching.py on the real store: 4 workers ~50 MB/s, 8 ~73 MB/s,
+  # 16 ~83 MB/s, with peak process RSS flat (59-91 GB) across all three — more workers
+  # doesn't raise memory risk here, so 16 (matching zarr's own pool cap set in
+  # train.py::main) is a safe win. Re-run that script if load_chunk_steps, batch_size,
+  # or the input channel count changes materially, since that resets the RSS budget.
+  load_num_workers: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
   time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly

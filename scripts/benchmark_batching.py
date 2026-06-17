@@ -10,7 +10,8 @@ icechunk store paths (e.g. schooner), not a local dev machine.
 Usage:
 
     pixi run python scripts/benchmark_batching.py --config configs/schooner_train.yaml
-    pixi run python scripts/benchmark_batching.py --load-num-workers 4 8 16 --n-chunks 3
+    pixi run python scripts/benchmark_batching.py --load-num-workers 4 8 16 --n-chunks 1
+    pixi run python scripts/benchmark_batching.py --zarr-async-concurrency 10 32 64 128 --n-chunks 1
 """
 
 import argparse
@@ -18,6 +19,8 @@ import gc
 import itertools
 import logging
 import time
+
+import zarr
 
 from fronts import train, utils
 from fronts.data.batching import ChunkPrefetcher
@@ -91,6 +94,13 @@ def main() -> None:
     parser.add_argument("--load-num-workers", type=int, nargs="+", default=None, help="Override(s) to sweep")
     parser.add_argument("--load-subblock", type=int, nargs="+", default=None, help="Override(s) to sweep")
     parser.add_argument("--prefetch-chunks", type=int, nargs="+", default=None, help="Override(s) to sweep")
+    parser.add_argument(
+        "--zarr-async-concurrency",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Override(s) to sweep for zarr's async.concurrency (default unset: zarr's own default of 10)",
+    )
     args = parser.parse_args()
 
     cfg = utils.open_config_yaml_as_dataclass(args.config, train.TrainConfig)
@@ -108,10 +118,14 @@ def main() -> None:
     workers_grid = args.load_num_workers or [data_cfg.load_num_workers]
     subblock_grid = args.load_subblock or [data_cfg.load_subblock]
     prefetch_grid = args.prefetch_chunks or [data_cfg.prefetch_chunks]
+    zarr_concurrency_grid = args.zarr_async_concurrency or [zarr.config.get("async.concurrency")]
 
-    print(f"\n{'workers':>8} {'subblock':>9} {'prefetch':>9} {'samples/s':>10} {'MB/s':>8} {'peak RSS GB':>12}")
-    for load_num_workers, load_subblock, prefetch_chunks in itertools.product(
-        workers_grid, subblock_grid, prefetch_grid
+    print(
+        f"\n{'workers':>8} {'subblock':>9} {'prefetch':>9} {'zarr_conc':>10} "
+        f"{'samples/s':>10} {'MB/s':>8} {'peak RSS GB':>12}"
+    )
+    for load_num_workers, load_subblock, prefetch_chunks, zarr_concurrency in itertools.product(
+        workers_grid, subblock_grid, prefetch_grid, zarr_concurrency_grid
     ):
         chunk_size = (data_cfg.load_chunk_steps or data_cfg.steps_per_epoch or 1) * data_cfg.batch_size
         prefetcher = ChunkPrefetcher(
@@ -126,9 +140,10 @@ def main() -> None:
             load_subblock=load_subblock,
             seed=cfg.seed,
         )
-        result = _run_one(prefetcher, args.n_chunks)
+        with zarr.config.set({"async.concurrency": zarr_concurrency}):
+            result = _run_one(prefetcher, args.n_chunks)
         print(
-            f"{load_num_workers:>8} {load_subblock:>9} {prefetch_chunks:>9} "
+            f"{load_num_workers:>8} {load_subblock:>9} {prefetch_chunks:>9} {zarr_concurrency:>10} "
             f"{result['samples_per_sec']:>10.2f} {result['mb_per_sec']:>8.0f} {result['peak_rss_gb']:>12.2f}"
         )
 
