@@ -30,7 +30,7 @@ import zarr
 from dask.diagnostics import ProgressBar
 
 from fronts import model, utils
-from fronts.data import config, inputs, targets
+from fronts.data import config, datasets, inputs, targets
 from fronts.layers import losses, metrics
 from fronts.utils import apply_time_resolution
 
@@ -285,7 +285,7 @@ class CallbacksConfig:
 class TrainConfig:
     """Top-level training configuration assembling all sub-configs."""
 
-    data_config: config.DataConfig
+    data_config: datasets.DatasetConfig
     model_config: model.ModelConfig
     callbacks_config: CallbacksConfig
     wandb_config: WandBConfig | None
@@ -295,7 +295,7 @@ class TrainConfig:
 
 
 def load_training_data(
-    data_config: config.DataConfig,
+    data_config: datasets.DatasetConfig,
     seed: int = 0,
 ) -> tuple[xr.DataArray, xr.DataArray, list[inputs.LazyTimeSource], inputs.LazyTimeSource]:
     """Load, align, and encode gridded input sources and fronts data for training.
@@ -307,7 +307,7 @@ def load_training_data(
     source in the order listed.
 
     Args:
-        data_config: DataConfig specifying store paths, branch names, and splits.
+        data_config: DatasetConfig specifying store paths, branch names, and splits.
         seed: Integer seed for the RNG used when subsampling timesteps.
 
     Returns:
@@ -516,11 +516,11 @@ def _run(
     return history, elapsed
 
 
-def _collect_run_metadata(data_config: config.DataConfig) -> dict:
+def _collect_run_metadata(data_config: datasets.DatasetConfig) -> dict:
     """Collect provenance metadata for logging: git commit, icechunk snapshots, SLURM vars.
 
     Args:
-        data_config: DataConfig containing icechunk store configurations.
+        data_config: DatasetConfig containing icechunk store configurations.
 
     Returns:
         Dict suitable for passing to wandb.init(config=...) and logger.info.

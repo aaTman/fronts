@@ -30,7 +30,7 @@ from scipy.ndimage import maximum_filter
 from tqdm import tqdm
 
 from fronts import utils
-from fronts.data import config, inputs, targets
+from fronts.data import config, datasets, inputs, targets
 
 log = logging.getLogger(__name__)
 
@@ -344,8 +344,8 @@ def main() -> None:
             datetime.datetime: lambda d: datetime.datetime.fromisoformat(str(d)),
         },
     )
-    data_cfg: config.DataConfig = utils.open_config_yaml_as_dataclass(
-        args.config_path, config.DataConfig, config_key="data_config"
+    data_cfg: datasets.DatasetConfig = utils.open_config_yaml_as_dataclass(
+        args.config_path, datasets.DatasetConfig, config_key="data_config"
     )
 
     eval_cfg = dataclasses.replace(

@@ -43,7 +43,7 @@ class EvalConfig:
         front_types: Front type labels in class order (excluding background class 0).
         mask: Restrict statistics to "land" or "ocean" grid points. None means all points.
         front_dilation: Binary dilation iterations applied to truth labels. None uses
-            the value from the paired DataConfig.
+            the value from the paired DatasetConfig.
         gpu_device: GPU index to use. None runs on CPU.
         time_start: Restrict evaluation to timesteps on or after this date. None means no lower bound.
         time_end: Restrict evaluation to timesteps before this date. None means no upper bound.

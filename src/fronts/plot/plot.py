@@ -29,7 +29,7 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.ticker import FixedLocator
 
 from fronts import utils
-from fronts.data import config, inputs, targets
+from fronts.data import config, datasets, inputs, targets
 from fronts.plot.utils import plot_background, truncated_colormap
 
 log = logging.getLogger(__name__)
@@ -330,7 +330,7 @@ def _load_truth(fronts_ds: xr.Dataset, init_time: np.datetime64) -> xr.DataArray
     return targets.remap_fronts(fronts_ds["identifier"].sel(time=init_time))
 
 
-def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: config.DataConfig) -> None:
+def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: datasets.DatasetConfig) -> None:
     """Run inference and generate a single-timestep probability map.
 
     Args:
@@ -535,8 +535,8 @@ def main() -> None:
                 utils.BoundingBox: lambda d: utils.BoundingBox(*d),
             },
         )
-        data_cfg: config.DataConfig = utils.open_config_yaml_as_dataclass(
-            args.config_path, config.DataConfig, config_key="data_config"
+        data_cfg: datasets.DatasetConfig = utils.open_config_yaml_as_dataclass(
+            args.config_path, datasets.DatasetConfig, config_key="data_config"
         )
         plot_case_study(predict_cfg, data_cfg)
 

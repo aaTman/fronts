@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 import subprocess
 from collections import namedtuple
@@ -13,7 +14,6 @@ import xarray as xr
 import yaml
 from xarray.core.indexes import IndexSelResult, PandasIndex, _query_slice
 from xarray.core.indexing import _expand_slice
-import dataclasses
 
 T = TypeVar("T")
 _XArray = TypeVar("_XArray", xr.Dataset, xr.DataArray)
