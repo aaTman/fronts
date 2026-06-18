@@ -345,6 +345,7 @@ def open_readonly_icechunk_store(
     group: str | None = None,
     zarr_format: int = 3,
     virtual_chunk_local_path: str | None = None,
+    chunks: Any = "auto",
 ) -> xr.Dataset:
     """Open a local icechunk store in read-only mode and return it as an xarray datatype.
 
@@ -357,6 +358,10 @@ def open_readonly_icechunk_store(
             by virtual chunks (e.g. ``/ourdisk/hpc/data/netcdf/``). When provided,
             registers a VirtualChunkContainer and authorizes access so those chunks can
             be fetched. Leave None for stores with no virtual chunks.
+        chunks: Forwarded to ``xr.open_zarr``. ``"auto"`` (default) returns a dask-backed
+            Dataset suitable for chunked reductions (e.g. normalization stats). ``None``
+            returns a Dataset backed directly by the zarr store with no dask graph, for
+            callers that only ever read small, explicit slices themselves.
 
     Returns:
         An xarray Dataset or DataArray containing the data from the icechunk store.
@@ -379,7 +384,7 @@ def open_readonly_icechunk_store(
         authorize_virtual_chunk_access=authorize_virtual_chunk_access,
     )
     session = repo.readonly_session(branch)
-    return xr.open_zarr(session.store, group=group, zarr_format=zarr_format, consolidated=False)
+    return xr.open_zarr(session.store, group=group, zarr_format=zarr_format, consolidated=False, chunks=chunks)
 
 
 def configure_gpu(gpu_device: int | None) -> None:

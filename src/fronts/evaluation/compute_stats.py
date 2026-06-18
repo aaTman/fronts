@@ -361,8 +361,8 @@ def main() -> None:
     model = tf.keras.models.load_model(eval_cfg.model_path, compile=False)
     log.info("Model loaded. Output count: %d.", len(model.outputs))
 
-    ic_era5 = data_cfg.era5_icechunk_config
-    ic_fronts = data_cfg.fronts_icechunk_config
+    ic_era5 = data_cfg.inputs_icechunk_config
+    ic_fronts = data_cfg.targets_icechunk_config
 
     log.info("Opening ERA5 icechunk store …")
     era5_ds = utils.open_readonly_icechunk_store(

@@ -347,7 +347,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: datasets.Datase
     plot_bb = predict_cfg.coordinates
     extent = [plot_bb.lon_min, plot_bb.lon_max, plot_bb.lat_min, plot_bb.lat_max]
 
-    ic_era5 = data_cfg.era5_icechunk_config
+    ic_era5 = data_cfg.inputs_icechunk_config
     log.info("Opening ERA5 store …")
     era5_ds = utils.open_readonly_icechunk_store(
         ic_era5.store_path,
@@ -362,7 +362,7 @@ def plot_case_study(predict_cfg: config.PredictConfig, data_cfg: datasets.Datase
 
     truth_da = None
     if predict_cfg.targets:
-        ic_fronts = data_cfg.fronts_icechunk_config
+        ic_fronts = data_cfg.targets_icechunk_config
         log.info("Opening fronts store …")
         fronts_ds = utils.open_readonly_icechunk_store(
             ic_fronts.store_path,

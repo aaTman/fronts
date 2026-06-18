@@ -13,11 +13,8 @@ import gc
 import logging
 import math
 import os
-import queue
 import random
-import threading
 import time
-from typing import Any
 
 import dask
 import numpy as np
@@ -27,220 +24,13 @@ import tensorflow as tf
 import wandb
 import xarray as xr
 import zarr
-from dask.diagnostics import ProgressBar
 
 from fronts import model, utils
-from fronts.data import config, datasets, inputs, targets
+from fronts.data import datasets, inputs, targets
 from fronts.layers import losses, metrics
 from fronts.utils import apply_time_resolution
 
 logger = logging.getLogger(__name__)
-
-
-def _rss_gb() -> float:
-    """Return the current process resident set size in gigabytes."""
-    return psutil.Process().memory_info().rss / 1e9
-
-
-def make_batch_dataset(
-    input_data: "xr.DataArray | inputs.LazyTimeSource | list[inputs.LazyTimeSource]",
-    target_data: "xr.DataArray | inputs.LazyTimeSource",
-    n_supervision_outputs: int,
-    batch_size: int = 4,
-    shuffle: bool = False,
-    preload: bool = False,
-    epoch_steps: int | None = None,
-    load_chunk_steps: int | None = None,
-    prefetch_chunks: int = 2,
-    load_num_workers: int = 4,
-    load_subblock: int = 32,
-) -> Any:
-    """Create a batched tf.data.Dataset from ERA5 and fronts DataArrays.
-
-    Loads data in chunks via a single parallel dask compute per chunk rather
-    than one sample at a time. With ``preload=True`` the entire dataset is
-    materialised into RAM once at creation time (recommended for validation).
-
-    The load chunk size is ``load_chunk_steps * batch_size`` samples. Setting
-    this independently of ``epoch_steps`` lets you control peak RAM usage: a
-    full epoch's worth of data may be too large to allocate as one contiguous
-    array, while a smaller chunk still lets the background thread overlap I/O
-    with GPU training. Falls back to ``epoch_steps`` when ``load_chunk_steps``
-    is not set.
-
-    Thread safety: zarr's global ``ThreadPoolExecutor`` must be bounded before
-    any zarr I/O. Call ``zarr.config.update({"threading.max_workers": N})`` in
-    the training process before dataset creation (done in ``train.main()``).
-
-    Each chunk is loaded with a single positional take per source
-    (``array.isel(time=positions[idxs])``) so a scattered selection reads only the
-    touched store chunks. Passing a plain DataArray wraps it as an identity
-    ``LazyTimeSource`` for backwards compatibility.
-
-    Args:
-        input_data: ERA5 input as a DataArray, a ``LazyTimeSource``, or a list of
-            ``LazyTimeSource`` (one per source) concatenated along ``channel``.
-            Each carries shape (time, latitude, longitude, channel).
-        target_data: Front target as a DataArray or ``LazyTimeSource`` of shape
-            (time, latitude, longitude, class).
-        n_supervision_outputs: Number of deep supervision outputs; the target
-            tuple is replicated this many times.
-        batch_size: Number of timesteps per batch.
-        shuffle: If True, iterates timesteps in a random order each epoch.
-        preload: If True, loads the entire dataset into RAM at creation time
-            via a single parallel dask compute. Eliminates all I/O during
-            iteration. Recommended for validation.
-        epoch_steps: Number of batches per epoch passed to model.fit. Controls
-            how many steps TF counts before advancing the epoch counter.
-        load_chunk_steps: Number of steps' worth of samples to load per
-            background prefetch. Defaults to ``epoch_steps`` when not set.
-            Set this smaller than ``epoch_steps`` to cap peak RAM per chunk.
-        prefetch_chunks: Number of chunks to keep loaded in RAM ahead of the
-            generator. With the default of 2, chunk N+1 loads in parallel while
-            the GPU trains on chunk N, so the GPU never waits for a new chunk
-            as long as one chunk's load time is less than one chunk's train time.
-            Increase if disk I/O is slower than GPU throughput.
-        load_num_workers: Dask threads per background chunk load. Peak host RAM
-            scales with ``prefetch_chunks * load_num_workers`` because each
-            in-flight load thread can hold several large store-chunk copies at
-            once; keep this small to bound memory. Distinct from the 16-worker
-            scheduler used for one-shot startup loads, which never overlap with
-            training.
-        load_subblock: Maximum number of timesteps materialized in a single dask
-            ``compute``. A fancy ``isel`` over a whole chunk makes dask's
-            shuffle-based vindex copy the entire gathered block at once (many
-            GiB); gathering in sub-blocks of this size caps each copy. Decoupled
-            from ``load_chunk_steps`` so a large prefetch chunk does not force a
-            large single allocation.
-
-    Returns:
-        Tuple of (tf.data.Dataset, steps_per_epoch).
-    """
-
-    def _make_output_signature(
-        n_lat: int,
-        n_lon: int,
-        n_channels: int,
-        n_classes: int,
-        n_supervision_outputs: int,
-    ) -> tuple:
-        target_spec = tf.TensorSpec(shape=(n_lat, n_lon, n_classes), dtype=tf.float32)
-        return (
-            tf.TensorSpec(shape=(n_lat, n_lon, n_channels), dtype=tf.float32),
-            tuple(target_spec for _ in range(n_supervision_outputs)),
-        )
-
-    def _gather_time(array: xr.DataArray, native_idxs: np.ndarray) -> xr.DataArray:
-        # Gather scattered timesteps in sub-blocks of at most ``load_subblock``.
-        # A single fancy isel over the whole chunk makes dask's shuffle-based
-        # vindex collapse the gathered time axis into one output block and copy
-        # it whole, which for a full chunk is many GiB; sub-blocking caps each
-        # materialized block at ``load_subblock`` timesteps.
-        if len(native_idxs) <= load_subblock:
-            return array.isel(time=native_idxs).compute()
-        parts = [
-            array.isel(time=native_idxs[start : start + load_subblock]).compute()
-            for start in range(0, len(native_idxs), load_subblock)
-        ]
-        return xr.concat(parts, dim="time")
-
-    def _select_inputs(local_idxs: np.ndarray) -> xr.DataArray:
-        pieces = [_gather_time(s.array, s.positions[local_idxs]) for s in input_sources]
-        return pieces[0] if len(pieces) == 1 else xr.concat(pieces, dim="channel")
-
-    def _load(local_idxs: np.ndarray) -> None:
-        try:
-            with dask.config.set(scheduler="threads", num_workers=load_num_workers):
-                cx = _select_inputs(local_idxs)
-                cy = _gather_time(target_source.array, target_source.positions[local_idxs])
-            prefetch_q.put((cx, cy))
-        except BaseException as exc:
-            prefetch_q.put(exc)
-
-    def _iter_chunk(chunk_x: xr.DataArray, chunk_y: xr.DataArray):
-        for pos in range(chunk_x.sizes["time"]):
-            x = np.ascontiguousarray(chunk_x.isel(time=pos).values)
-            y = np.ascontiguousarray(chunk_y.isel(time=pos).values)
-            yield x, tuple(y for _ in range(n_supervision_outputs))
-
-    def _as_source(data) -> inputs.LazyTimeSource:
-        if isinstance(data, inputs.LazyTimeSource):
-            return data
-        return inputs.LazyTimeSource(data, np.arange(data.sizes["time"]))
-
-    input_sources = [_as_source(s) for s in (input_data if isinstance(input_data, list) else [input_data])]
-    target_source = _as_source(target_data)
-
-    total = len(target_source.positions)
-    assert all(len(s.positions) == total for s in input_sources), (
-        f"Input and target time lengths differ: {[len(s.positions) for s in input_sources]} vs {total}"
-    )
-
-    n_lat = input_sources[0].array.sizes["latitude"]
-    n_lon = input_sources[0].array.sizes["longitude"]
-    n_channels = sum(s.array.sizes["channel"] for s in input_sources)
-    n_classes = target_source.array.sizes["class"]
-
-    if preload:
-        logger.info("Pre-loading %d timesteps into RAM...", total)
-        full = np.arange(total)
-        with dask.config.set(scheduler="threads", num_workers=16):
-            t0 = time.time()
-            with ProgressBar():
-                inputs_full = _select_inputs(full)
-            logger.info("Pre-loaded inputs (%.1f GB) in %.1f s.", inputs_full.nbytes / 1e9, time.time() - t0)
-            t0 = time.time()
-            with ProgressBar():
-                targets_full = target_source.array.isel(time=target_source.positions).compute()
-            logger.info("Pre-loaded targets (%.1f GB) in %.1f s.", targets_full.nbytes / 1e9, time.time() - t0)
-        input_sources = [inputs.LazyTimeSource(inputs_full, full)]
-        target_source = inputs.LazyTimeSource(targets_full, full)
-        logger.info("Pre-load complete (process RSS %.1f GB).", _rss_gb())
-
-    effective_chunk_steps = load_chunk_steps if load_chunk_steps is not None else epoch_steps
-    chunk_size = (effective_chunk_steps * batch_size) if effective_chunk_steps is not None else total
-
-    # Persists across _gen() calls so the last prefetch of epoch N is already
-    # in the queue when _gen() restarts for epoch N+1.
-    prefetch_q: queue.Queue = queue.Queue(maxsize=prefetch_chunks)
-
-    def _gen():
-        order = np.random.permutation(total) if shuffle else np.arange(total)
-        chunk_starts = list(range(0, total, chunk_size))
-        for k in range(min(prefetch_chunks, len(chunk_starts))):
-            nxt = chunk_starts[k]
-            threading.Thread(
-                target=_load,
-                args=(order[nxt : nxt + chunk_size],),
-                daemon=True,
-            ).start()
-
-        for i, _chunk_start in enumerate(chunk_starts):
-            item = prefetch_q.get()
-            if isinstance(item, BaseException):
-                raise item
-            chunk_x, chunk_y = item
-            next_k = i + prefetch_chunks
-            if next_k < len(chunk_starts):
-                nxt = chunk_starts[next_k]
-                threading.Thread(
-                    target=_load,
-                    args=(order[nxt : nxt + chunk_size],),
-                    daemon=True,
-                ).start()
-            yield from _iter_chunk(chunk_x, chunk_y)
-            del chunk_x, chunk_y
-
-    output_signature = _make_output_signature(n_lat, n_lon, n_channels, n_classes, n_supervision_outputs)
-
-    steps_per_epoch = math.ceil(total / batch_size)
-    ds = (
-        tf.data.Dataset.from_generator(_gen, output_signature=output_signature)
-        .batch(batch_size)
-        .repeat()
-        .prefetch(tf.data.AUTOTUNE)
-    )
-    return ds, steps_per_epoch
 
 
 def _get_distribution_strategy() -> tf.distribute.Strategy:
@@ -297,106 +87,70 @@ class TrainConfig:
 def load_training_data(
     data_config: datasets.DatasetConfig,
     seed: int = 0,
-) -> tuple[xr.DataArray, xr.DataArray, list[inputs.LazyTimeSource], inputs.LazyTimeSource]:
-    """Load, align, and encode gridded input sources and fronts data for training.
+) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
+    """Load, align, and encode ERA5 input and fronts data for training.
 
-    Opens the ERA5 store plus any additional sources in
-    ``data_config.input_sources``, deduplicates time indexes, aligns everything
-    to the intersection of available timestamps, and returns lazy DataArrays
-    ready for batching. Input channels are ordered ERA5 first, then each extra
-    source in the order listed.
+    Opens the ERA5 and fronts icechunk stores once each with ``chunks=None`` so
+    TrainingDataset's per-batch ``isel(...).values`` reads go straight through the
+    zarr store with no dask graph, deduplicates time indexes, aligns both to the
+    intersection of available timestamps, and returns lazy DataArrays ready for
+    batching. The dask-backed arrays needed for the full-training-set
+    normalization-stats reduction (which needs dask to chunk that reduction
+    instead of materializing everything in RAM at once) are derived from the same
+    arrays via a cheap, metadata-only ``.chunk("auto")`` rather than a second
+    store open.
 
     Args:
         data_config: DatasetConfig specifying store paths, branch names, and splits.
         seed: Integer seed for the RNG used when subsampling timesteps.
 
     Returns:
-        Tuple of (input_da, front_da, input_sources, target_source). ``input_da``
-        and ``front_da`` are the deduplicated, time-aligned subset DataArrays used
-        for splits, normalization stats, and logging. ``input_sources`` and
-        ``target_source`` carry the raw store-axis arrays plus logical-to-native
-        position maps used for single-take chunk loading during training.
+        Tuple of (input_da, front_da, input_da_nodask, target_da_nodask), all
+        time-aligned to the same common timesteps. ``input_da``/``front_da`` are
+        dask-backed and used for splits, normalization stats, and logging.
+        ``input_da_nodask``/``target_da_nodask`` are zarr-backed with no dask graph
+        and used directly by ``TrainingDataset``.
     """
-    source_configs = [
-        config.InputSourceConfig(
-            name="era5",
-            icechunk_config=data_config.era5_icechunk_config,
-            variables=data_config.variables,
-        ),
-        *(data_config.input_sources or []),
-    ]
 
-    raw_source_datasets: list[xr.Dataset] = []
-    source_datasets: list[xr.Dataset] = []
-    for source in source_configs:
-        logger.info(f"Loading input source '{source.name}'...")
-        ds = utils.open_readonly_icechunk_store(
-            store_path=source.icechunk_config.store_path,
-            branch=source.icechunk_config.branch_name,
-            group=source.icechunk_config.group_name,
-            zarr_format=source.icechunk_config.zarr_format,
-            virtual_chunk_local_path=source.icechunk_config.virtual_chunk_local_path,
+    def _open(icechunk_config: utils.IcechunkStorageConfig) -> xr.Dataset:
+        return utils.open_readonly_icechunk_store(
+            store_path=icechunk_config.store_path,
+            branch=icechunk_config.branch_name,
+            group=icechunk_config.group_name,
+            zarr_format=icechunk_config.zarr_format,
+            virtual_chunk_local_path=icechunk_config.virtual_chunk_local_path,
+            chunks=None,
         )
-        logger.info(f"Source '{source.name}' store: {ds}")
-        raw_source_datasets.append(ds)
-        source_datasets.append(utils.drop_duplicate_times(ds))
 
-    logger.info("Loading fronts...")
-    raw_fronts_da = utils.open_readonly_icechunk_store(
-        store_path=data_config.fronts_icechunk_config.store_path,
-        branch=data_config.fronts_icechunk_config.branch_name,
-        group=data_config.fronts_icechunk_config.group_name,
-        zarr_format=data_config.fronts_icechunk_config.zarr_format,
-        virtual_chunk_local_path=data_config.fronts_icechunk_config.virtual_chunk_local_path,
-    )["identifier"]
-    logger.info(f"Fronts store: {raw_fronts_da}")
-    fronts_da = utils.drop_duplicate_times(raw_fronts_da)
+    logger.info("Loading inputs...")
+    era5_ds_nodask = _open(data_config.inputs_icechunk_config)
 
-    common_times = fronts_da.time.values
-    for ds in source_datasets:
-        if "time" in ds.dims:
-            common_times = np.intersect1d(common_times, ds.time.values)
+    logger.info("Loading targets...")
+    fronts_da_nodask = _open(data_config.targets_icechunk_config)["identifier"]
+
+    common_times = np.intersect1d(fronts_da_nodask.time.values, era5_ds_nodask.time.values)
     if data_config.time_resolution is not None:
         common_times = apply_time_resolution(common_times, data_config.time_resolution)
         logger.info(f"After time_resolution={data_config.time_resolution!r} filter: {len(common_times)} steps")
     rng = np.random.default_rng(seed)
-    keep = targets.filter_timesteps(fronts_da.sel(time=common_times), rng)
+    keep = targets.filter_timesteps(fronts_da_nodask.sel(time=common_times), rng)
     common_times = common_times[keep]
-    fronts_da = fronts_da.sel(time=common_times)
     logger.info(f"Matched time steps: {len(common_times)}")
 
-    logger.info("Building input DataArray (lazy)...")
-    source_das: list[xr.DataArray] = []
-    for source, source_ds in zip(source_configs, source_datasets, strict=True):
-        aligned = source_ds.sel(time=common_times) if "time" in source_ds.dims else source_ds
-        source_das.append(inputs.era5_to_dataarray(aligned, source.variables))
-    era5_da = source_das[0] if len(source_das) == 1 else xr.concat(source_das, dim="channel")
+    logger.info("Building input DataArrays (lazy)...")
+    input_da_nodask = inputs.era5_to_dataarray(era5_ds_nodask.sel(time=common_times), data_config.variables)
 
     logger.info("Encoding targets (lazy)...")
-    front_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(fronts_da))
-    if data_config.front_dilation > 0:
-        front_da = targets.dilate_fronts(front_da, data_config.front_dilation)
-
-    input_sources: list[inputs.LazyTimeSource] = []
-    for source, raw_ds in zip(source_configs, raw_source_datasets, strict=True):
-        if "time" not in raw_ds.dims:
-            raise ValueError(f"Input source '{source.name}' has no time dimension; single-take loading requires one.")
-        input_sources.append(
-            inputs.LazyTimeSource(
-                array=inputs.era5_to_dataarray(raw_ds, source.variables),
-                positions=inputs.native_positions(raw_ds.time.values, common_times),
-            )
-        )
-
-    target_array = targets.one_hot_encode_to_dataarray(targets.remap_fronts(raw_fronts_da))
-    if data_config.front_dilation > 0:
-        target_array = targets.dilate_fronts(target_array, data_config.front_dilation)
-    target_source = inputs.LazyTimeSource(
-        array=target_array,
-        positions=inputs.native_positions(raw_fronts_da.time.values, common_times),
+    target_da_nodask = targets.one_hot_encode_to_dataarray(
+        targets.remap_fronts(fronts_da_nodask.sel(time=common_times))
     )
+    if data_config.front_dilation > 0:
+        target_da_nodask = targets.dilate_fronts(target_da_nodask, data_config.front_dilation)
 
-    return era5_da, front_da, input_sources, target_source
+    era5_da = input_da_nodask.chunk("auto")
+    front_da = target_da_nodask.chunk("auto")
+
+    return era5_da, front_da, input_da_nodask, target_da_nodask
 
 
 def _set_seed(seed: int) -> None:
@@ -534,14 +288,14 @@ def _collect_run_metadata(data_config: datasets.DatasetConfig) -> dict:
     meta = {
         "git_commit": utils.get_git_commit(),
         "era5_snapshot_id": utils.get_icechunk_snapshot_id(
-            data_config.era5_icechunk_config.store_path,
-            data_config.era5_icechunk_config.branch_name,
-            data_config.era5_icechunk_config.virtual_chunk_local_path,
+            data_config.inputs_icechunk_config.store_path,
+            data_config.inputs_icechunk_config.branch_name,
+            data_config.inputs_icechunk_config.virtual_chunk_local_path,
         ),
         "fronts_snapshot_id": utils.get_icechunk_snapshot_id(
-            data_config.fronts_icechunk_config.store_path,
-            data_config.fronts_icechunk_config.branch_name,
-            data_config.fronts_icechunk_config.virtual_chunk_local_path,
+            data_config.targets_icechunk_config.store_path,
+            data_config.targets_icechunk_config.branch_name,
+            data_config.targets_icechunk_config.virtual_chunk_local_path,
         ),
     }
     for key in slurm_keys:
@@ -566,7 +320,7 @@ def main():
 
     zarr.config.update({"threading.max_workers": 16})
 
-    era5_da, _front_da, input_sources, target_source = load_training_data(cfg.data_config, seed=cfg.seed)
+    era5_da, _front_da, input_da, target_da = load_training_data(cfg.data_config, seed=cfg.seed)
 
     rng = np.random.default_rng(cfg.seed)
     n_total = era5_da.sizes["time"]
@@ -579,13 +333,10 @@ def main():
     train_indices = sorted(shuffled[n_val:].tolist())
     train_era5 = era5_da.isel(time=train_indices)
 
-    def _split_sources(sources: list[inputs.LazyTimeSource], idxs: list[int]) -> list[inputs.LazyTimeSource]:
-        return [inputs.LazyTimeSource(s.array, s.positions[idxs]) for s in sources]
-
-    train_input_sources = _split_sources(input_sources, train_indices)
-    val_input_sources = _split_sources(input_sources, val_indices)
-    train_target_source = inputs.LazyTimeSource(target_source.array, target_source.positions[train_indices])
-    val_target_source = inputs.LazyTimeSource(target_source.array, target_source.positions[val_indices])
+    train_input = input_da.isel(time=train_indices)
+    val_input = input_da.isel(time=val_indices)
+    train_target = target_da.isel(time=train_indices)
+    val_target = target_da.isel(time=val_indices)
 
     test_times = era5_da.time.values[test_mask]
     test_months = test_times.astype("datetime64[M]").astype(int) % 12 + 1
@@ -650,35 +401,33 @@ def main():
 
     unet.summary()
 
-    # Front dilation stays lazy: it is applied per gathered chunk in the
-    # background loader (overlapped with GPU training) rather than materialized
-    # for the whole training set, which would pin ~100+ GiB of dilated targets
-    # in RAM for the entire run.
-    train_ds, train_steps = make_batch_dataset(
-        train_input_sources,
-        train_target_source,
-        n_out,
-        cfg.data_config.batch_size,
+    # Front dilation (applied lazily in load_training_data) only materializes when
+    # TrainingDataset reads each batch's isel(...).values, overlapped with GPU training
+    # via PyDataset's own prefetch workers, rather than for the whole training set at
+    # once, which would pin ~100+ GiB of dilated targets in RAM for the entire run.
+    train_ds = datasets.TrainingDataset(
+        train_input,
+        train_target,
+        batch_size=cfg.data_config.batch_size,
+        n_supervision_outputs=n_out,
         shuffle=True,
-        epoch_steps=cfg.data_config.steps_per_epoch,
-        load_chunk_steps=cfg.data_config.load_chunk_steps,
-        prefetch_chunks=cfg.data_config.prefetch_chunks,
-        load_num_workers=cfg.data_config.load_num_workers,
-        load_subblock=cfg.data_config.load_subblock,
+        seed=cfg.seed,
+        workers=cfg.data_config.prefetch_workers,
+        use_multiprocessing=False,
+        max_queue_size=cfg.data_config.max_queue_size,
     )
-    logger.info("Building streaming validation dataset (chunked, prefetched)...")
-    val_ds, val_steps = make_batch_dataset(
-        val_input_sources,
-        val_target_source,
-        n_out,
-        cfg.data_config.batch_size,
-        load_chunk_steps=cfg.data_config.load_chunk_steps,
-        prefetch_chunks=cfg.data_config.prefetch_chunks,
-        load_num_workers=cfg.data_config.load_num_workers,
-        load_subblock=cfg.data_config.load_subblock,
+    logger.info("Building streaming validation dataset...")
+    val_ds = datasets.TrainingDataset(
+        val_input,
+        val_target,
+        batch_size=cfg.data_config.batch_size,
+        n_supervision_outputs=n_out,
+        workers=cfg.data_config.prefetch_workers,
+        use_multiprocessing=False,
+        max_queue_size=cfg.data_config.max_queue_size,
     )
-    if cfg.data_config.steps_per_epoch is not None:
-        train_steps = cfg.data_config.steps_per_epoch
+    train_steps = len(train_ds)
+    val_steps = len(val_ds)
 
     full_pass_epochs = utils.epochs_per_full_pass(len(train_indices), cfg.data_config.batch_size, train_steps)
     effective_patience = max(cfg.callbacks_config.patience, full_pass_epochs)
