@@ -159,6 +159,13 @@ class DataConfig:
         norm_stats_cache_dir: Optional directory for caching normalization
             statistics, keyed by store snapshot, channels, and train indices.
             None recomputes the statistics on every run.
+        training_ready_icechunk_config: Optional icechunk store config for a
+            precomputed ``training_ready`` cache (see
+            ``fronts.data.generate.write_training_ready_dataset``) holding the
+            already-assembled, already-dilated ``input``/``target`` tensors on
+            large time chunks. When set, training loads directly from this
+            cache instead of assembling from ``era5_icechunk_config`` /
+            ``fronts_icechunk_config`` / ``input_sources`` at every run.
     """
 
     era5_icechunk_config: IcechunkStorageConfig
@@ -177,6 +184,7 @@ class DataConfig:
     time_resolution: str | None = None
     input_sources: list[InputSourceConfig] | None = None
     norm_stats_cache_dir: str | None = None
+    training_ready_icechunk_config: IcechunkStorageConfig | None = None
 
 
 @dataclasses.dataclass

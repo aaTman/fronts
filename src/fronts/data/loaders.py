@@ -166,3 +166,57 @@ def load_training_data(data_config: config.DataConfig, seed: int = 0) -> Trainin
     logger.info("Fronts store: %s", raw_fronts_da)
 
     return assemble_training_data(raw_sources, raw_fronts_da, data_config, seed)
+
+
+def build_training_ready_dataset(training_data: TrainingData, run_meta: dict) -> xr.Dataset:
+    """Assemble the lazy input/target tensors for writing to a ``training_ready`` cache.
+
+    Wraps the same lazy, already-aligned-and-encoded arrays the on-the-fly training
+    path reads every run (``training_data.input_aligned`` / ``target_aligned``) in a
+    Dataset with build-fingerprint attrs. The actual on-disk chunk size is set by the
+    destination ``IcechunkStorageConfig.write_batch_size`` passed to
+    ``generate.write_or_append_icechunk_store`` (its first write establishes the zarr
+    chunk grid) — *not* by any dask chunking here — so the caller must set
+    ``write_batch_size`` to the desired chunk size (matching the consuming
+    ``DataConfig.load_subblock``) before writing.
+
+    Args:
+        training_data: Already-assembled training data (see ``assemble_training_data``).
+        run_meta: Build-fingerprint metadata (e.g. variables, front_dilation, time_resolution,
+            seed, store snapshot ids, git commit) stored as dataset attrs for staleness
+            detection. ``None`` values are omitted (zarr attrs must be JSON-serializable).
+
+    Returns:
+        Dataset with ``input`` (time, latitude, longitude, channel) and ``target``
+        (time, latitude, longitude, class) variables.
+    """
+    ds = xr.Dataset({"input": training_data.input_aligned, "target": training_data.target_aligned})
+    ds.attrs.update({k: v for k, v in run_meta.items() if v is not None})
+    return ds
+
+
+def load_training_ready_data(icechunk_config: config.IcechunkStorageConfig) -> TrainingData:
+    """Load a precomputed ``training_ready`` cache (see ``fronts.data.generate.write_training_ready_dataset``).
+
+    The cache already holds fully assembled, aligned, and dilated tensors in sample
+    order, so each array is wrapped as an identity-position ``LazyTimeSource``
+    (``positions = arange(n)``) with no further alignment or encoding needed.
+
+    Args:
+        icechunk_config: Icechunk store config for the ``training_ready`` group.
+
+    Returns:
+        A :class:`TrainingData` ready for splitting, normalization stats, and batching.
+    """
+    ds = utils.open_readonly_icechunk_store(
+        store_path=icechunk_config.store_path,
+        branch=icechunk_config.branch_name,
+        group=icechunk_config.group_name,
+        zarr_format=icechunk_config.zarr_format,
+        virtual_chunk_local_path=icechunk_config.virtual_chunk_local_path,
+    )
+    times = ds["input"].time.values
+    positions = np.arange(len(times))
+    input_source = inputs.LazyTimeSource(ds["input"], positions)
+    target_source = inputs.LazyTimeSource(ds["target"], positions)
+    return TrainingData(input_sources=[input_source], target_source=target_source, times=times)

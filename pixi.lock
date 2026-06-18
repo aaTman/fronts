@@ -3600,7 +3600,7 @@ packages:
 - pypi: ./
   name: fronts
   version: 0.2.0
-  sha256: 0f58b2ac49e5e9676317a9bbde3968d65946ec7a946923de3cf48f475b1aa978
+  sha256: 0a4015a227eefdc99395ea3d0d331cb1dc0a580048955634cb3291a6bb338479
   requires_dist:
   - dacite>=1.9.2,<2
   - icechunk>=2

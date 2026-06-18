@@ -13,7 +13,8 @@ import yaml
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from fronts.data import config, derived, generate
+from fronts import utils
+from fronts.data import config, derived, generate, loaders
 from fronts.utils import BoundingBox
 
 ERA5_VARS = [
@@ -227,6 +228,109 @@ class TestWriteOrAppendIcechunkStore:
         session = repo.readonly_session("main")
         result = xr.open_zarr(session.store)
         assert result.sizes["time"] == len(write_ds.time) + len(second_ds.time)
+
+
+@pytest.fixture
+def era5_store_config(tmp_path: pathlib.Path, minimal_ds: xr.Dataset) -> config.IcechunkStorageConfig:
+    storage_config = config.IcechunkStorageConfig(
+        store_path=str(tmp_path / "era5_icechunk"), branch_name="main", group_name="era5"
+    )
+    generate.write_or_append_icechunk_store(storage_config, minimal_ds)
+    return storage_config
+
+
+@pytest.fixture
+def fronts_store_config(tmp_path: pathlib.Path, time_range: pd.DatetimeIndex) -> config.IcechunkStorageConfig:
+    rng = np.random.default_rng(7)
+    codes = np.array([1, 2, 3, 4, 15])  # front codes (see targets.FRONT_CLASS_MAP)
+    data = rng.choice(codes, size=(len(time_range), 8, 8)).astype(np.int32)
+    fronts_ds = xr.Dataset(
+        {
+            "identifier": xr.DataArray(
+                data,
+                dims=["time", "latitude", "longitude"],
+                coords={"time": time_range, "latitude": LAT, "longitude": LON},
+            )
+        }
+    )
+    storage_config = config.IcechunkStorageConfig(store_path=str(tmp_path / "fronts_icechunk"), branch_name="main")
+    generate.write_or_append_icechunk_store(storage_config, fronts_ds)
+    return storage_config
+
+
+class TestWriteTrainingReadyDataset:
+    def _data_config(
+        self,
+        era5_store_config: config.IcechunkStorageConfig,
+        fronts_store_config: config.IcechunkStorageConfig,
+        training_ready_icechunk_config: config.IcechunkStorageConfig | None = None,
+    ) -> config.DataConfig:
+        return config.DataConfig(
+            era5_icechunk_config=era5_store_config,
+            fronts_icechunk_config=fronts_store_config,
+            variables=ERA5_VARS,
+            test_years=[],
+            val_years=[],
+            training_ready_icechunk_config=training_ready_icechunk_config,
+        )
+
+    def test_raises_when_destination_unset(
+        self, era5_store_config: config.IcechunkStorageConfig, fronts_store_config: config.IcechunkStorageConfig
+    ):
+        data_config = self._data_config(era5_store_config, fronts_store_config)
+        with pytest.raises(ValueError, match="training_ready_icechunk_config"):
+            generate.write_training_ready_dataset(data_config, seed=0)
+
+    def test_raises_when_write_batch_size_unset(
+        self,
+        era5_store_config: config.IcechunkStorageConfig,
+        fronts_store_config: config.IcechunkStorageConfig,
+        tmp_path: pathlib.Path,
+    ):
+        destination = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "cache"), branch_name="main", group_name="training_ready"
+        )
+        data_config = self._data_config(era5_store_config, fronts_store_config, destination)
+        with pytest.raises(ValueError, match="write_batch_size"):
+            generate.write_training_ready_dataset(data_config, seed=0)
+
+    def test_round_trip_matches_on_the_fly_assembly(
+        self,
+        era5_store_config: config.IcechunkStorageConfig,
+        fronts_store_config: config.IcechunkStorageConfig,
+        tmp_path: pathlib.Path,
+    ):
+        destination = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "cache"), branch_name="main", group_name="training_ready", write_batch_size=2
+        )
+        data_config = self._data_config(era5_store_config, fronts_store_config, destination)
+
+        generate.write_training_ready_dataset(data_config, seed=0)
+        cached = loaders.load_training_ready_data(destination)
+        expected = loaders.load_training_data(data_config, seed=0)
+
+        np.testing.assert_array_equal(cached.times, expected.times)
+        np.testing.assert_array_equal(cached.input_aligned.values, expected.input_aligned.values)
+        np.testing.assert_array_equal(cached.target_aligned.values, expected.target_aligned.values)
+
+    def test_attrs_present_on_written_cache(
+        self,
+        era5_store_config: config.IcechunkStorageConfig,
+        fronts_store_config: config.IcechunkStorageConfig,
+        tmp_path: pathlib.Path,
+    ):
+        destination = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "cache"), branch_name="main", group_name="training_ready", write_batch_size=2
+        )
+        data_config = self._data_config(era5_store_config, fronts_store_config, destination)
+        generate.write_training_ready_dataset(data_config, seed=0)
+
+        ds = utils.open_readonly_icechunk_store(
+            store_path=destination.store_path, branch=destination.branch_name, group=destination.group_name
+        )
+        assert ds.attrs["variables"] == ERA5_VARS
+        assert ds.attrs["seed"] == 0
+        assert "git_commit" in ds.attrs
 
 
 class TestInspectStore:

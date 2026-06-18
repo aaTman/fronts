@@ -1,9 +1,16 @@
+import pathlib
+
 import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.data import config, inputs, targets
-from fronts.data.loading import TrainingData, assemble_training_data
+from fronts.data import config, generate, inputs, targets
+from fronts.data.loaders import (
+    TrainingData,
+    assemble_training_data,
+    build_training_ready_dataset,
+    load_training_ready_data,
+)
 
 _VARS = ["temperature", "u_component_of_wind"]
 _LEVELS = [1000, 850]
@@ -153,3 +160,69 @@ class TestTrainingData:
         td = self._td()
         assert td.target_aligned.sizes["time"] == len(td.times)
         assert td.target_aligned.sizes["class"] == 6
+
+
+class TestBuildTrainingReadyDataset:
+    def _td(self, n_time: int = 6) -> TrainingData:
+        times = _days("2020-01-01", n_time)
+        return assemble_training_data(
+            [(_src(), _era5_ds(times))], _fronts_da(times), _data_config(front_dilation=1), seed=5
+        )
+
+    def test_input_values_match_input_aligned(self):
+        td = self._td()
+        ds = build_training_ready_dataset(td, run_meta={})
+        np.testing.assert_array_equal(ds["input"].values, td.input_aligned.values)
+
+    def test_target_values_match_target_aligned(self):
+        td = self._td()
+        ds = build_training_ready_dataset(td, run_meta={})
+        np.testing.assert_array_equal(ds["target"].values, td.target_aligned.values)
+
+    def test_attrs_set_from_run_meta(self):
+        td = self._td()
+        run_meta = {"variables": _VARS, "seed": 5, "front_dilation": 1}
+        ds = build_training_ready_dataset(td, run_meta=run_meta)
+        assert ds.attrs["variables"] == _VARS
+        assert ds.attrs["seed"] == 5
+        assert ds.attrs["front_dilation"] == 1
+
+    def test_none_run_meta_values_omitted(self):
+        td = self._td()
+        ds = build_training_ready_dataset(td, run_meta={"time_resolution": None, "seed": 5})
+        assert "time_resolution" not in ds.attrs
+        assert ds.attrs["seed"] == 5
+
+
+class TestLoadTrainingReadyData:
+    @pytest.fixture
+    def cache_store(self, tmp_path: pathlib.Path) -> config.IcechunkStorageConfig:
+        times = _days("2020-01-01", 6)
+        td = assemble_training_data([(_src(), _era5_ds(times))], _fronts_da(times), _data_config(front_dilation=1))
+        ds = build_training_ready_dataset(td, run_meta={"seed": 0})
+        storage_config = config.IcechunkStorageConfig(
+            store_path=str(tmp_path / "icechunk_store"),
+            branch_name="main",
+            group_name="training_ready",
+            write_batch_size=2,
+        )
+        generate.write_or_append_icechunk_store(storage_config, ds)
+        self._expected = ds
+        return storage_config
+
+    def test_times_round_trip(self, cache_store: config.IcechunkStorageConfig):
+        training_data = load_training_ready_data(cache_store)
+        np.testing.assert_array_equal(training_data.times, self._expected["input"].time.values)
+
+    def test_input_values_round_trip(self, cache_store: config.IcechunkStorageConfig):
+        training_data = load_training_ready_data(cache_store)
+        np.testing.assert_array_equal(training_data.input_aligned.values, self._expected["input"].values)
+
+    def test_target_values_round_trip(self, cache_store: config.IcechunkStorageConfig):
+        training_data = load_training_ready_data(cache_store)
+        np.testing.assert_array_equal(training_data.target_aligned.values, self._expected["target"].values)
+
+    def test_positions_are_identity(self, cache_store: config.IcechunkStorageConfig):
+        training_data = load_training_ready_data(cache_store)
+        np.testing.assert_array_equal(training_data.input_sources[0].positions, np.arange(6))
+        np.testing.assert_array_equal(training_data.target_source.positions, np.arange(6))

@@ -1,6 +1,6 @@
 """Batched ``tf.data`` pipeline for streaming ERA5/fronts samples from lazy stores.
 
-The data-loading machinery (scattered chunk gathering, background prefetch,
+The data-loaders machinery (scattered chunk gathering, background prefetch,
 exception propagation) lives in the TensorFlow-free :class:`ChunkPrefetcher` so it
 can be unit-tested without importing TensorFlow. :func:`make_batch_dataset` is a
 thin wrapper that wires the prefetcher into a ``tf.data.Dataset``; TensorFlow is

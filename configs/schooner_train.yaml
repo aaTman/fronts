@@ -21,6 +21,17 @@ data_config:
     store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
     branch_name: "main"
     virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  # Precomputed cache of the fully-assembled, already-dilated input/target tensors,
+  # written by `pixi run -e data build-training-dataset` (fronts.data.generate
+  # --build-training-dataset). write_batch_size sets the on-disk chunk size and must
+  # match load_subblock below (32) so each background gather subblock touches exactly
+  # one chunk, instead of one chunk per variable per timestep against the raw stores.
+  # Build the cache first, then uncomment this block to train off it.
+  # training_ready_icechunk_config:
+  #   store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/"
+  #   branch_name: "main"
+  #   group_name: "training_ready"
+  #   write_batch_size: 32
   batch_size: 32
   test_years: [2019]
   val_years: [2018]

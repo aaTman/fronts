@@ -13,7 +13,7 @@ import zarr.errors
 from dask.distributed import Client
 
 from fronts import utils
-from fronts.data import config, derived, sources
+from fronts.data import config, derived, loaders, sources
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -504,6 +504,65 @@ def write_or_append_icechunk_store(
         del ds_batch
 
 
+def write_training_ready_dataset(data_config: config.DataConfig, seed: int) -> None:
+    """Assemble training data once and write it to the ``training_ready`` icechunk cache.
+
+    Loads and aligns ERA5/fronts (and any extra ``input_sources``) exactly as the
+    on-the-fly training path does, then writes the result to
+    ``data_config.training_ready_icechunk_config`` so later training runs can read
+    already-assembled, large-chunk tensors instead of recomputing them from the raw
+    multi-variable stores every epoch.
+
+    Args:
+        data_config: DataConfig whose ``training_ready_icechunk_config`` is the
+            write destination; its ``write_batch_size`` sets the on-disk chunk size
+            (see ``write_or_append_icechunk_store``) and should match the consuming
+            ``DataConfig.load_subblock``.
+        seed: Seed for the presence-filter RNG used while assembling training data.
+
+    Raises:
+        ValueError: If ``training_ready_icechunk_config`` or its ``write_batch_size``
+            is unset — leaving the latter unset would write the entire time axis as a
+            single chunk.
+    """
+    destination = data_config.training_ready_icechunk_config
+    if destination is None:
+        raise ValueError("data_config.training_ready_icechunk_config must be set to build the training-ready cache.")
+    if destination.write_batch_size is None:
+        raise ValueError(
+            "training_ready_icechunk_config.write_batch_size must be set (e.g. to match load_subblock); "
+            "leaving it unset would write the entire time axis as a single chunk."
+        )
+
+    training_data = loaders.load_training_data(data_config, seed=seed)
+    run_meta = {
+        "variables": data_config.variables,
+        "front_dilation": data_config.front_dilation,
+        "time_resolution": data_config.time_resolution,
+        "seed": seed,
+        "git_commit": utils.get_git_commit(),
+        "era5_snapshot_id": utils.get_icechunk_snapshot_id(
+            data_config.era5_icechunk_config.store_path,
+            data_config.era5_icechunk_config.branch_name,
+            data_config.era5_icechunk_config.virtual_chunk_local_path,
+        ),
+        "fronts_snapshot_id": utils.get_icechunk_snapshot_id(
+            data_config.fronts_icechunk_config.store_path,
+            data_config.fronts_icechunk_config.branch_name,
+            data_config.fronts_icechunk_config.virtual_chunk_local_path,
+        ),
+    }
+    ds = loaders.build_training_ready_dataset(training_data, run_meta)
+    logger.info(
+        "Writing training_ready cache to %s (group=%s), %d timesteps, write_batch_size=%d",
+        destination.store_path,
+        destination.group_name,
+        len(training_data.times),
+        destination.write_batch_size,
+    )
+    write_or_append_icechunk_store(destination, ds)
+
+
 def create_dask_client(slurm_config: config.SlurmConfig, scheduler_options: dict | None = None):
     """Create a Dask client backed by a SLURM cluster.
 
@@ -546,7 +605,27 @@ def main():
         default=None,
         help="Override the zarr_async_concurrency value from the YAML config",
     )
+    parser.add_argument(
+        "--build-training-dataset",
+        action="store_true",
+        help=(
+            "Build the training_ready icechunk cache instead of downloading ERA5 data. "
+            "--config must point at a TrainConfig-style YAML (e.g. configs/schooner_train.yaml) "
+            "with a data_config.training_ready_icechunk_config block set."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seed for the presence-filter RNG (--build-training-dataset mode only)",
+    )
     args = parser.parse_args()
+
+    if args.build_training_dataset:
+        data_config = utils.open_config_yaml_as_dataclass(args.config, config.DataConfig, config_key="data_config")
+        write_training_ready_dataset(data_config, args.seed)
+        return
 
     bounding_box_type_hook = {utils.BoundingBox: lambda d: utils.BoundingBox(*d)}
 

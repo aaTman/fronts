@@ -79,6 +79,7 @@ s3fs = ">=2024.6.0"
 
 [tool.pixi.feature.data.tasks]
 generate = "python -m fronts.data.generate --config configs/generate_icechunk.yaml"
+build-training-dataset = "python -m fronts.data.generate --config configs/schooner_train.yaml --build-training-dataset"
 
 [tool.pixi.feature.train]
 platforms = ["linux-64"]

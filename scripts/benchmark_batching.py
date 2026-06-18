@@ -24,7 +24,7 @@ import zarr
 
 from fronts import train, utils
 from fronts.data.batching import ChunkPrefetcher
-from fronts.data.loading import load_training_data
+from fronts.data.loaders import load_training_data
 from fronts.utils import process_rss_gb
 
 logger = logging.getLogger(__name__)

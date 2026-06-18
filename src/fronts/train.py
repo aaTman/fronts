@@ -28,7 +28,7 @@ import zarr
 from fronts import model, utils
 from fronts.data import config, inputs, targets
 from fronts.data.batching import make_batch_dataset
-from fronts.data.loading import load_training_data
+from fronts.data.loaders import load_training_data, load_training_ready_data
 from fronts.layers import losses, metrics
 
 logger = logging.getLogger(__name__)
@@ -261,12 +261,14 @@ def main():
 
     zarr.config.update({"threading.max_workers": 16})
 
-    training_data = load_training_data(cfg.data_config, seed=cfg.seed)
+    if cfg.data_config.training_ready_icechunk_config is not None:
+        logger.info("Loading training data from training_ready cache (skipping on-the-fly assembly)...")
+        training_data = load_training_ready_data(cfg.data_config.training_ready_icechunk_config)
+    else:
+        training_data = load_training_data(cfg.data_config, seed=cfg.seed)
     times = training_data.times
 
-    train_mask, val_mask, test_mask = utils.split_by_year(
-        times, cfg.data_config.test_years, cfg.data_config.val_years
-    )
+    train_mask, val_mask, test_mask = utils.split_by_year(times, cfg.data_config.test_years, cfg.data_config.val_years)
     train_indices = sorted(np.where(train_mask)[0].tolist())
     val_indices = sorted(np.where(val_mask)[0].tolist())
     test_indices = sorted(np.where(test_mask)[0].tolist())
