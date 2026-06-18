@@ -47,9 +47,8 @@ def _data_config(variables: list[str] = _VARS, time_resolution: str | None = Non
         era5_icechunk_config=dummy,
         fronts_icechunk_config=dummy,
         variables=variables,
-        train_split=0.8,
-        val_split=0.1,
-        test_split=0.1,
+        test_years=[],
+        val_years=[],
         time_resolution=time_resolution,
         front_dilation=front_dilation,
     )

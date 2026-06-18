@@ -264,15 +264,12 @@ def main():
     training_data = load_training_data(cfg.data_config, seed=cfg.seed)
     times = training_data.times
 
-    rng = np.random.default_rng(cfg.seed)
-    n_total = len(times)
-    test_mask = targets.seasonal_test_split(times, cfg.data_config.test_split, rng)
-    remaining_indices = np.where(~test_mask)[0]
+    train_mask, val_mask, test_mask = utils.split_by_year(
+        times, cfg.data_config.test_years, cfg.data_config.val_years
+    )
+    train_indices = sorted(np.where(train_mask)[0].tolist())
+    val_indices = sorted(np.where(val_mask)[0].tolist())
     test_indices = sorted(np.where(test_mask)[0].tolist())
-    shuffled = rng.permutation(remaining_indices)
-    n_val = round(n_total * cfg.data_config.val_split)
-    val_indices = sorted(shuffled[:n_val].tolist())
-    train_indices = sorted(shuffled[n_val:].tolist())
     train_inputs = training_data.lazy_inputs(train_indices)
 
     train_input_sources = [s.select(train_indices) for s in training_data.input_sources]

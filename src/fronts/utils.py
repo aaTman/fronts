@@ -207,6 +207,34 @@ def apply_time_resolution(times: np.ndarray, resolution: str) -> np.ndarray:
     return times[idx == idx.floor(resolution)]
 
 
+def split_by_year(
+    times: np.ndarray, test_years: list[int], val_years: list[int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (train_mask, val_mask, test_mask) boolean masks based on calendar year.
+
+    Every timestep whose year is in ``test_years``/``val_years`` is assigned to that split;
+    all remaining timesteps default to train.
+
+    Args:
+        times: 1-D array of numpy datetime64 timestamps.
+        test_years: Calendar years to hold out as the sequestered test set.
+        val_years: Calendar years to hold out for validation.
+
+    Returns:
+        Tuple of boolean arrays, each of shape ``(len(times),)``.
+
+    Raises:
+        ValueError: If test_years and val_years overlap.
+    """
+    if set(test_years) & set(val_years):
+        raise ValueError(f"test_years and val_years overlap: {set(test_years) & set(val_years)}")
+    years = pd.DatetimeIndex(times).year
+    test_mask = np.isin(years, test_years)
+    val_mask = np.isin(years, val_years)
+    train_mask = ~(test_mask | val_mask)
+    return train_mask, val_mask, test_mask
+
+
 def epochs_per_full_pass(n_samples: int, batch_size: int, steps_per_epoch: int) -> int:
     """Return how many subset-epochs of ``steps_per_epoch`` batches cover all samples once.
 

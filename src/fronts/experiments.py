@@ -88,10 +88,15 @@ def main():
     era5_da = training_data.input_aligned
     front_da = training_data.target_aligned
 
-    train_era5 = era5_da.isel(time=slice(None, data_config.train_split))
-    val_era5 = era5_da.isel(time=slice(data_config.train_split, None))
-    train_front = front_da.isel(time=slice(None, data_config.train_split))
-    val_front = front_da.isel(time=slice(data_config.train_split, None))
+    train_mask, val_mask, _test_mask = utils.split_by_year(
+        training_data.times, data_config.test_years, data_config.val_years
+    )
+    train_indices = np.where(train_mask)[0]
+    val_indices = np.where(val_mask)[0]
+    train_era5 = era5_da.isel(time=train_indices)
+    val_era5 = era5_da.isel(time=val_indices)
+    train_front = front_da.isel(time=train_indices)
+    val_front = front_da.isel(time=val_indices)
 
     logger.info(f"Train timesteps: {train_era5.sizes['time']}, Val timesteps: {val_era5.sizes['time']}")
 

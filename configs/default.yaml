@@ -8,9 +8,8 @@ data_config:
   patch_size: 128
   stride: 64
   batch_size: 4
-  train_split: 0.8
-  val_split: 0.1
-  test_split: 0.1
+  test_years: [2019]
+  val_years: [2018]
   norm_sample_size: 500  # patches fed to Normalization.adapt()
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # background (class 0) suppressed
   variables: [

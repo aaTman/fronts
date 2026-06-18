@@ -125,11 +125,10 @@ class DataConfig:
         era5_icechunk_config: Icechunk store config for ERA5 data.
         fronts_icechunk_config: Icechunk store config for fronts data.
         variables: ERA5 variable names to load as input channels.
-        train_split: Fraction of all filtered time steps to use for training.
-        val_split: Fraction of all filtered time steps to use for validation.
-        test_split: Fraction of timesteps per meteorological season to hold out as a sequestered
-            test set (never seen during training or validation). train_split + val_split +
-            test_split should sum to 1.
+        test_years: Calendar years to hold out as the sequestered test set (never seen during
+            training or validation).
+        val_years: Calendar years to hold out for validation. Must not overlap test_years.
+            All years not in test_years or val_years are used for training.
         batch_size: Number of timesteps per training batch.
         steps_per_epoch: Number of batches per epoch passed to model.fit. None lets
             the dataset size determine it (one full pass per epoch). A smaller value
@@ -165,9 +164,8 @@ class DataConfig:
     era5_icechunk_config: IcechunkStorageConfig
     fronts_icechunk_config: IcechunkStorageConfig
     variables: list[str]
-    train_split: float
-    val_split: float
-    test_split: float
+    test_years: list[int]
+    val_years: list[int]
     batch_size: int = 4
     steps_per_epoch: int | None = None
     load_chunk_steps: int | None = None
