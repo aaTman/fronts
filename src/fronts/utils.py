@@ -13,10 +13,40 @@ import xarray as xr
 import yaml
 from xarray.core.indexes import IndexSelResult, PandasIndex, _query_slice
 from xarray.core.indexing import _expand_slice
+import dataclasses
 
 T = TypeVar("T")
 _XArray = TypeVar("_XArray", xr.Dataset, xr.DataArray)
 BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
+
+
+@dataclasses.dataclass
+class IcechunkStorageConfig:
+    """Configuration for storing generated data in an Icechunk repository.
+
+    Attributes:
+        store_path: Path to the Icechunk store.
+        branch_name: Name of the branch to write to.
+        commit_message: Message for the commit.
+        zarr_format: Zarr format version to use when writing the store. Default is 3.
+        group_name: Optional group name within the zarr store. Default is None.
+        virtual_chunk_local_path: If the store contains virtual chunks referencing local
+            netcdf files, set this to the directory those files live in (e.g.
+            ``/ourdisk/hpc/ai2es/tman/data/netcdf/``). The ``file://`` URL prefix is
+            derived automatically. Leave None for stores with no virtual chunks.
+        write_batch_size: Number of time steps to load and commit per write when
+            writing or appending. Bounds peak memory without dask: each batch is
+            loaded eagerly, appended along time, and committed before the next
+            batch is read. None writes the whole dataset in one commit.
+    """
+
+    store_path: str
+    branch_name: str
+    commit_message: str = "add data"
+    zarr_format: int = 3
+    group_name: str | None = None
+    virtual_chunk_local_path: str | None = None
+    write_batch_size: int | None = None
 
 
 class PeriodicBoundaryIndex(PandasIndex):

@@ -63,8 +63,8 @@ def era5_zarr(tmp_path: pathlib.Path, minimal_ds: xr.Dataset) -> pathlib.Path:
 
 
 @pytest.fixture
-def era5_config(era5_zarr: pathlib.Path) -> config.ERA5DataLoaderConfig:
-    return config.ERA5DataLoaderConfig(
+def era5_config(era5_zarr: pathlib.Path) -> generate.ERA5DataLoaderConfig:
+    return generate.ERA5DataLoaderConfig(
         era5_uri=str(era5_zarr),
         variables=ERA5_VARS,
         pressure_levels=LEVELS,
@@ -275,8 +275,8 @@ class TestInspectStore:
 
 
 class TestDetermineWriteStrategy:
-    def _base_config(self, era5_zarr) -> config.ERA5DataLoaderConfig:
-        return config.ERA5DataLoaderConfig(
+    def _base_config(self, era5_zarr) -> generate.ERA5DataLoaderConfig:
+        return generate.ERA5DataLoaderConfig(
             era5_uri=str(era5_zarr),
             variables=list(ERA5_VARS),
             pressure_levels=list(LEVELS),
@@ -424,8 +424,8 @@ class TestAttributePreservation:
 
 
 class TestTimeResolution:
-    def _config(self, era5_zarr: pathlib.Path, resolution: str) -> config.ERA5DataLoaderConfig:
-        return config.ERA5DataLoaderConfig(
+    def _config(self, era5_zarr: pathlib.Path, resolution: str) -> generate.ERA5DataLoaderConfig:
+        return generate.ERA5DataLoaderConfig(
             era5_uri=str(era5_zarr),
             variables=list(ERA5_VARS),
             pressure_levels=list(LEVELS),
@@ -494,7 +494,7 @@ class TestYamlConfigLoading:
             raw = yaml.safe_load(f)
 
         result = dacite.from_dict(
-            data_class=config.ERA5DataLoaderConfig,
+            data_class=generate.ERA5DataLoaderConfig,
             data=raw["era5_data_config"],
             config=dacite.Config(
                 type_hooks={BoundingBox: lambda x: BoundingBox(*x)},
@@ -526,7 +526,7 @@ class TestYamlConfigLoading:
         assert result.commit_message == "test commit"
 
 
-_BASE_CONFIG = config.ERA5DataLoaderConfig(
+_BASE_CONFIG = generate.ERA5DataLoaderConfig(
     era5_uri="/dev/null",
     variables=list(ERA5_VARS),
     pressure_levels=list(LEVELS),
