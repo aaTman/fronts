@@ -6,6 +6,7 @@ import tensorflow as tf
 import xarray as xr
 
 from fronts import utils
+from fronts.data import inputs, targets
 
 
 @dataclasses.dataclass
@@ -43,7 +44,7 @@ class DatasetConfig:
     batch_size: int = 4
     class_weights: list[float] | None = None
     front_dilation: int = 0
-    time_resolution: str | None = None
+    time_resolution: str = "6h"
     norm_stats_cache_dir: str | None = None
     max_queue_size: int = 4
 
@@ -52,7 +53,7 @@ class TrainingDataset(tf.keras.utils.PyDataset):
     """Batches a split's ERA5/fronts DataArrays for training via the PyDataset interface.
 
     Each ``__getitem__`` call gathers exactly one batch's timesteps with a single
-    ``isel(time=idxs)`` take. ``input_array``/``target_array`` must already be sliced
+    ``isel(time=idxs)`` take. ``input_ds``/``target_ds`` must already be sliced
     to this split (e.g. ``input_da.isel(time=train_indices)``) and backed by non-dask
     (``chunks=None``) arrays so each take reads directly through the zarr store rather
     than building a dask graph; concurrency across batches comes entirely from
@@ -64,28 +65,30 @@ class TrainingDataset(tf.keras.utils.PyDataset):
     across any deep-supervision outputs, not the dataset.
 
     Attributes:
-        input_array: This split's input DataArray, shape (time, latitude, longitude, channel).
-        target_array: This split's target DataArray, shape (time, latitude, longitude, class).
+        input_ds: This split's input DataArray, shape (time, latitude, longitude, channel).
+        target_ds: This split's target DataArray, shape (time, latitude, longitude, class).
         batch_size: Number of timesteps per batch.
         shuffle: If True, reshuffles the sample order at the end of every epoch.
     """
 
     def __init__(
         self,
-        input_array: xr.DataArray,
-        target_array: xr.DataArray,
+        input_ds: xr.Dataset,
+        target_da: xr.DataArray,
+        data_config: DatasetConfig,
         batch_size: int,
         shuffle: bool = False,
         seed: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        if input_array.sizes["time"] != target_array.sizes["time"]:
+        if input_ds.sizes["time"] != target_da.sizes["time"]:
             raise ValueError(
-                f"Input and target time lengths differ: {input_array.sizes['time']} vs {target_array.sizes['time']}"
+                f"Input and target time lengths differ: {input_ds.sizes['time']} vs {target_da.sizes['time']}"
             )
-        self.input_array = input_array
-        self.target_array = target_array
+        self.input_ds = input_ds.copy()
+        self.target_da = target_da.copy()
+        self.data_config = data_config
         self.batch_size = batch_size
         self.shuffle = shuffle
         self._rng = np.random.default_rng(seed)
@@ -93,7 +96,12 @@ class TrainingDataset(tf.keras.utils.PyDataset):
 
     @property
     def _total(self) -> int:
-        return self.input_array.sizes["time"]
+        return self.input_ds.sizes["time"]
+
+    @property
+    def n_samples(self) -> int:
+        """Number of individual timesteps (samples) in this split."""
+        return self._total
 
     def __len__(self) -> int:
         """Returns the number of batches per epoch."""
@@ -107,6 +115,21 @@ class TrainingDataset(tf.keras.utils.PyDataset):
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) batch at ``idx``."""
         local_idxs = self._order[idx * self.batch_size : (idx + 1) * self.batch_size]
-        x = self.input_array.isel(time=local_idxs).values
-        y = self.target_array.isel(time=local_idxs).values
+
+        # Subset batch using isel
+        x_xarray = self.input_ds.isel(time=local_idxs)
+        y_da = self.target_da.isel(time=local_idxs)
+
+        # Convert inputs to a DataArray of shape (time, latitude, longitude, channel) and load into memory as float32.
+        x = inputs.inputs_ds_to_dataarray(x_xarray, self.data_config.variables).values
+
+        # One-hot encode targets, remap front classes to the configured set, and load into memory as float32.
+        # Dilate fronts if > 0
+        y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_da))
+        if self.data_config.front_dilation > 0:
+            y_da = targets.dilate_fronts(y_da, self.data_config.front_dilation)
+
+        # Convert to numpy arrays in memory. The model's SharedTargetModel is responsible for broadcasting the single
+        # target across any deep-supervision outputs, not the dataset.
+        y = y_da.values
         return x, y

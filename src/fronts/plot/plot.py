@@ -298,7 +298,7 @@ def _load_prediction(
     Args:
         model: Loaded Keras model with baked-in normalization.
         era5_ds: ERA5 Dataset from icechunk store.
-        variables: ERA5 variable names to pass to ``era5_to_dataarray``.
+        variables: ERA5 variable names to pass to ``inputs_ds_to_dataarray``.
         front_types: Front type labels to include in the output Dataset.
         init_time: Target timestep as a numpy datetime64.
 
@@ -306,7 +306,7 @@ def _load_prediction(
         Dataset with one variable per front type, dims (latitude, longitude).
     """
     era5_t = era5_ds.sel(time=[init_time])
-    x_np = inputs.era5_to_dataarray(era5_t, variables).values[0].astype(np.float32)
+    x_np = inputs.inputs_ds_to_dataarray(era5_t, variables).values[0].astype(np.float32)
 
     pred = model(x_np[np.newaxis], training=False)
     if isinstance(pred, (list, tuple)):

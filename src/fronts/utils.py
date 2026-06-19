@@ -250,8 +250,12 @@ def split_by_year(
     if set(test_years) & set(val_years):
         raise ValueError(f"test_years and val_years overlap: {set(test_years) & set(val_years)}")
     years = pd.DatetimeIndex(times).year
-    test_mask = np.isin(years, test_years)
-    val_mask = np.isin(years, val_years)
+    test_mask = np.zeros(len(times), dtype=bool)
+    val_mask = np.zeros(len(times), dtype=bool)
+    if test_years:
+        test_mask = np.isin(years, test_years)
+    if val_years:
+        val_mask = np.isin(years, val_years)
     train_mask = ~(test_mask | val_mask)
     return train_mask, val_mask, test_mask
 

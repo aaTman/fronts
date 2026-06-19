@@ -2,7 +2,7 @@
 
 One-off remediation. The original store mixed two incompatible chunkings
 (``(125, 1, 40, 240)`` small-tile vs ``(24, 6, 320, 960)`` full-spatial) and
-stored four derived variables as float64. When ``era5_to_dataarray`` stacks the
+stored four derived variables as float64. When ``inputs_ds_to_dataarray`` stacks the
 variables together, dask cannot find a common chunking and falls back to a
 pathological rechunk, yielding ~17 MB/s reads. It was also missing the
 ``land_sea_mask`` channel the training config expects (77 channels instead of
