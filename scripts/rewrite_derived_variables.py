@@ -48,7 +48,7 @@ def main():
         args.config, generate.ERA5DataLoaderConfig, config_key="era5_config"
     )
     icechunk_config = utils.open_config_yaml_as_dataclass(
-        args.config, generate.IcechunkStorageConfig, config_key="icechunk_storage_config"
+        args.config, utils.IcechunkStorageConfig, config_key="icechunk_storage_config"
     )
 
     logger.info("Rewriting %s in %s", args.variables, icechunk_config.store_path)

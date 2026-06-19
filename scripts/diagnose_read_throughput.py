@@ -22,7 +22,7 @@ def _fmt_bytes(n: float) -> str:
 def main() -> None:
     """Print store layout and time reads to localize the throughput bottleneck."""
     cfg = utils.open_config_yaml_as_dataclass("configs/schooner_train.yaml", train.TrainConfig)
-    era5_cfg = cfg.data_config.era5_icechunk_config
+    era5_cfg = cfg.data_config.inputs_icechunk_config
 
     ds = utils.open_readonly_icechunk_store(
         store_path=era5_cfg.store_path,
