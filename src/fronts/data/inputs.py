@@ -10,7 +10,7 @@ import xarray as xr
 logger = logging.getLogger(__name__)
 
 
-def era5_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray:
+def inputs_ds_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray:
     """Convert a gridded input Dataset to a lazy 4D DataArray without materializing data.
 
     Uses xarray's to_array and stack so no data is loaded from disk until

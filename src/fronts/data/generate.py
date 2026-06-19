@@ -7,6 +7,7 @@ import sys
 import dask_jobqueue  # type: ignore
 import icechunk as ic
 import icechunk.xarray
+import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
@@ -109,7 +110,7 @@ class WriteStrategy:
     def execute(
         self,
         era5_config: ERA5DataLoaderConfig,
-        icechunk_config: config.IcechunkStorageConfig,
+        icechunk_config: utils.IcechunkStorageConfig,
     ) -> None:
         """Generate and write the ERA5 data described by this strategy.
 
@@ -305,7 +306,7 @@ def _derivation_chunks(ds: xr.Dataset) -> dict[str, int]:
 
 def write_derived_variables(
     era5_config: ERA5DataLoaderConfig,
-    icechunk_config: config.IcechunkStorageConfig,
+    icechunk_config: utils.IcechunkStorageConfig,
     derived_vars: list[str],
 ) -> None:
     """Compute derived variables from the local store and write them as new variables.
@@ -329,7 +330,7 @@ def write_derived_variables(
     write_new_variables_to_icechunk_store(icechunk_config, ds_derived)
 
 
-def inspect_store(storage_config: config.IcechunkStorageConfig) -> StoreContents | None:
+def inspect_store(storage_config: utils.IcechunkStorageConfig) -> StoreContents | None:
     """Return a snapshot of the variables, times, levels, and spatial extent in the store.
 
     Args:
@@ -398,7 +399,8 @@ def determine_write_strategy(
         )
     else:
         missing_variables = [v for v in era5_config.variables if v not in store_contents.variables]
-        missing_times = requested_times[~requested_times.isin(store_contents.times)]
+        is_present = np.asarray(requested_times.isin(store_contents.times))
+        missing_times = requested_times[~is_present]
 
         if len(missing_variables) > 0 and len(missing_times) > 0:
             error_reason = (
@@ -424,7 +426,7 @@ def determine_write_strategy(
 
 
 def write_new_variables_to_icechunk_store(
-    storage_config: config.IcechunkStorageConfig,
+    storage_config: utils.IcechunkStorageConfig,
     ds: xr.Dataset | xr.DataArray,
 ) -> None:
     """Write new variables into an existing icechunk store.
@@ -475,7 +477,7 @@ def write_new_variables_to_icechunk_store(
 
 
 def write_or_append_icechunk_store(
-    storage_config: config.IcechunkStorageConfig, ds: xr.Dataset | xr.DataArray, dry_run: bool = False
+    storage_config: utils.IcechunkStorageConfig, ds: xr.Dataset | xr.DataArray, dry_run: bool = False
 ) -> None:
     """Write or append an xarray Dataset to an icechunk store.
 
@@ -595,7 +597,7 @@ def main():
     logger.info(f"ERA5 data config loaded: {era5_config}")
 
     icechunk_config = utils.open_config_yaml_as_dataclass(
-        args.config, config.IcechunkStorageConfig, config_key="icechunk_storage_config"
+        args.config, utils.IcechunkStorageConfig, config_key="icechunk_storage_config"
     )
     logger.info(f"Icechunk storage config loaded: {icechunk_config}")
 

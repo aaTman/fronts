@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 import subprocess
 from collections import namedtuple
 from typing import Any, TypeVar
@@ -225,6 +226,54 @@ def apply_time_resolution(times: np.ndarray, resolution: str) -> np.ndarray:
     """
     idx = pd.DatetimeIndex(times)
     return times[idx == idx.floor(resolution)]
+
+
+def split_by_year(
+    times: np.ndarray, test_years: list[int], val_years: list[int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (train_mask, val_mask, test_mask) boolean masks based on calendar year.
+
+    Every timestep whose year is in ``test_years``/``val_years`` is assigned to that split;
+    all remaining timesteps default to train.
+
+    Args:
+        times: 1-D array of numpy datetime64 timestamps.
+        test_years: Calendar years to hold out as the sequestered test set.
+        val_years: Calendar years to hold out for validation.
+
+    Returns:
+        Tuple of boolean arrays, each of shape ``(len(times),)``.
+
+    Raises:
+        ValueError: If test_years and val_years overlap.
+    """
+    if set(test_years) & set(val_years):
+        raise ValueError(f"test_years and val_years overlap: {set(test_years) & set(val_years)}")
+    years = pd.DatetimeIndex(times).year
+    test_mask = np.zeros(len(times), dtype=bool)
+    val_mask = np.zeros(len(times), dtype=bool)
+    if test_years:
+        test_mask = np.isin(years, test_years)
+    if val_years:
+        val_mask = np.isin(years, val_years)
+    train_mask = ~(test_mask | val_mask)
+    return train_mask, val_mask, test_mask
+
+
+def slurm_cpu_count() -> int:
+    """Return the number of CPUs allocated to the current SLURM job, if any.
+
+    Reads ``SLURM_CPUS_PER_TASK`` (set when a job requests ``--cpus-per-task``).
+    Falls back to ``os.cpu_count()`` outside of a SLURM allocation, or to 1 if
+    that can't be determined either.
+
+    Returns:
+        Number of CPUs to use as a default worker/thread count.
+    """
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm_cpus is not None:
+        return int(slurm_cpus)
+    return os.cpu_count() or 1
 
 
 def epochs_per_full_pass(n_samples: int, batch_size: int, steps_per_epoch: int) -> int:

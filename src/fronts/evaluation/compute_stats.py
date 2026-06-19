@@ -385,7 +385,7 @@ def main() -> None:
     era5_ds = utils.select_spatial_domain(era5_ds, bb)
     fronts_ds = utils.select_spatial_domain(fronts_ds, bb)
 
-    era5_da = inputs.era5_to_dataarray(era5_ds, data_cfg.variables)
+    era5_da = inputs.inputs_ds_to_dataarray(era5_ds, data_cfg.variables)
     fronts_remapped = targets.remap_fronts(fronts_ds["identifier"])
     targets_da = utils.drop_duplicate_times(targets.one_hot_encode_to_dataarray(fronts_remapped))
 
