@@ -75,12 +75,13 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
 
     Must run before ``wandb.keras.WandbMetricsLogger`` in the callbacks list passed to
     ``model.fit`` — Keras shares one mutable ``logs`` dict across every callback's
-    ``on_epoch_end`` call in list order, so whichever callback runs first determines
-    what later callbacks (and W&B) see.
+    ``on_epoch_end``/``on_train_batch_end`` call in list order, so whichever callback
+    runs first determines what later callbacks (and W&B) see. ``on_train_batch_end``
+    only ever sees unprefixed (training) keys since validation runs once per epoch,
+    so the ``val_`` half of the loop below is a no-op there.
     """
 
-    def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
-        """Aggregates per-output hss into hss/val_hss and strips per-output loss keys in place."""
+    def _consolidate(self, logs: dict | None) -> None:
         if not logs:
             return
         for prefix, is_val_key in (("", False), ("val_", True)):
@@ -92,6 +93,14 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
 
         for key in [k for k in logs if _PER_OUTPUT_LOSS_RE.match(_strip_val_prefix(k))]:
             logs.pop(key)
+
+    def on_train_batch_end(self, batch: int, logs: dict | None = None) -> None:
+        """Aggregates per-output hss into hss and strips per-output loss keys in place."""
+        self._consolidate(logs)
+
+    def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
+        """Aggregates per-output hss into hss/val_hss and strips per-output loss keys in place."""
+        self._consolidate(logs)
 
 
 class GcCallback(tf.keras.callbacks.Callback):
