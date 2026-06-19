@@ -141,7 +141,11 @@ def select_active_test_timestep(target_da: xr.DataArray) -> int:
     has_front = target_da.isin(front_codes).any(dim=["latitude", "longitude"]).compute().values
     indices = np.flatnonzero(has_front)
     if len(indices) == 0:
-        raise ValueError("No active (front-containing) timestep found in the test split.")
+        raise ValueError(
+            f"No active (front-containing) timestep found in the test split ({target_da.sizes.get('time', 0)} "
+            "timesteps checked). Either the test split is empty or none of its timesteps contain any of the "
+            f"front codes {front_codes}."
+        )
     return int(indices[0])
 
 

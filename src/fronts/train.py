@@ -268,6 +268,7 @@ def _build_test_visualization_callback(
     assert callbacks_config.test_viz_every_n_epochs is not None
     logger.info("Loading test split for periodic visualization...")
     test_dataset = load_data_into_dataloader(data_config, split="test", seed=seed)
+    logger.info("Test split loaded: %d timesteps available for visualization.", test_dataset.n_samples)
 
     active_idx = fronts_callbacks.select_active_test_timestep(test_dataset.target_da)
     active_x, active_y = test_dataset.get_at_indices(np.array([active_idx]))
@@ -453,7 +454,16 @@ def main():
 
     extra_callbacks = []
     if wandb_project and cfg.callbacks_config.test_viz_every_n_epochs:
-        extra_callbacks.append(_build_test_visualization_callback(cfg.data_config, cfg.callbacks_config, cfg.seed))
+        try:
+            extra_callbacks.append(
+                _build_test_visualization_callback(cfg.data_config, cfg.callbacks_config, cfg.seed)
+            )
+        except ValueError:
+            logger.warning(
+                "Skipping periodic test-set visualization: could not build the callback "
+                "(see preceding error). Training will continue without it.",
+                exc_info=True,
+            )
 
     logger.info(
         "Starting training: %d epochs, %d train steps/epoch, %d val steps/epoch "
