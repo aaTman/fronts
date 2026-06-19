@@ -180,7 +180,7 @@ def _compile(model: tf.keras.Model, learning_rate: float, class_weights: list[fl
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
     model.compile(
         optimizer=optimizer,
-        loss=[loss_fn] * n_out,
+        loss=loss_fn,
         metrics=[[hss_fn]] * n_out,
     )
     return n_out
@@ -395,8 +395,8 @@ def main():
                 tf.keras.layers.Activation("linear", dtype="float32", name=f"output_{i}_float32")(out)
                 for i, out in enumerate(unet.outputs)
             ]
-            unet = tf.keras.Model(unet.inputs, float32_outputs, name=unet.name)
-        n_out = _compile(unet, cfg.learning_rate, cfg.data_config.class_weights)
+            unet = model.SharedTargetModel(unet.inputs, float32_outputs, name=unet.name)
+        _compile(unet, cfg.learning_rate, cfg.data_config.class_weights)
     logger.info("Model built and compiled.")
 
     unet.summary()
@@ -409,7 +409,6 @@ def main():
         train_input,
         train_target,
         batch_size=cfg.data_config.batch_size,
-        n_supervision_outputs=n_out,
         shuffle=True,
         seed=cfg.seed,
         workers=cfg.data_config.prefetch_workers,
@@ -421,7 +420,6 @@ def main():
         val_input,
         val_target,
         batch_size=cfg.data_config.batch_size,
-        n_supervision_outputs=n_out,
         workers=cfg.data_config.prefetch_workers,
         use_multiprocessing=False,
         max_queue_size=cfg.data_config.max_queue_size,

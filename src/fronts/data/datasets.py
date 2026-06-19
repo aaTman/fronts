@@ -65,12 +65,14 @@ class TrainingDataset(tf.keras.utils.PyDataset):
     ``tf.keras.utils.PyDataset``'s own thread pool (``workers``/``max_queue_size``
     passed through ``**kwargs``).
 
+    Yields a single (unreplicated) target per batch — the model's
+    ``SharedTargetModel`` (see ``fronts.model``) is responsible for broadcasting it
+    across any deep-supervision outputs, not the dataset.
+
     Attributes:
         input_array: This split's input DataArray, shape (time, latitude, longitude, channel).
         target_array: This split's target DataArray, shape (time, latitude, longitude, class).
         batch_size: Number of timesteps per batch.
-        n_supervision_outputs: Number of deep supervision outputs; the target is
-            replicated this many times per batch.
         shuffle: If True, reshuffles the sample order at the end of every epoch.
     """
 
@@ -79,7 +81,6 @@ class TrainingDataset(tf.keras.utils.PyDataset):
         input_array: xr.DataArray,
         target_array: xr.DataArray,
         batch_size: int,
-        n_supervision_outputs: int,
         shuffle: bool = False,
         seed: int = 0,
         **kwargs,
@@ -92,7 +93,6 @@ class TrainingDataset(tf.keras.utils.PyDataset):
         self.input_array = input_array
         self.target_array = target_array
         self.batch_size = batch_size
-        self.n_supervision_outputs = n_supervision_outputs
         self.shuffle = shuffle
         self._rng = np.random.default_rng(seed)
         self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
@@ -110,9 +110,9 @@ class TrainingDataset(tf.keras.utils.PyDataset):
         if self.shuffle:
             self._order = self._rng.permutation(self._total)
 
-    def __getitem__(self, idx: int) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
-        """Returns the (input, target) batch at ``idx``, target replicated per supervision output."""
+    def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Returns the (input, target) batch at ``idx``."""
         local_idxs = self._order[idx * self.batch_size : (idx + 1) * self.batch_size]
         x = self.input_array.isel(time=local_idxs).values
         y = self.target_array.isel(time=local_idxs).values
-        return x, tuple(y for _ in range(self.n_supervision_outputs))
+        return x, y

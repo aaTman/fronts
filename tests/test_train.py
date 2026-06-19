@@ -127,7 +127,7 @@ class TestTrainingDatasetGather:
         # A non-contiguous time selection must yield exactly those timesteps in order.
         sub_era5 = era5_da.isel(time=[4, 2])
         sub_front = front_da.isel(time=[4, 2])
-        ds = TrainingDataset(sub_era5, sub_front, batch_size=1, n_supervision_outputs=1)
+        ds = TrainingDataset(sub_era5, sub_front, batch_size=1)
         x0, _ = ds[0]
         x1, _ = ds[1]
         np.testing.assert_allclose(x0[0], era5_da.isel(time=4).values)
@@ -137,7 +137,7 @@ class TestTrainingDatasetGather:
         order = [4, 0, 3, 1, 2]
         sub_era5 = era5_da.isel(time=order)
         sub_front = front_da.isel(time=order)
-        ds = TrainingDataset(sub_era5, sub_front, batch_size=1, n_supervision_outputs=1)
+        ds = TrainingDataset(sub_era5, sub_front, batch_size=1)
         for i, native in enumerate(order):
             x, _ = ds[i]
             np.testing.assert_allclose(x[0], era5_da.isel(time=native).values)
@@ -148,20 +148,13 @@ class TestTrainingDatasetGather:
                 era5_da.isel(time=[0, 1]),
                 front_da.isel(time=[0]),
                 batch_size=1,
-                n_supervision_outputs=1,
             )
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestTrainingDataset:
-    def _make_ds(self, era5_da, front_da, n_supervision_outputs=1, batch_size=2, **kwargs):
-        return TrainingDataset(
-            era5_da,
-            front_da,
-            batch_size=batch_size,
-            n_supervision_outputs=n_supervision_outputs,
-            **kwargs,
-        )
+    def _make_ds(self, era5_da, front_da, batch_size=2, **kwargs):
+        return TrainingDataset(era5_da, front_da, batch_size=batch_size, **kwargs)
 
     def test_input_batch_shape(self, era5_da, front_da):
         batch_size = 2
@@ -173,13 +166,7 @@ class TestTrainingDataset:
         batch_size = 2
         ds = self._make_ds(era5_da, front_da, batch_size=batch_size)
         _, y_batch = ds[0]
-        assert y_batch[0].shape == (batch_size, N_LAT, N_LON, N_CLASSES)
-
-    def test_n_supervision_outputs(self, era5_da, front_da):
-        for n_out in [1, 3, 5]:
-            ds = self._make_ds(era5_da, front_da, n_supervision_outputs=n_out, batch_size=2)
-            _, y_batch = ds[0]
-            assert len(y_batch) == n_out
+        assert y_batch.shape == (batch_size, N_LAT, N_LON, N_CLASSES)
 
     def test_covers_all_timesteps(self, era5_da, front_da):
         batch_size = 2
@@ -191,7 +178,7 @@ class TestTrainingDataset:
         ds = self._make_ds(era5_da, front_da, batch_size=2)
         x_batch, y_batch = ds[0]
         assert x_batch.dtype == np.float32
-        assert y_batch[0].dtype == np.float32
+        assert y_batch.dtype == np.float32
 
     def test_shuffle_reshuffles_on_epoch_end(self, era5_da, front_da):
         ds = self._make_ds(era5_da, front_da, batch_size=1, shuffle=True, seed=0)
