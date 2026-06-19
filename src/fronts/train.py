@@ -322,15 +322,12 @@ def main():
 
     era5_da, _front_da, input_da, target_da = load_training_data(cfg.data_config, seed=cfg.seed)
 
-    rng = np.random.default_rng(cfg.seed)
-    n_total = era5_da.sizes["time"]
-    test_mask = targets.seasonal_test_split(era5_da.time.values, cfg.data_config.test_split, rng)
-    remaining_indices = np.where(~test_mask)[0]
+    train_mask, val_mask, test_mask = utils.split_by_year(
+        era5_da.time.values, cfg.data_config.test_years, cfg.data_config.val_years
+    )
+    train_indices = sorted(np.where(train_mask)[0].tolist())
+    val_indices = sorted(np.where(val_mask)[0].tolist())
     test_indices = sorted(np.where(test_mask)[0].tolist())
-    shuffled = rng.permutation(remaining_indices)
-    n_val = round(n_total * cfg.data_config.val_split)
-    val_indices = sorted(shuffled[:n_val].tolist())
-    train_indices = sorted(shuffled[n_val:].tolist())
     train_era5 = era5_da.isel(time=train_indices)
 
     train_input = input_da.isel(time=train_indices)
