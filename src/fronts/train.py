@@ -408,7 +408,7 @@ def main():
         batch_size=cfg.data_config.batch_size,
         shuffle=True,
         seed=cfg.seed,
-        workers=cfg.data_config.prefetch_workers,
+        workers=utils.slurm_cpu_count(),
         use_multiprocessing=False,
         max_queue_size=cfg.data_config.max_queue_size,
     )
@@ -417,7 +417,7 @@ def main():
         val_input,
         val_target,
         batch_size=cfg.data_config.batch_size,
-        workers=cfg.data_config.prefetch_workers,
+        workers=utils.slurm_cpu_count(),
         use_multiprocessing=False,
         max_queue_size=cfg.data_config.max_queue_size,
     )

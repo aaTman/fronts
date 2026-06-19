@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 import subprocess
 from collections import namedtuple
 from typing import Any, TypeVar
@@ -253,6 +254,22 @@ def split_by_year(
     val_mask = np.isin(years, val_years)
     train_mask = ~(test_mask | val_mask)
     return train_mask, val_mask, test_mask
+
+
+def slurm_cpu_count() -> int:
+    """Return the number of CPUs allocated to the current SLURM job, if any.
+
+    Reads ``SLURM_CPUS_PER_TASK`` (set when a job requests ``--cpus-per-task``).
+    Falls back to ``os.cpu_count()`` outside of a SLURM allocation, or to 1 if
+    that can't be determined either.
+
+    Returns:
+        Number of CPUs to use as a default worker/thread count.
+    """
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm_cpus is not None:
+        return int(slurm_cpus)
+    return os.cpu_count() or 1
 
 
 def epochs_per_full_pass(n_samples: int, batch_size: int, steps_per_epoch: int) -> int:

@@ -31,9 +31,6 @@ class DatasetConfig:
         norm_stats_cache_dir: Optional directory for caching normalization
             statistics, keyed by store snapshot, channels, and train indices.
             None recomputes the statistics on every run.
-        prefetch_workers: Number of background threads ``TrainingDataset`` uses to
-            prefetch batches ahead of consumption (passed to
-            ``tf.keras.utils.PyDataset(workers=...)``).
         max_queue_size: Maximum number of prefetched batches kept in RAM ahead of the
             training loop (passed to ``tf.keras.utils.PyDataset(max_queue_size=...)``).
     """
@@ -48,7 +45,6 @@ class DatasetConfig:
     front_dilation: int = 0
     time_resolution: str | None = None
     norm_stats_cache_dir: str | None = None
-    prefetch_workers: int = 2
     max_queue_size: int = 4
 
 

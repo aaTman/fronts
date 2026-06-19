@@ -164,3 +164,19 @@ class TestSplitByYear:
         np.testing.assert_array_equal(val_mask, [True, False])
         np.testing.assert_array_equal(test_mask, [False, True])
         np.testing.assert_array_equal(train_mask, [False, False])
+
+
+class TestSlurmCpuCount:
+    def test_uses_slurm_cpus_per_task_when_set(self, monkeypatch):
+        monkeypatch.setenv("SLURM_CPUS_PER_TASK", "8")
+        assert utils.slurm_cpu_count() == 8
+
+    def test_falls_back_to_cpu_count_outside_slurm(self, monkeypatch):
+        monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+        monkeypatch.setattr("os.cpu_count", lambda: 12)
+        assert utils.slurm_cpu_count() == 12
+
+    def test_falls_back_to_one_when_cpu_count_unknown(self, monkeypatch):
+        monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+        monkeypatch.setattr("os.cpu_count", lambda: None)
+        assert utils.slurm_cpu_count() == 1
