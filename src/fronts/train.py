@@ -106,10 +106,10 @@ def load_data_into_dataloader(
             chunks=None,
         )
 
-    logger.info("Loading inputs...")
+    logger.info("Loading %s inputs...", split)
     inputs_ds = _open(data_config.inputs_icechunk_config)
 
-    logger.info("Loading targets...")
+    logger.info("Loading %s targets...", split)
     targets_da = _open(data_config.targets_icechunk_config)["identifier"]
 
     # The time indexes aren't identical between the two datasets
@@ -117,7 +117,7 @@ def load_data_into_dataloader(
 
     # Subset to the time resolution; defaults to 6 hourly to match full USAD domain fronts data frequency
     common_times = apply_time_resolution(common_times, data_config.time_resolution)
-    logger.info(f"After time_resolution={data_config.time_resolution!r} filter: {len(common_times)} steps")
+    logger.info("After time_resolution=%s filter: %d steps", data_config.time_resolution, len(common_times))
 
     # Set up rng for filtering timesteps to drop ~50% of cases without all fronts in the domain
     rng = np.random.default_rng(seed)
