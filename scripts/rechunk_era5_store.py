@@ -77,7 +77,7 @@ def extract_land_sea_mask(ds: xr.Dataset) -> xr.DataArray:
 
 
 def rechunk_store(
-    storage_config: config.IcechunkStorageConfig,
+    storage_config: utils.IcechunkStorageConfig,
     time_chunk: int,
     num_workers: int,
     distributed: bool = False,
@@ -163,7 +163,7 @@ def main():
     args = parser.parse_args()
 
     storage_config = utils.open_config_yaml_as_dataclass(
-        args.config, config.IcechunkStorageConfig, config_key="icechunk_storage_config"
+        args.config, utils.IcechunkStorageConfig, config_key="icechunk_storage_config"
     )
     storage_config = dataclasses.replace(
         storage_config,
