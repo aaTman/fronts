@@ -86,7 +86,10 @@ def main():
     args = parser.parse_args()
 
     ds = utils.open_readonly_icechunk_store(store_path=args.store_path, branch=args.branch, group=args.group)
-    variables = args.variables or list(ds.data_vars)
+    # Non-dimension coordinates (e.g. land_sea_mask is stored as a coordinate, not a data
+    # variable) are real input channels too and must be scanned alongside data_vars.
+    non_dim_coords = [c for c in ds.coords if c not in ds.dims]
+    variables = args.variables or [*ds.data_vars, *non_dim_coords]
     n_spatial = ds.sizes["latitude"] * ds.sizes["longitude"]
 
     with dask.config.set(scheduler="threads", num_workers=args.num_workers):

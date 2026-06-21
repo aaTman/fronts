@@ -98,9 +98,11 @@ def compute_norm_stats(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
     mean = stats["mean"].values.astype(np.float32)
     variance = stats["variance"].values.astype(np.float32)
     if np.isnan(mean).any() or np.isnan(variance).any():
+        bad = np.flatnonzero(np.isnan(mean) | np.isnan(variance))
+        labels = da.channel.values[bad] if "channel" in da.coords else bad
         raise ValueError(
-            "NaN in normalization statistics — ERA5 data contains missing values. "
-            "Check the icechunk store for corrupted or incomplete channels."
+            f"NaN in normalization statistics for channel(s) {list(labels)} — ERA5 data contains missing "
+            "values. Check the icechunk store for corrupted or incomplete channels."
         )
     return mean, variance
 
