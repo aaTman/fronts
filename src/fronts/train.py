@@ -10,6 +10,7 @@ Metrics are logged to Weights & Biases.
 import argparse
 import dataclasses
 import logging
+import math
 import os
 import random
 import time
@@ -75,10 +76,11 @@ class TrainConfig:
 def load_data_into_dataloader(
     data_config: datasets.DatasetConfig,
     split: Literal["train", "val", "test"],
+    n_channels: int,
     seed: int = 0,
     shuffle: bool = False,
     workers: int = 1,
-) -> datasets.TrainingDataset:
+) -> tuple[tf.data.Dataset, int, xr.Dataset, xr.DataArray]:
     """Load, align, and encode ERA5 input and fronts data for training.
 
     Opens the ERA5 and fronts icechunk stores once each with ``chunks=None`` so
@@ -94,6 +96,7 @@ def load_data_into_dataloader(
     Args:
         data_config: DatasetConfig specifying store paths, branch names, and splits.
         split: Type of dataset to load ("train", "val", "test").
+        n_channels: Number of input channels after variable expansion (e.g. 77).
         seed: Integer seed for the RNG used when subsampling timesteps.
         shuffle: If True, reshuffles the sample order at the end of every epoch.
         workers: Number of ``PyDataset`` prefetch threads. 1 (the ``PyDataset``
@@ -151,16 +154,16 @@ def load_data_into_dataloader(
     inputs_ds = inputs_ds_matched.isel(time=split_indices)
     targets_da = targets_da_matched.isel(time=split_indices)
 
-    return datasets.TrainingDataset(
+    dataset, n_samples = datasets.build_tf_dataset(
         input_ds=inputs_ds,
         target_da=targets_da,
         data_config=data_config,
-        seed=seed,
         batch_size=data_config.batch_size,
+        n_channels=n_channels,
         shuffle=shuffle,
-        workers=workers,
-        max_queue_size=data_config.max_queue_size,
+        seed=seed,
     )
+    return dataset, n_samples, inputs_ds, targets_da
 
 
 def _set_seed(seed: int) -> None:
@@ -251,7 +254,7 @@ def _run(
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=callbacks,
-        shuffle=shuffle,
+        # shuffle removed — handled by tf.data pipeline
     )
     elapsed = time.time() - t0
     if model_checkpoint_path:
@@ -266,35 +269,24 @@ def _run(
 def _build_test_visualization_callback(
     data_config: datasets.DatasetConfig,
     callbacks_config: fronts_callbacks.CallbacksConfig,
+    n_channels: int,
     seed: int,
 ) -> fronts_callbacks.TestVisualizationCallback:
-    """Load the sequestered test split and build the periodic W&B visualization callback.
-
-    The test split is loaded read-only here purely for visualization: one active
-    (front-containing) day for the prediction map, plus a bounded random subsample for
-    the periodic performance diagram. Neither is used for fitting or model selection.
-
-    Args:
-        data_config: DatasetConfig specifying store paths and the test_years split.
-        callbacks_config: Provides test_viz_sample_size and every_n_epochs.
-        seed: Seed for the subsample RNG.
-
-    Returns:
-        A configured TestVisualizationCallback.
-    """
-    assert callbacks_config.test_viz_every_n_epochs is not None
     logger.info("Loading test split for periodic visualization...")
-    test_dataset = load_data_into_dataloader(data_config, split="test", seed=seed)
-    logger.info("Test split loaded: %d timesteps available for visualization.", test_dataset.n_samples)
-
-    active_idx = fronts_callbacks.select_active_test_timestep(test_dataset.target_da)
-    active_x, active_y = test_dataset.get_at_indices(np.array([active_idx]))
-    active_label = str(test_dataset.input_ds.time.values[active_idx])
-
-    subsample_idxs = fronts_callbacks.select_test_subsample(
-        test_dataset.n_samples, callbacks_config.test_viz_sample_size, seed
+    _, n_test, test_input_ds, test_target_da = load_data_into_dataloader(
+        data_config,
+        split="test",
+        n_channels=n_channels,
+        seed=seed,
     )
-    subsample_x, subsample_y = test_dataset.get_at_indices(subsample_idxs)
+    logger.info("Test split loaded: %d timesteps available for visualization.", n_test)
+
+    active_idx = fronts_callbacks.select_active_test_timestep(test_target_da)
+    active_x, active_y = datasets.load_timesteps(test_input_ds, test_target_da, data_config, np.array([active_idx]))
+    active_label = str(test_input_ds.time.values[active_idx])
+
+    subsample_idxs = fronts_callbacks.select_test_subsample(n_test, callbacks_config.test_viz_sample_size, seed)
+    subsample_x, subsample_y = datasets.load_timesteps(test_input_ds, test_target_da, data_config, subsample_idxs)
 
     return fronts_callbacks.TestVisualizationCallback(
         active_day_x=active_x[0],
@@ -302,8 +294,8 @@ def _build_test_visualization_callback(
         active_day_label=active_label,
         subsample_x=subsample_x,
         subsample_y=subsample_y,
-        lats=test_dataset.input_ds["latitude"].values,
-        lons=test_dataset.input_ds["longitude"].values,
+        lats=test_input_ds["latitude"].values,
+        lons=test_input_ds["longitude"].values,
         front_types=list(fronts_callbacks.FRONT_TYPE_CLASS_INDEX),
         predict_batch_size=data_config.batch_size,
         every_n_epochs=callbacks_config.test_viz_every_n_epochs,
@@ -363,12 +355,23 @@ def main():
     cpu_count = utils.slurm_cpu_count()
     zarr.config.update({"threading.max_workers": cpu_count})
 
-    # Limit the number of workers to avoid overwhelming the store
-    data_workers = min(cpu_count, 8)
-    train_dataset = load_data_into_dataloader(
-        cfg.data_config, split="train", seed=cfg.seed, shuffle=cfg.shuffle, workers=data_workers
+    train_dataset, n_train, train_input_ds, _ = load_data_into_dataloader(
+        cfg.data_config,
+        split="train",
+        n_channels=cfg.model_config.n_channels,
+        seed=cfg.seed,
+        shuffle=cfg.shuffle,
     )
-    val_dataset = load_data_into_dataloader(cfg.data_config, split="val", seed=cfg.seed, workers=data_workers)
+    val_dataset, n_val, _, _ = load_data_into_dataloader(
+        cfg.data_config,
+        split="val",
+        n_channels=cfg.model_config.n_channels,
+        seed=cfg.seed,
+    )
+
+    # n_samples now comes from the tuple instead of dataset.n_samples
+    train_steps = math.ceil(n_train / cfg.data_config.batch_size)
+    val_steps = math.ceil(n_val / cfg.data_config.batch_size)
 
     logger.info(f"Total batches in training set: {len(train_dataset)}")
     logger.info(f"Total batches in validation set: {len(val_dataset)}")
@@ -386,7 +389,7 @@ def main():
     # Re-chunk (metadata-only) the train split's already-small, already-sliced input
     # Dataset so the variable-stacking and mean/variance reduction build a dask graph
     # instead of materializing the whole split eagerly.
-    train_inputs_da = inputs.inputs_ds_to_dataarray(train_dataset.input_ds.chunk("auto"), cfg.data_config.variables)
+    train_inputs_da = inputs.inputs_ds_to_dataarray(train_input_ds.chunk("auto"), cfg.data_config.variables)
     with dask.config.set(scheduler="threads", num_workers=cpu_count):
         norm_mean, norm_variance = inputs.load_or_compute_norm_stats(
             train_inputs_da, cfg.data_config.norm_stats_cache_dir, norm_cache_key_parts
@@ -477,7 +480,14 @@ def main():
     extra_callbacks = []
     if wandb_project and cfg.callbacks_config.test_viz_every_n_epochs:
         try:
-            extra_callbacks.append(_build_test_visualization_callback(cfg.data_config, cfg.callbacks_config, cfg.seed))
+            extra_callbacks.append(
+                _build_test_visualization_callback(
+                    cfg.data_config,
+                    cfg.callbacks_config,
+                    n_channels=cfg.model_config.n_channels,
+                    seed=cfg.seed,
+                )
+            )
         except ValueError:
             logger.warning(
                 "Skipping periodic test-set visualization: could not build the callback "

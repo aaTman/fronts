@@ -1,13 +1,12 @@
 import dataclasses
-import math
+import logging
 
 import numpy as np
 import tensorflow as tf
 import xarray as xr
-import time
+
 from fronts import utils
 from fronts.data import inputs, targets
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -52,99 +51,127 @@ class DatasetConfig:
     max_queue_size: int = 4
 
 
-class TrainingDataset(tf.keras.utils.PyDataset):
-    """Batches a split's ERA5/fronts DataArrays for training via the PyDataset interface.
+def load_timesteps(
+    input_ds: xr.Dataset,
+    target_da: xr.DataArray,
+    data_config: DatasetConfig,
+    idxs: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load specific timesteps from the icechunk store into RAM.
 
-    Each ``__getitem__`` call gathers exactly one batch's timesteps with a single
-    ``isel(time=idxs)`` take. ``input_ds``/``target_ds`` must already be sliced
-    to this split (e.g. ``input_da.isel(time=train_indices)``) and backed by non-dask
-    (``chunks=None``) arrays so each take reads directly through the zarr store rather
-    than building a dask graph; concurrency across batches comes entirely from
-    ``tf.keras.utils.PyDataset``'s own thread pool (``workers``/``max_queue_size``
-    passed through ``**kwargs``).
+    Mirrors the per-batch logic previously in TrainingDataset.get_at_indices,
+    but accepts arbitrary indices and is intended for one-off loads (e.g.
+    test-set visualization) rather than the training loop.
 
-    Yields a single (unreplicated) target per batch — the model's
-    ``SharedTargetModel`` (see ``fronts.model``) is responsible for broadcasting it
-    across any deep-supervision outputs, not the dataset.
+    Args:
+        input_ds: Split input Dataset.
+        target_da: Split target DataArray.
+        data_config: Dataset configuration.
+        idxs: Integer indices into the time axis to load.
 
-    Attributes:
-        input_ds: This split's input DataArray, shape (time, latitude, longitude, channel).
-        target_ds: This split's target DataArray, shape (time, latitude, longitude, class).
-        batch_size: Number of timesteps per batch.
-        shuffle: If True, reshuffles the sample order at the end of every epoch.
+    Returns:
+        Tuple of (x, y) as float32 numpy arrays, shapes
+        (len(idxs), lat, lon, channel) and (len(idxs), lat, lon, class).
     """
+    x_xarray = input_ds.isel(time=idxs)
+    y_raw = target_da.isel(time=idxs)
 
-    def __init__(
-        self,
-        input_ds: xr.Dataset,
-        target_da: xr.DataArray,
-        data_config: DatasetConfig,
-        batch_size: int,
-        shuffle: bool = False,
-        seed: int = 0,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        if input_ds.sizes["time"] != target_da.sizes["time"]:
-            raise ValueError(
-                f"Input and target time lengths differ: {input_ds.sizes['time']} vs {target_da.sizes['time']}"
-            )
-        self.input_ds = input_ds.copy()
-        self.target_da = target_da.copy()
-        self.data_config = data_config
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self._rng = np.random.default_rng(seed)
-        self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
+    x = inputs.inputs_ds_to_dataarray(x_xarray, data_config.variables).values.astype(np.float32)
 
-    @property
-    def _total(self) -> int:
-        return self.input_ds.sizes["time"]
+    y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_raw))
+    if data_config.front_dilation > 0:
+        y_da = targets.dilate_fronts(y_da, data_config.front_dilation)
 
-    @property
-    def n_samples(self) -> int:
-        """Number of individual timesteps (samples) in this split."""
-        return self._total
+    return x, y_da.values.astype(np.float32)
 
-    def __len__(self) -> int:
-        """Returns the number of batches per epoch."""
-        return math.ceil(self._total / self.batch_size)
 
-    def on_epoch_end(self) -> None:
-        """Reshuffles the sample order for the next epoch, if shuffling is enabled."""
-        if self.shuffle:
-            self._order = self._rng.permutation(self._total)
+def build_tf_dataset(
+    input_ds: xr.Dataset,
+    target_da: xr.DataArray,
+    data_config: DatasetConfig,
+    batch_size: int,
+    n_channels: int,
+    n_classes: int = 6,
+    shuffle: bool = False,
+    seed: int = 0,
+) -> tuple[tf.data.Dataset, int]:
+    """Build a lazy tf.data.Dataset that reads from the icechunk store per-timestep.
 
-    def get_at_indices(self, idxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the (input, target) arrays at arbitrary global time indices.
+    Reads are issued one timestep at a time via tf.py_function, keeping individual
+    Lustre reads small. MirroredStrategy integrates natively with tf.data, avoiding
+    the PyDataset/AllReduce deadlock.
 
-        Unlike ``__getitem__``, ``idxs`` need not be batch-sized or in ``_order``'s
-        epoch sequence — used by callers that need specific timesteps directly (e.g. a
-        test-set visualization callback selecting one active day or a random subsample).
-        """
-        x_xarray = self.input_ds.isel(time=idxs)
-        y_da = self.target_da.isel(time=idxs)
+    Args:
+        input_ds: This split's input Dataset (not loaded into RAM).
+        target_da: This split's target DataArray (not loaded into RAM).
+        data_config: Dataset configuration.
+        batch_size: Number of timesteps per batch.
+        n_channels: Number of input channels after variable expansion (e.g. 77).
+        n_classes: Number of output classes including background (default 6).
+        shuffle: Whether to shuffle each epoch.
+        seed: Random seed for shuffling.
 
-        # Convert inputs to a DataArray of shape (time, latitude, longitude, channel) and load into memory as float32.
-        x = inputs.inputs_ds_to_dataarray(x_xarray, self.data_config.variables).values
+    Returns:
+        Tuple of (tf.data.Dataset, n_samples).
+    """
+    import logging
 
-        # One-hot encode targets, remap front classes to the configured set, and load into memory as float32.
-        # Dilate fronts if > 0
-        y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_da))
-        if self.data_config.front_dilation > 0:
-            y_da = targets.dilate_fronts(y_da, self.data_config.front_dilation)
+    logger = logging.getLogger(__name__)
 
-        # Convert to numpy arrays in memory. The model's SharedTargetModel is responsible for broadcasting the single
-        # target across any deep-supervision outputs, not the dataset.
-        y = y_da.values
+    n_samples = input_ds.sizes["time"]
+    n_lat = input_ds.sizes["latitude"]
+    n_lon = input_ds.sizes["longitude"]
+
+    logger.info(
+        "Building tf.data pipeline: %d timesteps, %d lat, %d lon, %d channels, %d classes",
+        n_samples,
+        n_lat,
+        n_lon,
+        n_channels,
+        n_classes,
+    )
+
+    # Shuffle happens over indices, not data — no Lustre reads here
+    index_ds = tf.data.Dataset.range(n_samples)
+    if shuffle:
+        index_ds = index_ds.shuffle(
+            buffer_size=n_samples,
+            seed=seed,
+            reshuffle_each_iteration=True,
+        )
+
+    def load_single_timestep(idx: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        """Load one timestep from the icechunk store."""
+        i = int(idx.numpy())
+        x_xarray = input_ds.isel(time=i)
+        y_raw = target_da.isel(time=i)
+
+        x = inputs.inputs_ds_to_dataarray(x_xarray, data_config.variables).values.astype(
+            np.float32
+        )  # (lat, lon, channel)
+
+        y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_raw))
+        if data_config.front_dilation > 0:
+            y_da = targets.dilate_fronts(y_da, data_config.front_dilation)
+
+        return x, y_da.values.astype(np.float32)  # (lat, lon, class)
+
+    def tf_load(idx: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        x, y = tf.py_function(
+            func=load_single_timestep,
+            inp=[idx],
+            Tout=[tf.float32, tf.float32],
+        )
+        # tf.py_function loses static shape info — restore it so
+        # MirroredStrategy can split batches across GPUs correctly
+        x.set_shape([n_lat, n_lon, n_channels])
+        y.set_shape([n_lat, n_lon, n_classes])
         return x, y
 
-    def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the (input, target) batch at ``idx``."""
-        local_idxs = self._order[idx * self.batch_size : (idx + 1) * self.batch_size]
-        t0 = time.time()
-        result = self.get_at_indices(local_idxs)
-        elapsed = time.time() - t0
-        if elapsed > 30:
-            logger.warning(f"Slow batch {idx}: {elapsed:.1f}s")
-        return result
+    dataset = (
+        index_ds.map(tf_load, num_parallel_calls=tf.data.AUTOTUNE)
+        .batch(batch_size, drop_remainder=False)
+        .prefetch(tf.data.AUTOTUNE)
+    )
+
+    return dataset, n_samples
