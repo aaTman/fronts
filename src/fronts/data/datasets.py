@@ -143,8 +143,8 @@ def build_tf_dataset(
     def load_single_timestep(idx: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """Load one timestep from the icechunk store."""
         i = int(idx.numpy())
-        x_xarray = input_ds.isel(time=i)
-        y_raw = target_da.isel(time=i)
+        x_xarray = input_ds.isel(time=[i])
+        y_raw = target_da.isel(time=[i])
 
         x = inputs.inputs_ds_to_dataarray(x_xarray, data_config.variables).values.astype(
             np.float32
@@ -154,7 +154,7 @@ def build_tf_dataset(
         if data_config.front_dilation > 0:
             y_da = targets.dilate_fronts(y_da, data_config.front_dilation)
 
-        return x, y_da.values.astype(np.float32)  # (lat, lon, class)
+        return x[0], y_da.values.astype(np.float32)[0]  # (lat, lon, class)
 
     def tf_load(idx: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         x, y = tf.py_function(
@@ -169,9 +169,7 @@ def build_tf_dataset(
         return x, y
 
     dataset = (
-        index_ds.map(tf_load, num_parallel_calls=tf.data.AUTOTUNE)
-        .batch(batch_size, drop_remainder=False)
-        .prefetch(tf.data.AUTOTUNE)
+        index_ds.map(tf_load, num_parallel_calls=1).batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
     )
 
     return dataset, n_samples
