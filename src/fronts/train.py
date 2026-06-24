@@ -440,7 +440,7 @@ def main():
     train_steps = len(train_dataset)
     val_steps = len(val_dataset)
 
-    full_pass_epochs = utils.epochs_per_full_pass(train_dataset.n_samples, cfg.data_config.batch_size, train_steps)
+    full_pass_epochs = utils.epochs_per_full_pass(n_train, cfg.data_config.batch_size, train_steps)
     effective_patience = max(cfg.callbacks_config.patience, full_pass_epochs)
     if effective_patience != cfg.callbacks_config.patience:
         logger.info(
@@ -467,11 +467,11 @@ def main():
         full_pass_epochs,
         effective_patience,
         passes_covered,
-        val_dataset.n_samples,
+        n_val,
         val_steps,
     )
 
-    x_sample, _ = train_dataset[0]
+    x_sample, _ = next(iter(train_dataset))
     _show_input_sample("builtin-norm (raw)", x_sample)
 
     wandb_project = cfg.wandb_config.project_name if cfg.wandb_config is not None else None
