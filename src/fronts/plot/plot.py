@@ -10,7 +10,7 @@ Usage:
         --config_path configs/schooner_train.yaml
 
     pixi run -e schooner python src/fronts/plot/plot.py performance-diagrams \
-        --stats_dir ~/models/fronts/stats --mask land
+        --config_path configs/schooner_eval.yaml --mask land
 """
 
 import argparse
@@ -28,7 +28,7 @@ from matplotlib import cm, colors
 from matplotlib.font_manager import FontProperties
 from matplotlib.ticker import FixedLocator
 
-from fronts import utils
+from fronts import evaluate, utils
 from fronts.data import config, datasets, inputs, targets
 from fronts.model import SharedTargetModel
 from fronts.plot.utils import plot_background, truncated_colormap
@@ -633,12 +633,7 @@ def main() -> None:
     cs.add_argument("--config_path", type=str, required=True, help="Path to config YAML.")
 
     pd = subparsers.add_parser("performance-diagrams", help="4-panel performance diagram per front type.")
-    pd.add_argument(
-        "--stats_dir",
-        type=str,
-        required=True,
-        help="Directory containing stats_aggregate_{mask}.nc and stats_spatial_{mask}.nc.",
-    )
+    pd.add_argument("--config_path", type=str, required=True, help="Path to config YAML.")
     pd.add_argument(
         "--mask",
         type=str,
@@ -657,13 +652,13 @@ def main() -> None:
         "--coordinates",
         type=float,
         nargs=4,
-        default=[0.25, 80.0, 130.0, 369.75],
+        default=None,
         metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
-        help="Spatial bounding box as lat_min lat_max lon_min lon_max.",
+        help="Spatial bounding box (overrides config).",
     )
     pd.add_argument("--map_neighborhood", type=int, default=250, help="Neighbourhood (km) for spatial CSI map.")
     pd.add_argument("--output_type", type=str, default="png", help="Image format (png, pdf, etc.).")
-    pd.add_argument("--outdir", type=str, default=None, help="Output directory (defaults to --stats_dir).")
+    pd.add_argument("--outdir", type=str, default=None, help="Output directory (defaults to eval_config.outdir).")
 
     args = parser.parse_args()
 
@@ -683,22 +678,29 @@ def main() -> None:
         plot_case_study(predict_cfg, data_cfg)
 
     elif args.command == "performance-diagrams":
-        mask_suffix = f"_{args.mask}" if args.mask else ""
-        derived_ds = xr.open_dataset(os.path.join(args.stats_dir, f"stats_derived{mask_suffix}.nc"))
+        yaml_data = utils.load_yaml(args.config_path)
+        eval_cfg: evaluate.EvalConfig = utils.parse_config_section(
+            yaml_data, evaluate.EvalConfig, "eval_config", utils.YAML_TYPE_HOOKS
+        )
+        mask = args.mask if args.mask is not None else eval_cfg.mask
+        stats_dir = args.outdir or eval_cfg.outdir
+        coordinates = utils.BoundingBox(*args.coordinates) if args.coordinates else eval_cfg.coordinates
 
-        front_types = args.front_types or _parse_front_types(derived_ds)
-        outdir = args.outdir or args.stats_dir
+        mask_suffix = f"_{mask}" if mask else ""
+        derived_ds = xr.open_dataset(os.path.join(stats_dir, f"stats_derived{mask_suffix}.nc"))
+
+        front_types = args.front_types or eval_cfg.front_types or _parse_front_types(derived_ds)
 
         for ft in front_types:
             print(f"Plotting {ft} …")
             plot_performance_diagrams(
                 front_type=ft,
                 derived_ds=derived_ds,
-                mask=args.mask,
-                coordinates=utils.BoundingBox(*args.coordinates),
+                mask=mask,
+                coordinates=coordinates,
                 map_neighborhood=args.map_neighborhood,
                 output_type=args.output_type,
-                outdir=outdir,
+                outdir=stats_dir,
             )
 
 

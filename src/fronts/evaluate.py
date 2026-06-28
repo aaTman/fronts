@@ -50,7 +50,7 @@ class EvalConfig:
 
     Attributes:
         model_path: Path to the saved .keras model checkpoint.
-        outdir: Directory to write stats_aggregate_{mask}.nc and stats_spatial_{mask}.nc.
+        outdir: Directory to write stats_spatial_{mask}.nc, stats_aggregate_{mask}.nc, and stats_derived_{mask}.nc.
         coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
             Defaults to full USAD extent.
         front_types: Front type labels in class order (excluding background class 0).
