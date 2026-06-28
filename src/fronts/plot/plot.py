@@ -94,19 +94,14 @@ _DOMAIN_LAYOUT: dict[str, _LayoutConfig] = {
 }
 
 
-def _parse_front_types(aggregate_ds: xr.Dataset) -> list[str]:
-    """Infer front type labels from variable names (tp_{FT})."""
-    return [
-        v[3:]
-        for v in aggregate_ds.data_vars
-        if isinstance(v, str) and v.startswith("tp_") and not v.startswith("tp_spatial_")
-    ]
+def _parse_front_types(derived_ds: xr.Dataset) -> list[str]:
+    """Infer front type labels from variable names (pod_{FT}) in derived stats."""
+    return [v[4:] for v in derived_ds.data_vars if isinstance(v, str) and v.startswith("pod_")]
 
 
 def plot_performance_diagrams(
     front_type: str,
-    aggregate_ds: xr.Dataset,
-    spatial_ds: xr.Dataset,
+    derived_ds: xr.Dataset,
     mask: str | None,
     coordinates: utils.BoundingBox,
     map_neighborhood: int,
@@ -117,8 +112,7 @@ def plot_performance_diagrams(
 
     Args:
         front_type: Front type key (e.g. "CF").
-        aggregate_ds: Aggregated stats Dataset with dims (neighborhood, threshold).
-        spatial_ds: Spatial stats Dataset with dims (lat, lon, neighborhood, threshold).
+        derived_ds: Pre-computed derived metrics Dataset from evaluate.compute_derived_stats.
         mask: "land", "ocean", or None — used only for the figure title and filename.
         coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
         map_neighborhood: Neighbourhood radius (km) for the spatial CSI map panel.
@@ -128,15 +122,16 @@ def plot_performance_diagrams(
     layout_key = "full" if (coordinates.lon_max - coordinates.lon_min) > 150 else "conus"
     layout = _DOMAIN_LAYOUT[layout_key]
 
-    thresholds = aggregate_ds["threshold"].values  # (100,)
+    thresholds = derived_ds.coords["threshold"].values  # (100,)
 
-    a = aggregate_ds[f"tp_{front_type}"].values  # (neighborhood, threshold)
-    b = aggregate_ds[f"fp_{front_type}"].values
-    c = aggregate_ds[f"fn_{front_type}"].values
-    d = aggregate_ds[f"tn_{front_type}"].values
-
-    pod = np.divide(a, a + c, out=np.zeros_like(a), where=(a + c) > 0)
-    sr = np.divide(a, a + b, out=np.zeros_like(a), where=(a + b) > 0)
+    pod = derived_ds[f"pod_{front_type}"].values  # (neighborhood, threshold)
+    sr = derived_ds[f"sr_{front_type}"].values
+    csi_all = derived_ds[f"csi_{front_type}"].values
+    hss_all = derived_ds[f"hss_{front_type}"].values
+    observed_relative_frequency = derived_ds[f"obs_rel_freq_{front_type}"].values  # (neighborhood, threshold-1)
+    relative_forecast_fraction = derived_ds[f"rel_forecast_frac_{front_type}"].values  # (threshold,)
+    spatial_csi = derived_ds[f"spatial_csi_{front_type}"]  # (lat, lon, neighborhood, threshold)
+    spatial_csi_map = spatial_csi.max("threshold")
 
     sr_matrix, pod_matrix = np.meshgrid(np.linspace(0, 1, 101), np.linspace(0, 1, 101))
     csi_matrix = 1 / ((1 / sr_matrix) + (1 / pod_matrix) - 1)
@@ -145,23 +140,6 @@ def plot_performance_diagrams(
     fb_levels = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3]
     axis_ticks = np.arange(0, 1.01, 0.1)
     axis_ticklabels = np.arange(0, 100.1, 10).astype(int)
-
-    num_forecasts = (a + b)[0, :]
-    total_pixels_approx = (a + b + c + d)[0, 0]
-    if total_pixels_approx > 0:
-        relative_forecast_fraction = 100 * num_forecasts / total_pixels_approx
-    else:
-        relative_forecast_fraction = num_forecasts * 0
-
-    tp_diff = np.abs(np.diff(a, axis=-1))
-    fp_diff = np.abs(np.diff(b, axis=-1))
-    denom = tp_diff + fp_diff
-    observed_relative_frequency = np.divide(tp_diff, denom, out=np.zeros_like(tp_diff), where=denom > 0)
-
-    tp_sp = spatial_ds[f"tp_spatial_{front_type}"]
-    fp_sp = spatial_ds[f"fp_spatial_{front_type}"]
-    fn_sp = spatial_ds[f"fn_spatial_{front_type}"]
-    spatial_csi_map = (tp_sp / (tp_sp + fp_sp + fn_sp)).max("threshold")
 
     fig, axs = plt.subplots(1, 2, figsize=(15, 6))
     ax0, ax1 = axs
@@ -182,15 +160,8 @@ def plot_performance_diagrams(
     cell_text = []
 
     for boundary, color in enumerate(boundary_colors):
-        csi = np.power((1 / sr[boundary]) + (1 / pod[boundary]) - 1, -1)
-        hss = (
-            2
-            * ((a[boundary] * d[boundary]) - (b[boundary] * c[boundary]))
-            / (
-                ((a[boundary] + c[boundary]) * (c[boundary] + d[boundary]))
-                + ((a[boundary] + b[boundary]) * (b[boundary] + d[boundary]))
-            )
-        )
+        csi = csi_all[boundary]
+        hss = hss_all[boundary]
 
         max_csi = np.nanmax(csi)
         max_idx = np.where(csi == max_csi)[0]
@@ -713,18 +684,16 @@ def main() -> None:
 
     elif args.command == "performance-diagrams":
         mask_suffix = f"_{args.mask}" if args.mask else ""
-        aggregate_ds = xr.open_dataset(os.path.join(args.stats_dir, f"stats_aggregate{mask_suffix}.nc"))
-        spatial_ds = xr.open_dataset(os.path.join(args.stats_dir, f"stats_spatial{mask_suffix}.nc"))
+        derived_ds = xr.open_dataset(os.path.join(args.stats_dir, f"stats_derived{mask_suffix}.nc"))
 
-        front_types = args.front_types or _parse_front_types(aggregate_ds)
+        front_types = args.front_types or _parse_front_types(derived_ds)
         outdir = args.outdir or args.stats_dir
 
         for ft in front_types:
             print(f"Plotting {ft} …")
             plot_performance_diagrams(
                 front_type=ft,
-                aggregate_ds=aggregate_ds,
-                spatial_ds=spatial_ds,
+                derived_ds=derived_ds,
                 mask=args.mask,
                 coordinates=utils.BoundingBox(*args.coordinates),
                 map_neighborhood=args.map_neighborhood,
