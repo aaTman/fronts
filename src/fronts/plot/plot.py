@@ -225,7 +225,9 @@ def plot_performance_diagrams(
     )
 
     norm_probs = colors.Normalize(vmin=0.1, vmax=1)
-    xr.where(spatial_csi_map >= 0.1, spatial_csi_map, float("nan")).sel(neighborhood=map_neighborhood).plot(
+    xr.where(spatial_csi_map >= 0.1, spatial_csi_map, float("nan")).sel(neighborhood=map_neighborhood).sortby(
+        "latitude"
+    ).plot(
         ax=spatial_axis,
         x="longitude",
         y="latitude",
