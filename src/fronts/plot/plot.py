@@ -99,6 +99,18 @@ def _parse_front_types(derived_ds: xr.Dataset) -> list[str]:
     return [v[4:] for v in derived_ds.data_vars if isinstance(v, str) and v.startswith("pod_")]
 
 
+def _normalize_wrapping_longitudes(da: xr.DataArray, lon_min: float) -> xr.DataArray:
+    """Remap longitudes that wrapped below lon_min back above 360.
+
+    ERA5 stores longitude in [0, 360), so a domain starting at lon_min > 0 may
+    have values near 0 that belong past 360 (e.g. 0-9.75 -> 360-369.75).
+    After remapping, sortby("longitude") yields a monotonically increasing axis
+    as required by xarray's pcolormesh.
+    """
+    lon_vals = da.longitude.values
+    return da.assign_coords(longitude=np.where(lon_vals < lon_min, lon_vals + 360, lon_vals))
+
+
 def plot_performance_diagrams(
     front_type: str,
     derived_ds: xr.Dataset,
@@ -225,9 +237,9 @@ def plot_performance_diagrams(
     )
 
     norm_probs = colors.Normalize(vmin=0.1, vmax=1)
-    xr.where(spatial_csi_map >= 0.1, spatial_csi_map, float("nan")).sel(neighborhood=map_neighborhood).sortby(
-        ["latitude", "longitude"]
-    ).plot(
+    csi_plot = xr.where(spatial_csi_map >= 0.1, spatial_csi_map, float("nan")).sel(neighborhood=map_neighborhood)
+    csi_plot = _normalize_wrapping_longitudes(csi_plot, coordinates.lon_min)
+    csi_plot.sortby("latitude").sortby("longitude").plot(
         ax=spatial_axis,
         x="longitude",
         y="latitude",
