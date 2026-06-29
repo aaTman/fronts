@@ -143,9 +143,16 @@ def load_data_into_dataloader(
     )
     split_mask = {"train": train_mask, "val": val_mask, "test": test_mask}[split]
     split_indices = sorted(np.where(split_mask)[0].tolist())
+    logger.info("Split indices: %d timesteps for %s", len(split_indices), split)
     inputs_ds = inputs_ds_matched.isel(time=split_indices)
     targets_da = targets_da_matched.isel(time=split_indices)
-
+    logger.info(
+        "%s split: %d timesteps, %d inputs, %d targets",
+        split,
+        len(split_indices),
+        len(inputs_ds.time),
+        len(targets_da.time),
+    )
     # Get the number of threads to use for PyDataset prefetching from max_pydataset_workers in the DatasetConfig,
     # which is set to 16 by default. This allows for parallel loading of batches without overwhelming ourdisk I/O.
     data_workers = utils.limit_workers_for_slurm(max_workers=data_config.max_pydataset_workers)
