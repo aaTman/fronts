@@ -1,8 +1,11 @@
-"""Custom loss functions for U-Net models: BSS, CSI, FSS, and POD."""
+"""Custom loss functions for U-Net models: BSS, CSI, FSS, neighborhood Brier, and POD."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
+import numpy as np
 import tensorflow as tf
+
+KM_PER_DEG = 111.32
 
 
 def brier_skill_score(
@@ -170,6 +173,170 @@ def fractions_skill_score(
         return 1 - FSS
 
     return fss_loss
+
+
+def _plan_windows(
+    latitudes: np.ndarray | Sequence[float],
+    resolution_deg: float,
+    tolerances_km: Sequence[float],
+    max_half_x: int,
+    pole_clip_deg: float = 85.0,
+) -> list[dict[str, int | np.ndarray]]:
+    """Precompute window half-widths in pixels for each tolerance scale.
+
+    Args:
+        latitudes: Grid latitudes in degrees, one per row.
+        resolution_deg: Grid spacing in degrees.
+        tolerances_km: Neighborhood tolerance scales in kilometers.
+        max_half_x: Upper bound on the zonal half-width in pixels.
+        pole_clip_deg: Latitude at which cos(lat) is clipped to keep zonal windows finite near the poles.
+
+    Returns:
+        One dict per tolerance with ``half_y`` (scalar meridional half-width) and ``half_x``
+        (per-row zonal half-widths, widened by 1/cos(lat) to stay isotropic in km).
+    """
+    lat = np.asarray(latitudes, dtype=np.float64)
+    coslat = np.clip(np.cos(np.deg2rad(lat)), np.cos(np.deg2rad(pole_clip_deg)), 1.0)
+    dy_km = resolution_deg * KM_PER_DEG
+    plans = []
+    for tol in tolerances_km:
+        half_y = round(tol / dy_km)
+        half_x = np.round(tol / (resolution_deg * KM_PER_DEG * coslat)).astype(int)
+        half_x = np.clip(half_x, 0, max_half_x)
+        plans.append({"half_y": half_y, "half_x": half_x})
+    return plans
+
+
+def _boxsum_y(field: tf.Tensor, half: int) -> tf.Tensor:
+    """Zero-padded centered box sum along latitude (axis 1) via cumulative sums. No mirroring or wrapping."""
+    if half == 0:
+        return field
+    padded = tf.pad(field, [[0, 0], [half, half], [0, 0], [0, 0]])
+    c = tf.cumsum(padded, axis=1)
+    c = tf.pad(c, [[0, 0], [1, 0], [0, 0], [0, 0]])
+    k = 2 * half + 1
+    return c[:, k:, :, :] - c[:, :-k, :, :]
+
+
+def _boxsum_x(field: tf.Tensor, half: int, periodic: bool) -> tf.Tensor:
+    """Centered box sum along longitude (axis 2); zero-padded unless ``periodic``."""
+    if half == 0:
+        return field
+    if periodic:
+        padded = tf.concat([field[:, :, -half:, :], field, field[:, :, :half, :]], axis=2)
+    else:
+        padded = tf.pad(field, [[0, 0], [0, 0], [half, half], [0, 0]])
+    c = tf.cumsum(padded, axis=2)
+    c = tf.pad(c, [[0, 0], [0, 0], [1, 0], [0, 0]])
+    k = 2 * half + 1
+    return c[:, :, k:, :] - c[:, :, :-k, :]
+
+
+def _lat_dependent_pool(field: tf.Tensor, half_y: int, half_x_per_row: np.ndarray, periodic_lon: bool) -> tf.Tensor:
+    """Valid-cell-normalized rectangular mean: constant half_y in latitude, per-row half_x in longitude.
+
+    Each neighborhood fraction is (sum of in-domain cells) / (count of in-domain cells), so the
+    window simply shrinks at domain edges rather than reflecting or wrapping.
+    """
+    dtype = field.dtype
+    height = tf.shape(field)[1]
+    width = tf.shape(field)[2]
+    ones_col = tf.ones((1, height, 1, 1), dtype)
+    ones_row = tf.ones((1, 1, width, 1), dtype)
+
+    sum_y = _boxsum_y(field, half_y)
+    count_y = _boxsum_y(ones_col, half_y)
+
+    hx = np.asarray(half_x_per_row)
+    out = tf.zeros_like(field)
+    for v in sorted({int(u) for u in hx}):
+        sum_xy = _boxsum_x(sum_y, v, periodic_lon)
+        count_x = _boxsum_x(ones_row, v, periodic_lon)
+        mean_v = sum_xy / (count_y * count_x)
+        row_mask = tf.constant((hx == v).astype(np.float32).reshape(1, -1, 1, 1))
+        out += mean_v * tf.cast(row_mask, dtype)
+    return out
+
+
+def neighborhood_brier_score(
+    latitudes: np.ndarray | Sequence[float],
+    resolution_deg: float | None = None,
+    tolerances_km: Sequence[float] = (25.0, 100.0, 250.0),
+    tolerance_weights: Sequence[float] | None = None,
+    include_pixel: bool = False,
+    pixel_weight: float = 0.1,
+    class_weights: list[int | float] | None = None,
+    periodic_lon: bool = False,
+    max_half_x: int = 128,
+) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
+    """Latitude-aware neighborhood Brier loss: a proper alternative to FSS-as-loss.
+
+    Returns the fractions Brier score (MSE of observed vs forecast neighborhood fractions)
+    summed over scales in ``tolerances_km``. Proper; rewards calibrated probabilities.
+    NO sigmoid discretization (would break propriety). Tolerance is isotropic in km per
+    latitude; domain edges use valid-cell normalization. Set the smallest tolerance to the
+    label positional slack (replaces label dilation).
+
+    Args:
+        latitudes: Grid latitudes in degrees, one per output row. Must match the model's
+            output height; every deep-supervision head must emit at full resolution.
+        resolution_deg: Grid spacing in degrees. None infers it from ``latitudes``.
+        tolerances_km: Neighborhood tolerance scales in kilometers, one Brier term per scale.
+        tolerance_weights: Relative weight per tolerance scale. None weights all scales equally.
+        include_pixel: If True, adds a pixelwise (un-pooled) Brier term for sharpness.
+        pixel_weight: Relative weight of the pixelwise term when ``include_pixel`` is True.
+        class_weights: Weights to apply to each class. Length must equal the number of classes
+            in y_pred and y_true. Applied post-pooling on the squared error.
+        periodic_lon: If True, wraps the zonal window across the longitude edges. Only set for
+            a genuine global 360-degree band; domain strips with non-adjacent ends must use False.
+        max_half_x: Upper bound on the zonal half-width in pixels.
+
+    References:
+        Roberts & Lean (2008): https://doi.org/10.1175/2007MWR2123.1
+        Stein & Stoop (2024): https://doi.org/10.1175/MWR-D-22-0235.1
+        Gneiting & Raftery (2007): https://doi.org/10.1198/016214506000001437
+    """
+    lat = np.asarray(latitudes, dtype=np.float64)
+    if resolution_deg is None:
+        resolution_deg = float(np.median(np.abs(np.diff(lat))))
+    plans = _plan_windows(lat, resolution_deg, tolerances_km, max_half_x)
+
+    if tolerance_weights is None:
+        tolerance_weights = [1.0] * len(tolerances_km)
+    weight_sum = float(sum(tolerance_weights)) + (pixel_weight if include_pixel else 0.0)
+
+    cw: tf.Tensor | None = tf.cast(class_weights, tf.float32) if class_weights is not None else None
+
+    @tf.function
+    def nbs_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        """Compute the neighborhood Brier loss for a batch.
+
+        Args:
+            y_true: One-hot encoded tensor containing labels.
+            y_pred: Tensor containing model predictions.
+        """
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+
+        # Reduce over spatial + class axes; keep batch dim so Keras can aggregate across replicas.
+        spatial_axes = list(range(1, len(y_pred.shape)))
+
+        def _brier(obs: tf.Tensor, mod: tf.Tensor) -> tf.Tensor:
+            se = tf.math.square(obs - mod)
+            if cw is not None:
+                se *= cw
+            return tf.reduce_mean(se, axis=spatial_axes)
+
+        total = tf.zeros(tf.shape(y_pred)[:1], tf.float32)
+        for plan, tw in zip(plans, tolerance_weights, strict=True):
+            O_n = _lat_dependent_pool(y_true, plan["half_y"], plan["half_x"], periodic_lon)
+            M_n = _lat_dependent_pool(y_pred, plan["half_y"], plan["half_x"], periodic_lon)
+            total += float(tw) * _brier(O_n, M_n)
+        if include_pixel:
+            total += float(pixel_weight) * _brier(y_true, y_pred)
+        return total / weight_sum
+
+    return nbs_loss
 
 
 def probability_of_detection(

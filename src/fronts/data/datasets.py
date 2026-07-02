@@ -27,8 +27,6 @@ class DatasetConfig:
             All years not in test_years or val_years are used for training.
         batch_size: Number of timesteps per training batch.
         class_weights: Per-class loss weights. None means equal weighting.
-        front_dilation: Number of binary dilation iterations applied to each non-background
-            front class. 0 means no dilation.
         time_resolution: Optional pandas offset string (e.g. ``"6h"``) used to subsample
             the loaded timesteps. Only timestamps whose hour is already aligned to this
             interval are kept (e.g. ``"6h"`` retains 00, 06, 12, 18 UTC). ``None`` keeps
@@ -49,7 +47,6 @@ class DatasetConfig:
     val_years: list[int]
     batch_size: int = 4
     class_weights: list[float] | None = None
-    front_dilation: int = 0
     time_resolution: str = "6h"
     norm_stats_cache_dir: str | None = None
     max_queue_size: int = 4
@@ -134,10 +131,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         x = inputs.inputs_ds_to_dataarray(x_xarray, self.data_config.variables).values
 
         # One-hot encode targets, remap front classes to the configured set, and load into memory as float32.
-        # Dilate fronts if > 0
         y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_da))
-        if self.data_config.front_dilation > 0:
-            y_da = targets.dilate_fronts(y_da, self.data_config.front_dilation)
 
         # Convert to numpy arrays in memory. The model's SharedTargetModel is responsible for broadcasting the single
         # target across any deep-supervision outputs, not the dataset.

@@ -14,7 +14,6 @@ data_config:
   val_years: [2018]
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-  front_dilation: 1
   time_resolution: "6h"
   variables: [
     "geopotential",
@@ -114,6 +113,5 @@ eval_config:
   outdir: "/ourdisk/hpc/ai2es/tman/models/stats/${run_name}/"
   coordinates: [0.25, 80.0, 130.0, 369.75]
   front_types: [CF, WF, SF, OF, DL]
-  front_dilation: 1
   time_start: "2024-01-01T00:00:00"
   time_end: "2024-12-31T18:00:00"

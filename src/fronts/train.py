@@ -186,9 +186,16 @@ def _show_input_sample(label: str, inputs: np.ndarray | xr.DataArray, n_show: in
         logger.info(f"  {i:<10} {ch.mean():>10.3f} {ch.std():>10.3f} {ch.min():>10.3f} {ch.max():>10.3f}")
 
 
-def _compile(model: tf.keras.Model, learning_rate: float, class_weights: list[float] | None) -> int:
+def _compile(
+    model: tf.keras.Model, learning_rate: float, class_weights: list[float] | None, latitudes: np.ndarray
+) -> int:
     n_out = len(model.outputs)
-    loss_fn = losses.fractions_skill_score(mask_size=(3, 3), class_weights=class_weights)
+    loss_fn = losses.neighborhood_brier_score(
+        latitudes=latitudes,
+        tolerances_km=(25.0, 100.0, 250.0),  # 25 km reproduces the old 1-px (0.25 deg) label dilation
+        class_weights=class_weights,
+        periodic_lon=False,  # the domain's longitude ends are not adjacent: valid-cell edges, no wrap
+    )
     hss_fn = metrics.heidke_skill_score(class_weights=class_weights)
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
@@ -435,7 +442,7 @@ def train(
                 for i, out in enumerate(unet.outputs)
             ]
             unet = model.SharedTargetModel(unet.inputs, float32_outputs, name=unet.name)
-        _compile(unet, train_cfg.learning_rate, data_cfg.class_weights)
+        _compile(unet, train_cfg.learning_rate, data_cfg.class_weights, train_dataset.input_ds["latitude"].values)
     logger.info("Model built and compiled.")
 
     unet.summary()

@@ -91,7 +91,6 @@ def small_data_config():
         variables=_VARIABLES,
         test_years=[],
         val_years=[],
-        front_dilation=0,
     )
 
 
