@@ -1,4 +1,4 @@
-"""Post-hoc temperature scaling calibration for a trained UNet3Plus model.
+r"""Post-hoc temperature scaling calibration for a trained UNet3Plus model.
 
 Fits a single scalar temperature T on the validation set by minimising
 negative log-likelihood (NLL), then saves a TemperatureScaledModel that

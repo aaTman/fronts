@@ -67,7 +67,7 @@ class TemperatureScaledModel(tf.keras.Model):
         """Run the logit model and apply temperature-scaled softmax."""
         logits = self.logit_model(x, training=training)
         if isinstance(logits, (list, tuple)):
-            return [tf.nn.softmax(l / self.temperature) for l in logits]
+            return [tf.nn.softmax(logit / self.temperature) for logit in logits]
         return tf.nn.softmax(logits / self.temperature)
 
     def get_config(self) -> dict[str, Any]:

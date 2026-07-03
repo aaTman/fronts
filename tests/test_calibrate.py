@@ -97,7 +97,9 @@ class TestTemperatureScaledModel:
         entropy_t1 = -np.sum(primary_t1 * np.log(primary_t1 + 1e-12), axis=-1).mean()
         entropy_low = -np.sum(primary_low * np.log(primary_low + 1e-12), axis=-1).mean()
 
-        assert entropy_low < entropy_t1, f"Low T should reduce entropy: T=0.1 gave {entropy_low:.4f}, T=1 gave {entropy_t1:.4f}"
+        assert entropy_low < entropy_t1, (
+            f"Low T should reduce entropy: T=0.1 gave {entropy_low:.4f}, T=1 gave {entropy_t1:.4f}"
+        )
 
     def test_argmax_preserved_across_temperatures(self, logit_model, random_input):
         """The predicted class (argmax) should not change when temperature changes."""
@@ -139,15 +141,15 @@ class TestFitTemperature:
         inputs = [rng.standard_normal((batch_size, h, w, 5)).astype(np.float32) for _ in range(n_samples)]
 
         raw_logits = [logit_model(x, training=False) for x in inputs]
-        primary_raw = [l[0].numpy() if isinstance(l, (list, tuple)) else l.numpy() for l in raw_logits]
+        primary_raw = [logit[0].numpy() if isinstance(logit, (list, tuple)) else logit.numpy() for logit in raw_logits]
 
         targets = []
-        for l in primary_raw:
-            cls = l.argmax(axis=-1)
+        for logit in primary_raw:
+            cls = logit.argmax(axis=-1)
             one_hot = np.eye(N_CLASSES, dtype=np.float32)[cls]
             targets.append(one_hot)
 
-        squeezed_logits = [l * 0.1 for l in primary_raw]
+        squeezed_logits = [logit * 0.1 for logit in primary_raw]
 
         class _SqueezedLogitModel:
             def __call__(self, x, training=False):
