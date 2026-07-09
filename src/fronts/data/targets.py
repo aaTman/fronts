@@ -3,7 +3,26 @@ import xarray as xr
 
 # Original front codes → experiment class indices
 # 0 = no front (background), 1-4 kept as-is, 16 (dryline) → 5, all others → 0
-FRONT_CLASS_MAP = {1: 1, 2: 2, 3: 3, 4: 4, 16: 5}
+# Dissipating and forming fronts also mapped to their respective class (e.g. 6 → 2, 7 → 3, 8 → 4, etc.)
+# Mapping table:
+# CF (1): Cold front
+# WF (2): Warm front
+# SF (3): Stationary front
+# OF (4): Occluded front
+# CF-F (5): Cold front (forming)
+# WF-F (6): Warm front (forming)
+# SF-F (7): Stationary front (forming)
+# OF-F (8): Occluded front (forming)
+# CF-D (9): Cold front (dissipating)
+# WF-D (10): Warm front (dissipating)
+# SF-D (11): Stationary front (dissipating)
+# OF-D (12): Occluded front (dissipating)
+# INST (13): Instability axis
+# TROF (14): Trough
+# TT (15): Tropical Trough
+# DL (16): Dryline
+
+FRONT_CLASS_MAP = {1: 1, 2: 2, 3: 3, 4: 4, 5: 9, 6: 2, 7: 3, 8: 4, 9: 9, 10: 2, 11: 3, 12: 4, 16: 5}
 
 
 def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.ndarray:
