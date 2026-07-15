@@ -59,8 +59,17 @@ class WandBConfig:
 
 @dataclasses.dataclass
 class TrainConfig:
-    """Training-specific hyperparameters."""
+    """Training-specific hyperparameters.
 
+    Attributes:
+        loss_class_weights: Class weights applied inside the training loss, or None to supervise all
+            classes (including background) equally. The reference FrontFinder model trained with
+            None — zero-weighting background in the loss leaves ~95% of pixels unsupervised and
+            lets predicted probabilities drift toward uniform. Metrics use
+            ``data_config.class_weights`` independently of this value.
+    """
+
+    loss_class_weights: list[float] | None
     epochs: int = 50
     seed: int = 42
     learning_rate: float = 1e-4
@@ -186,16 +195,20 @@ def _show_input_sample(label: str, inputs: np.ndarray | xr.DataArray, n_show: in
 
 
 def _compile(
-    model: tf.keras.Model, learning_rate: float, class_weights: list[float] | None, latitudes: np.ndarray
+    model: tf.keras.Model,
+    learning_rate: float,
+    metric_class_weights: list[float] | None,
+    loss_class_weights: list[float] | None,
+    latitudes: np.ndarray,
 ) -> int:
     n_out = len(model.outputs)
     loss_fn = losses.neighborhood_brier_score(
         latitudes=latitudes,
         tolerances_km=(25.0, 100.0, 250.0),  # 25 km reproduces the old 1-px (0.25 deg) label dilation
-        class_weights=class_weights,
+        class_weights=loss_class_weights,
         periodic_lon=False,  # the domain's longitude ends are not adjacent: valid-cell edges, no wrap
     )
-    hss_fn = metrics.heidke_skill_score(class_weights=class_weights)
+    hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
@@ -207,6 +220,36 @@ def _compile(
     return n_out
 
 
+def _build_monitor_callback(
+    monitor: str,
+    patience: int,
+    learning_rate_decay_factor: float | None,
+    learning_rate_minimum: float | None,
+) -> tf.keras.callbacks.Callback:
+    """Builds a ReduceLROnPlateau callback if both LR-decay params are set, else EarlyStopping.
+
+    Args:
+        monitor: Metric name to monitor.
+        patience: Number of epochs with no improvement before acting.
+        learning_rate_decay_factor: Factor to multiply the learning rate by on plateau, or
+            None to use EarlyStopping instead.
+        learning_rate_minimum: Lower bound on the learning rate when decaying, or None to
+            use EarlyStopping instead.
+
+    Returns:
+        A ReduceLROnPlateau callback if both LR-decay params are provided, otherwise an
+        EarlyStopping callback.
+    """
+    if learning_rate_decay_factor is not None and learning_rate_minimum is not None:
+        return tf.keras.callbacks.ReduceLROnPlateau(
+            monitor=monitor,
+            factor=learning_rate_decay_factor,
+            patience=patience,
+            min_lr=learning_rate_minimum,
+        )
+    return tf.keras.callbacks.EarlyStopping(monitor=monitor, patience=patience, restore_best_weights=True)
+
+
 def _run(
     model: tf.keras.Model,
     train_data: datasets.FrontsPyDataset,
@@ -215,6 +258,8 @@ def _run(
     monitor: str,
     patience: int,
     shuffle: bool,
+    learning_rate_decay_factor: float | None = None,
+    learning_rate_minimum: float | None = None,
     model_checkpoint_path: str | None = None,
     wandb_project: str | None = None,
     run_name: str | None = None,
@@ -235,7 +280,7 @@ def _run(
     # Use the W&B Keras callback if logging to W&B, otherwise the standard ModelCheckpoint.
     ckpt_cls = wandb.keras.WandbModelCheckpoint if wandb_project else tf.keras.callbacks.ModelCheckpoint
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor=monitor, patience=patience, restore_best_weights=True),
+        _build_monitor_callback(monitor, patience, learning_rate_decay_factor, learning_rate_minimum),
         fronts_callbacks.GcCallback(),
         # Must run before WandbMetricsLogger: it mutates the shared `logs` dict that
         # WandbMetricsLogger reads, collapsing per-deep-supervision-output keys into
@@ -441,7 +486,13 @@ def train(
                 for i, out in enumerate(unet.outputs)
             ]
             unet = model.SharedTargetModel(unet.inputs, float32_outputs, name=unet.name)
-        _compile(unet, train_cfg.learning_rate, data_cfg.class_weights, train_dataset.input_ds["latitude"].values)
+        _compile(
+            unet,
+            train_cfg.learning_rate,
+            metric_class_weights=data_cfg.class_weights,
+            loss_class_weights=train_cfg.loss_class_weights,
+            latitudes=train_dataset.input_ds["latitude"].values,
+        )
     logger.info("Model built and compiled.")
 
     unet.summary()
@@ -514,6 +565,8 @@ def train(
         validation_steps=val_steps,
         monitor=callbacks_cfg.monitor,
         patience=effective_patience,
+        learning_rate_decay_factor=callbacks_cfg.learning_rate_decay_factor,
+        learning_rate_minimum=callbacks_cfg.learning_rate_minimum,
         model_checkpoint_path=callbacks_cfg.model_checkpoint_path,
         wandb_project=wandb_project,
         run_name=run_name,

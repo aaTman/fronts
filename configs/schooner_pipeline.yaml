@@ -80,6 +80,7 @@ train_config:
   seed: 42
   learning_rate: 0.0001
   shuffle: true
+  loss_class_weights: null  # null supervises all classes incl. background in the training loss, matching the AIES FrontFinder model
 
 model_config:
   n_classes: 6
@@ -99,6 +100,8 @@ model_config:
 callbacks_config:
   monitor: "val_loss"
   patience: 3
+  learning_rate_decay_factor: 0.2
+  learning_rate_minimum: 1e-6
   model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/"
   test_viz_every_n_epochs: 1
   test_viz_sample_size: 200
