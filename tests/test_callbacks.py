@@ -196,6 +196,40 @@ class TestVisualizationCallbackOnEpochEnd:
         assert calls == []
 
 
+class TestGcCallbackMallocTracing:
+    def test_disabled_tracing_is_a_noop(self):
+        callback = fc.GcCallback(trace_malloc_every_n_epochs=None)
+        callback._log_malloc_growth(epoch=0)
+        assert callback._malloc_snapshot is None
+
+    def test_enabled_tracing_snapshots_and_logs_growth(self):
+        import tracemalloc
+
+        callback = fc.GcCallback(trace_malloc_every_n_epochs=1)
+        tracemalloc.start(10)
+        try:
+            callback._log_malloc_growth(epoch=0)
+            assert callback._malloc_snapshot is not None
+            first_snapshot = callback._malloc_snapshot
+            callback._log_malloc_growth(epoch=1)
+            assert callback._malloc_snapshot is not first_snapshot
+        finally:
+            tracemalloc.stop()
+
+    def test_off_cadence_epoch_keeps_previous_snapshot(self):
+        import tracemalloc
+
+        callback = fc.GcCallback(trace_malloc_every_n_epochs=2)
+        tracemalloc.start(10)
+        try:
+            callback._log_malloc_growth(epoch=1)  # (1 + 1) % 2 == 0 -> snapshots
+            snapshot = callback._malloc_snapshot
+            callback._log_malloc_growth(epoch=2)  # (2 + 1) % 2 == 1 -> skipped
+            assert callback._malloc_snapshot is snapshot
+        finally:
+            tracemalloc.stop()
+
+
 class TestAccumulateLiteStats:
     def test_matches_hand_computed_counts(self):
         # (time=1, lat=2, lon=2, n_fronts=1)
@@ -224,3 +258,53 @@ class TestAccumulateLiteStats:
         assert fp[0, 0] == pytest.approx(0.0)
         assert tn[0, 0] == pytest.approx(0.0)
         assert fn[0, 0] == pytest.approx(0.0)
+
+    @staticmethod
+    def _reference_loop(pred, truth, weights, thresholds):
+        """Original per-timestep loop implementation, kept as the equivalence oracle."""
+        n_times, _, _, n_fronts = pred.shape
+        n_thresh = len(thresholds)
+        w_flat = weights.ravel().astype(np.float32)
+        tp = np.zeros((n_fronts, n_thresh), dtype=np.float64)
+        fp = np.zeros_like(tp)
+        tn = np.zeros_like(tp)
+        fn = np.zeros_like(tp)
+        for t in range(n_times):
+            pred_t = pred[t].reshape(-1, n_fronts).T
+            truth_t = truth[t].reshape(-1, n_fronts).T.astype(bool)
+            above = pred_t[:, :, np.newaxis] >= thresholds
+            truth_3d = truth_t[:, :, np.newaxis]
+            tp += ((above & truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
+            fp += ((above & ~truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
+            tn += ((~above & ~truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
+            fn += ((~above & truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
+        return tp, fp, tn, fn
+
+    def test_matches_reference_loop_on_random_inputs(self):
+        rng = np.random.default_rng(0)
+        thresholds = fc.LITE_THRESHOLDS
+        pred = rng.random((4, 8, 10, 3), dtype=np.float32)
+        # Plant values exactly equal to thresholds to exercise the >= boundary.
+        pred[0, 0, 0, 0] = thresholds[0]
+        pred[1, 2, 3, 1] = thresholds[5]
+        pred[2, 4, 5, 2] = thresholds[-1]
+        truth = (rng.random((4, 8, 10, 3)) < 0.3).astype(np.float32)
+        weights = rng.random((8, 10)).astype(np.float32)
+        weights[0, :] = 0.0
+
+        expected = self._reference_loop(pred, truth, weights, thresholds)
+        actual = fc.accumulate_lite_stats(pred, truth, weights, thresholds)
+        for exp, act, name in zip(expected, actual, ("tp", "fp", "tn", "fn"), strict=True):
+            np.testing.assert_allclose(act, exp, rtol=1e-6, err_msg=name)
+
+    def test_matches_reference_loop_with_unsorted_thresholds(self):
+        rng = np.random.default_rng(1)
+        thresholds = np.array([0.7, 0.2, 0.5], dtype=np.float32)
+        pred = rng.random((2, 4, 6, 2), dtype=np.float32)
+        truth = (rng.random((2, 4, 6, 2)) < 0.4).astype(np.float32)
+        weights = np.ones((4, 6), dtype=np.float32)
+
+        expected = self._reference_loop(pred, truth, weights, thresholds)
+        actual = fc.accumulate_lite_stats(pred, truth, weights, thresholds)
+        for exp, act, name in zip(expected, actual, ("tp", "fp", "tn", "fn"), strict=True):
+            np.testing.assert_allclose(act, exp, rtol=1e-6, err_msg=name)

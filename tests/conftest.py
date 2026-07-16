@@ -63,4 +63,6 @@ def data_config() -> datasets.DatasetConfig:
         variables=_VARIABLES,
         test_years=[],
         val_years=[],
+        shuffle_block_size=None,
+        val_cache_in_ram=False,
     )

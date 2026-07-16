@@ -25,6 +25,11 @@ class DatasetConfig:
             during training or validation).
         val_years: Calendar years to hold out for validation. Must not overlap test_years.
             All years not in test_years or val_years are used for training.
+        shuffle_block_size: Size of the contiguous index blocks whose order is shuffled
+            each epoch instead of shuffling individual timesteps. Contiguous reads keep
+            locality in the zarr store, the virtual-chunk NetCDF target files, and the
+            filesystem readahead, cutting per-batch read amplification. ``None`` shuffles
+            every timestep independently (the fully random baseline).
         batch_size: Number of timesteps per training batch.
         class_weights: Per-class loss weights. None means equal weighting.
         front_dilation: Number of binary dilation iterations applied to each non-background
@@ -40,6 +45,10 @@ class DatasetConfig:
             training loop (passed to ``tf.keras.utils.PyDataset(max_queue_size=...)``).
         max_pydataset_workers: Maximum number of threads used by ``tf.keras.utils.PyDataset`` to
             load batches in parallel. None uses the number of CPUs allocated to the job.
+        val_cache_in_ram: If True, the validation dataset memoizes each batch in RAM on
+            first access, so every epoch after the first validates without touching the
+            stores. Sized by the validation split (~90 MB per timestep at the full domain
+            and 78 channels) — enable only when the node has that much headroom.
     """
 
     inputs_icechunk_config: utils.IcechunkStorageConfig
@@ -47,6 +56,8 @@ class DatasetConfig:
     variables: list[str]
     test_years: list[int]
     val_years: list[int]
+    shuffle_block_size: int | None
+    val_cache_in_ram: bool
     batch_size: int = 4
     class_weights: list[float] | None = None
     front_dilation: int = 0
@@ -76,6 +87,9 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         target_da: This split's raw integer front-code DataArray, shape (time, latitude, longitude).
         batch_size: Number of timesteps per batch.
         shuffle: If True, reshuffles the sample order at the end of every epoch.
+        cache: If True, memoizes each batch in RAM on first access so later epochs never
+            re-read the stores. Requires ``shuffle=False`` (cache entries are keyed by
+            batch index, which only maps to fixed timesteps when the order is stable).
     """
 
     def __init__(
@@ -88,6 +102,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         seed: int = 0,
         workers: int = 1,
         max_queue_size: int = 10,
+        cache: bool = False,
     ):
         super().__init__(workers=workers, max_queue_size=max_queue_size)
         if input_ds.sizes["time"] != target_da.sizes["time"]:
@@ -96,11 +111,17 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
             )
         self.input_ds = input_ds.copy()
         self.target_da = target_da.copy()
+        if data_config.shuffle_block_size is not None and data_config.shuffle_block_size < 1:
+            raise ValueError(f"shuffle_block_size must be >= 1 or None, got {data_config.shuffle_block_size}")
+        if cache and shuffle:
+            raise ValueError("cache=True requires shuffle=False: cached batches are keyed by batch index.")
         self.data_config = data_config
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.cache = cache
+        self._cached_batches: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self._rng = np.random.default_rng(seed)
-        self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
+        self._order = self._make_order()
 
     @property
     def _total(self) -> int:
@@ -115,10 +136,30 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         """Returns the number of batches per epoch."""
         return math.ceil(self._total / self.batch_size)
 
+    def _make_order(self) -> np.ndarray:
+        """Returns the sample order for one epoch.
+
+        Without shuffling this is the identity order. With shuffling and
+        ``shuffle_block_size=None`` every timestep is permuted independently. With a
+        block size, contiguous index blocks of that size are kept intact and only the
+        block order is permuted, so consecutive reads stay local in the backing stores.
+        Blocks are contiguous in this split's index space, which is near-contiguous
+        (not strictly adjacent) in store order after timestep filtering upstream.
+        """
+        if not self.shuffle:
+            return np.arange(self._total)
+        block_size = self.data_config.shuffle_block_size
+        if block_size is None:
+            return self._rng.permutation(self._total)
+        n_blocks = math.ceil(self._total / block_size)
+        block_order = self._rng.permutation(n_blocks)
+        blocks = [np.arange(b * block_size, min((b + 1) * block_size, self._total)) for b in block_order]
+        return np.concatenate(blocks)
+
     def on_epoch_end(self) -> None:
         """Reshuffles the sample order for the next epoch, if shuffling is enabled."""
         if self.shuffle:
-            self._order = self._rng.permutation(self._total)
+            self._order = self._make_order()
 
     def get_at_indices(self, idxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) arrays at arbitrary global time indices.
@@ -145,11 +186,15 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         return x, y
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the (input, target) batch at ``idx``."""
+        """Returns the (input, target) batch at ``idx``, from the RAM cache when enabled."""
+        if self.cache and idx in self._cached_batches:
+            return self._cached_batches[idx]
         local_idxs = self._order[idx * self.batch_size : (idx + 1) * self.batch_size]
         t0 = time.time()
         result = self.get_at_indices(local_idxs)
         elapsed = time.time() - t0
         if elapsed > 30:
             logger.warning(f"Slow batch {idx}: {elapsed:.1f}s")
+        if self.cache:
+            self._cached_batches[idx] = result
         return result

@@ -4,6 +4,7 @@ import dataclasses
 import gc
 import logging
 import re
+import tracemalloc
 
 import numpy as np
 import psutil
@@ -70,8 +71,12 @@ class CallbacksConfig:
             None disables test-set visualization.
         test_viz_sample_size: Maximum number of timesteps to subsample from the test split
             for the performance diagram. Ignored if ``test_viz_every_n_epochs`` is None.
+        trace_malloc_every_n_epochs: Optional cadence in epochs for ``GcCallback`` to log
+            the top Python allocation growth sites via ``tracemalloc``, for diagnosing
+            RSS creep across epochs. None disables tracing.
     """
 
+    trace_malloc_every_n_epochs: int | None
     monitor: str = "val_loss"
     patience: int = 8
     learning_rate_decay_factor: float | None = None
@@ -121,18 +126,46 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
 
 
 class GcCallback(tf.keras.callbacks.Callback):
-    """Forces garbage collection and logs RAM/GPU VRAM usage at the end of every epoch."""
+    """Forces garbage collection and logs RAM/GPU VRAM usage at the end of every epoch.
+
+    Attributes:
+        trace_malloc_every_n_epochs: Optional cadence in epochs for logging the top
+            Python allocation growth sites via ``tracemalloc`` (for chasing RSS creep,
+            e.g. zarr/icechunk caches or W&B image buffers). None disables tracing;
+            note tracing adds per-allocation overhead while enabled.
+    """
+
+    def __init__(self, trace_malloc_every_n_epochs: int | None = None):
+        super().__init__()
+        self.trace_malloc_every_n_epochs = trace_malloc_every_n_epochs
+        self._malloc_snapshot: tracemalloc.Snapshot | None = None
 
     def on_train_begin(self, logs: dict | None = None) -> None:
-        """Initializes NVML for the GPU memory queries used in on_epoch_end."""
+        """Initializes NVML for the GPU memory queries (and tracemalloc when tracing is enabled)."""
         pynvml.nvmlInit()
+        if self.trace_malloc_every_n_epochs is not None:
+            tracemalloc.start(10)
 
     def on_train_end(self, logs: dict | None = None) -> None:
-        """Shuts down NVML."""
+        """Shuts down NVML (and tracemalloc when tracing is enabled)."""
         pynvml.nvmlShutdown()
+        if self.trace_malloc_every_n_epochs is not None:
+            tracemalloc.stop()
+
+    def _log_malloc_growth(self, epoch: int) -> None:
+        if self.trace_malloc_every_n_epochs is None or (epoch + 1) % self.trace_malloc_every_n_epochs != 0:
+            return
+        snapshot = tracemalloc.take_snapshot()
+        if self._malloc_snapshot is not None:
+            top_growth = snapshot.compare_to(self._malloc_snapshot, "traceback")[:10]
+            logger.info("Top Python allocation growth since last snapshot:")
+            for stat in top_growth:
+                frames = " <- ".join(str(frame) for frame in stat.traceback.format(limit=3))
+                logger.info("  %+.1f MiB (%+d blocks) %s", stat.size_diff / 2**20, stat.count_diff, frames)
+        self._malloc_snapshot = snapshot
 
     def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
-        """Collects garbage and logs current RAM/GPU VRAM usage."""
+        """Collects garbage and logs current RAM/GPU VRAM usage (plus allocation growth when tracing)."""
         gc.collect()
         proc = psutil.Process()
         ram_used_gib = proc.memory_info().rss / 2**30
@@ -149,6 +182,7 @@ class GcCallback(tf.keras.callbacks.Callback):
                 mem.used / 2**30,
                 mem.total / 2**30,
             )
+        self._log_malloc_growth(epoch)
 
 
 def select_active_test_timestep(target_da: xr.DataArray) -> int:
@@ -232,24 +266,30 @@ def accumulate_lite_stats(
     """
     n_times, _, _, n_fronts = pred.shape
     n_thresh = len(thresholds)
-    w_flat = weights.ravel().astype(np.float32)
+    w_full = np.tile(weights.ravel().astype(np.float32), n_times).astype(np.float64)
+    threshold_order = np.argsort(thresholds, kind="stable")
+    sorted_thresholds = np.asarray(thresholds)[threshold_order]
 
-    tp = np.zeros((n_fronts, n_thresh), dtype=np.float64)
-    fp = np.zeros_like(tp)
-    tn = np.zeros_like(tp)
-    fn = np.zeros_like(tp)
+    tp = np.empty((n_fronts, n_thresh), dtype=np.float64)
+    fp = np.empty_like(tp)
+    tn = np.empty_like(tp)
+    fn = np.empty_like(tp)
 
-    for t in range(n_times):
-        pred_t = pred[t].reshape(-1, n_fronts).T  # (F, P)
-        truth_t = truth[t].reshape(-1, n_fronts).T.astype(bool)  # (F, P)
-
-        above = pred_t[:, :, np.newaxis] >= thresholds  # (F, P, T)
-        truth_3d = truth_t[:, :, np.newaxis]
-
-        tp += ((above & truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
-        fp += ((above & ~truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
-        tn += ((~above & ~truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
-        fn += ((~above & truth_3d).astype(np.float32) * w_flat[np.newaxis, :, np.newaxis]).sum(axis=1)
+    for f in range(n_fronts):
+        p = pred[..., f].ravel()
+        is_truth = truth[..., f].ravel().astype(bool)
+        # bin_idx[i] counts sorted thresholds <= p[i], so ``p >= sorted_thresholds[k]`` iff bin_idx > k.
+        # Weighted histograms over bin_idx plus suffix sums give every threshold's confusion
+        # entries in one pass instead of an (F, P, T) boolean broadcast per timestep.
+        bin_idx = np.searchsorted(sorted_thresholds, p, side="right")
+        hist_truth = np.bincount(bin_idx, weights=w_full * is_truth, minlength=n_thresh + 1)
+        hist_false = np.bincount(bin_idx, weights=w_full * ~is_truth, minlength=n_thresh + 1)
+        above_truth = np.cumsum(hist_truth[::-1])[::-1][1:]  # weight with p >= sorted_thresholds[k] and truth
+        above_false = np.cumsum(hist_false[::-1])[::-1][1:]
+        tp[f, threshold_order] = above_truth
+        fp[f, threshold_order] = above_false
+        fn[f, threshold_order] = hist_truth.sum() - above_truth
+        tn[f, threshold_order] = hist_false.sum() - above_false
 
     return tp, fp, tn, fn
 

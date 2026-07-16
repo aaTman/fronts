@@ -10,6 +10,8 @@ data_config:
     branch_name: "main"
     virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
   batch_size: 32
+  shuffle_block_size: null  # null = fully random shuffle; N shuffles contiguous N-timestep blocks for read locality
+  val_cache_in_ram: true  # memoize val batches in RAM after epoch 1 (~90 MB/timestep); needs headroom
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
@@ -36,7 +38,7 @@ data_config:
     "2m_dewpoint_temperature",
     ]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
-  num_pydataset_workers: 16  # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
+  max_pydataset_workers: 16  # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
 
 eval_config:
   model_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/_best_loss.keras"

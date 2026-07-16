@@ -12,11 +12,18 @@ try:
     from fronts.data.datasets import DatasetConfig, FrontsPyDataset
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
-    from fronts.train import _build_monitor_callback, load_data_into_dataloader
 
     _TF_AVAILABLE = True
 except ImportError:
     _TF_AVAILABLE = False
+
+try:
+    from fronts.train import _build_monitor_callback, load_data_into_dataloader
+
+    _TRAIN_AVAILABLE = True
+except ImportError:
+    # fronts.train additionally needs wandb (and tensorflow); keep dataset-only tests runnable without it.
+    _TRAIN_AVAILABLE = False
 
 _ALL_CODES = list(FRONT_CLASS_MAP.keys())  # [1, 2, 3, 4, 15]
 
@@ -125,7 +132,7 @@ class TestApplyTimeResolution:
         assert all(h in (0, 6, 12, 18) for h in pd.DatetimeIndex(result).hour)
 
 
-@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+@pytest.mark.skipif(not _TRAIN_AVAILABLE, reason="fronts.train dependencies not installed")
 class TestBuildMonitorCallback:
     def test_both_decay_params_set_returns_reduce_lr_on_plateau(self):
         callback = _build_monitor_callback(
@@ -235,6 +242,102 @@ class TestFrontsPyDataset:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestFrontsPyDatasetCache:
+    def test_cached_batch_survives_backing_store_mutation(self, era5_ds, front_da, data_config):
+        ds = FrontsPyDataset(era5_ds, front_da, data_config, batch_size=2, cache=True)
+        x_first, y_first = ds[0]
+        for var in era5_ds.data_vars:
+            era5_ds[var].values[:] = -999.0
+        x_second, y_second = ds[0]
+        np.testing.assert_array_equal(x_second, x_first)
+        np.testing.assert_array_equal(y_second, y_first)
+        assert not np.any(x_second == -999.0)
+
+    def test_uncached_batch_sees_backing_store_mutation(self, era5_ds, front_da, data_config):
+        ds = FrontsPyDataset(era5_ds, front_da, data_config, batch_size=2, cache=False)
+        ds[0]
+        for var in era5_ds.data_vars:
+            era5_ds[var].values[:] = -999.0
+        x_second, _ = ds[0]
+        assert np.all(x_second == -999.0)
+
+    def test_cache_with_shuffle_raises(self, era5_ds, front_da, data_config):
+        with pytest.raises(ValueError, match="cache"):
+            FrontsPyDataset(era5_ds, front_da, data_config, batch_size=2, cache=True, shuffle=True)
+
+    def test_all_batches_cached_after_one_pass(self, era5_ds, front_da, data_config):
+        ds = FrontsPyDataset(era5_ds, front_da, data_config, batch_size=2, cache=True)
+        for i in range(len(ds)):
+            ds[i]
+        assert sorted(ds._cached_batches) == list(range(len(ds)))
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestFrontsPyDatasetBlockShuffle:
+    _N_TIME = 17  # Not a multiple of the block size, so the last block is partial.
+    _BLOCK_SIZE = 4
+
+    def _make_ds(self, data_config, shuffle_block_size, seed=0, shuffle=True):
+        import dataclasses
+
+        rng = np.random.default_rng(0)
+        era5_ds = xr.Dataset(
+            {
+                var: xr.DataArray(
+                    rng.standard_normal((self._N_TIME, 4, 8)).astype(np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": np.arange(self._N_TIME)},
+                )
+                for var in data_config.variables
+            }
+        )
+        front_da = xr.DataArray(
+            rng.integers(0, 2, size=(self._N_TIME, 4, 8)).astype(np.int32),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": np.arange(self._N_TIME)},
+        )
+        config = dataclasses.replace(data_config, shuffle_block_size=shuffle_block_size)
+        return FrontsPyDataset(era5_ds, front_da, config, batch_size=2, shuffle=shuffle, seed=seed)
+
+    def test_covers_every_index_exactly_once(self, data_config):
+        ds = self._make_ds(data_config, shuffle_block_size=self._BLOCK_SIZE)
+        np.testing.assert_array_equal(np.sort(ds._order), np.arange(self._N_TIME))
+
+    def test_blocks_are_internally_contiguous(self, data_config):
+        ds = self._make_ds(data_config, shuffle_block_size=self._BLOCK_SIZE)
+        block_starts = np.arange(0, self._N_TIME, self._BLOCK_SIZE)
+        pos = 0
+        seen_starts = []
+        while pos < self._N_TIME:
+            start = ds._order[pos]
+            assert start in block_starts
+            length = min(self._BLOCK_SIZE, self._N_TIME - start)
+            np.testing.assert_array_equal(ds._order[pos : pos + length], np.arange(start, start + length))
+            seen_starts.append(start)
+            pos += length
+        assert sorted(seen_starts) == block_starts.tolist()
+
+    def test_block_order_differs_across_epochs(self, data_config):
+        ds = self._make_ds(data_config, shuffle_block_size=self._BLOCK_SIZE)
+        order_before = ds._order.copy()
+        ds.on_epoch_end()
+        assert not np.array_equal(order_before, ds._order)
+
+    def test_none_block_size_reproduces_full_shuffle(self, data_config):
+        ds = self._make_ds(data_config, shuffle_block_size=None, seed=7)
+        expected = np.random.default_rng(7).permutation(self._N_TIME)
+        np.testing.assert_array_equal(ds._order, expected)
+
+    def test_no_shuffle_ignores_block_size(self, data_config):
+        ds = self._make_ds(data_config, shuffle_block_size=self._BLOCK_SIZE, shuffle=False)
+        np.testing.assert_array_equal(ds._order, np.arange(self._N_TIME))
+
+    def test_invalid_block_size_raises(self, data_config):
+        with pytest.raises(ValueError, match="shuffle_block_size"):
+            self._make_ds(data_config, shuffle_block_size=0)
+
+
+@pytest.mark.skipif(not _TRAIN_AVAILABLE, reason="fronts.train dependencies not installed")
 class TestLoadDataIntoDataloaderLongitude:
     """A wrap-crossing bounding box (lon_max > 360, e.g. configs/generate_icechunk.yaml's.
 
@@ -269,6 +372,8 @@ class TestLoadDataIntoDataloaderLongitude:
             variables=["temperature"],
             test_years=[2020],
             val_years=[],
+            shuffle_block_size=None,
+            val_cache_in_ram=False,
         )
         test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
         lons = test_dataset.input_ds["longitude"].values

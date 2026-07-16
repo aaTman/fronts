@@ -1,3 +1,5 @@
+import pathlib
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -211,3 +213,56 @@ class TestParseConfigSectionFloatCoercion:
 
         cfg = utils.parse_config_section({"callbacks": {"learning_rate_minimum": None}}, DecayConfig, "callbacks")
         assert cfg.learning_rate_minimum is None
+
+
+class TestParseConfigSectionStrictness:
+    def test_unknown_key_raises(self):
+        """A YAML key that matches no dataclass field must raise rather than be silently dropped."""
+        import dataclasses
+
+        import dacite
+
+        from fronts import utils
+
+        @dataclasses.dataclass
+        class WorkersConfig:
+            max_pydataset_workers: int = 16
+
+        yaml_data = {"data_config": {"num_pydataset_workers": 8}}
+        with pytest.raises(dacite.UnexpectedDataError):
+            utils.parse_config_section(yaml_data, WorkersConfig, "data_config")
+
+    @pytest.mark.parametrize("config_path", sorted(pathlib.Path("configs").glob("*.yaml"), key=str))
+    def test_shipped_configs_parse_strictly(self, config_path):
+        """Every section of every shipped config must match its dataclass exactly.
+
+        Sections whose modules need optional dependencies (tensorflow, wandb) are skipped
+        when those dependencies are unavailable, matching the guard pattern in test_train.py.
+        """
+        import importlib
+
+        from fronts import utils
+
+        section_classes = {
+            "data_config": ("fronts.data.datasets", "DatasetConfig", None),
+            "model_config": ("fronts.model", "ModelConfig", None),
+            "callbacks_config": ("fronts.callbacks", "CallbacksConfig", None),
+            "train_config": ("fronts.train", "TrainConfig", None),
+            "wandb_config": ("fronts.train", "WandBConfig", None),
+            "eval_config": ("fronts.evaluate", "EvalConfig", utils.YAML_TYPE_HOOKS),
+            "era5_config": ("fronts.data.generate", "ERA5DataLoaderConfig", None),
+            "icechunk_storage_config": ("fronts.utils", "IcechunkStorageConfig", None),
+            "slurm_config": ("fronts.data.config", "SlurmConfig", None),
+        }
+        yaml_data = utils.load_yaml(str(config_path))
+        parsed_sections = 0
+        for key, (module_name, class_name, type_hooks) in section_classes.items():
+            if key not in yaml_data:
+                continue
+            try:
+                config_class = getattr(importlib.import_module(module_name), class_name)
+            except ImportError:
+                continue
+            utils.parse_config_section(yaml_data, config_class, key, type_hooks)
+            parsed_sections += 1
+        assert parsed_sections > 0, f"No parseable sections found in {config_path}"

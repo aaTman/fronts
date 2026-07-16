@@ -91,6 +91,8 @@ def small_data_config():
         variables=_VARIABLES,
         test_years=[],
         val_years=[],
+        shuffle_block_size=None,
+        val_cache_in_ram=False,
         front_dilation=0,
     )
 

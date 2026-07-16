@@ -173,6 +173,7 @@ def load_data_into_dataloader(
         shuffle=shuffle,
         workers=data_workers,
         max_queue_size=data_config.max_queue_size,
+        cache=data_config.val_cache_in_ram and split == "val",
     )
 
 
@@ -262,6 +263,7 @@ def _run(
     validation_steps: int | None = None,
     run_config: dict[str, str] | None = None,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
+    trace_malloc_every_n_epochs: int | None = None,
 ) -> tuple[tf.keras.callbacks.History, float]:
     if wandb_project:
         wandb.init(
@@ -275,7 +277,7 @@ def _run(
     ckpt_cls = wandb.keras.WandbModelCheckpoint if wandb_project else tf.keras.callbacks.ModelCheckpoint
     callbacks = [
         _build_monitor_callback(monitor, patience, learning_rate_decay_factor, learning_rate_minimum),
-        fronts_callbacks.GcCallback(),
+        fronts_callbacks.GcCallback(trace_malloc_every_n_epochs=trace_malloc_every_n_epochs),
         # Must run before WandbMetricsLogger: it mutates the shared `logs` dict that
         # WandbMetricsLogger reads, collapsing per-deep-supervision-output keys into
         # single aggregate hss/val_hss (and stripping the per-output loss keys).
@@ -566,6 +568,7 @@ def train(
         wandb_log_freq=wandb_cfg.log_freq if wandb_cfg is not None else "epoch",
         run_config=run_meta,
         extra_callbacks=extra_callbacks,
+        trace_malloc_every_n_epochs=callbacks_cfg.trace_malloc_every_n_epochs,
     )
 
     best_val = min(history.history.get("val_loss", [float("nan")]))

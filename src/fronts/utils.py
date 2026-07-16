@@ -357,6 +357,9 @@ def parse_config_section(
 ) -> T:
     """Parse a section of a pre-loaded YAML dict into a dataclass instance.
 
+    Parsing is strict: keys in the section that do not match a dataclass field raise
+    ``dacite.UnexpectedDataError`` instead of being silently ignored.
+
     Args:
         yaml_data: Pre-loaded and interpolated YAML dict (from ``load_yaml``).
         config_class: The dataclass to parse the section into.
@@ -372,7 +375,7 @@ def parse_config_section(
     return dacite.from_dict(
         data_class=config_class,
         data=section,
-        config=dacite.Config(check_types=False, type_hooks={float: float, **(type_hooks or {})}),
+        config=dacite.Config(check_types=False, strict=True, type_hooks={float: float, **(type_hooks or {})}),
     )
 
 
