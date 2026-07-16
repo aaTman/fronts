@@ -302,12 +302,12 @@ class UNet3Plus(UNetBase):
             matrix of the Conv2D/Conv3D layers.
         bias_constraint: Constraint function applied to the bias vector
             in the Conv2D/Conv3D layers.
-        normalization_mean: Per-channel mean of shape (n_channels,). When provided
-            alongside ``normalization_variance``, a ``tf.keras.layers.Normalization``
+        normalization_min: Per-channel min of shape (n_channels,). When provided
+            alongside ``normalization_max``, a min-max ``tf.keras.layers.Rescaling``
             layer is prepended with these statistics baked in as non-trainable weights.
             Raw unnormalized inputs can then be passed directly to the saved model.
-        normalization_variance: Per-channel variance of shape (n_channels,). Must be
-            provided together with ``normalization_mean``.
+        normalization_max: Per-channel max of shape (n_channels,). Must be
+            provided together with ``normalization_min``.
 
     Returns:
         A ``tf.keras.models.Model`` object representing the U-Net 3+ model.
@@ -326,8 +326,8 @@ class UNet3Plus(UNetBase):
     filter_num_aggregate: int | None = None
     first_encoder_connections: bool = False
     deep_supervision: bool = False
-    normalization_mean: np.ndarray | None = None
-    normalization_variance: np.ndarray | None = None
+    normalization_min: np.ndarray | None = None
+    normalization_max: np.ndarray | None = None
 
     def build(self) -> tf.keras.Model:
         """Builds and returns the U-Net 3+ Keras model."""
@@ -421,17 +421,21 @@ class UNet3Plus(UNetBase):
         tensors: dict[str, Any] = {}
         tensors_with_supervision = []
 
-        # Input + optional normalization layer
-        # The normalization layer is adapted on X_train and its mean/std
-        # are saved inside the model weights when you call model.save().
-        # No separate normalization file is needed at inference time.
+        # Input + optional min-max normalization layer
+        # Min-max (not z-score) keeps every channel bounded even when its native-unit
+        # variance is tiny (e.g. specific_humidity, potential_vorticity), which
+        # otherwise blows up z-scored values to hundreds of standard deviations and
+        # overflows float16 activations. Baked in as non-trainable weights, saved
+        # inside the model on model.save() — no separate normalization file needed.
         tensors["input"] = Input(shape=self.input_shape, name="Input")
 
-        if self.normalization_mean is not None and self.normalization_variance is not None:
-            norm_layer = tf.keras.layers.Normalization(
-                axis=-1,
-                mean=self.normalization_mean,
-                variance=self.normalization_variance,
+        if self.normalization_min is not None and self.normalization_max is not None:
+            channel_range = self.normalization_max - self.normalization_min
+            scale = 1.0 / np.where(channel_range == 0, 1.0, channel_range)
+            offset = -self.normalization_min * scale
+            norm_layer = tf.keras.layers.Rescaling(
+                scale=scale.astype(np.float32),
+                offset=offset.astype(np.float32),
                 name="input_normalization",
             )
             first_tensor = norm_layer(tensors["input"])

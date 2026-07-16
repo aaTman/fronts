@@ -73,17 +73,24 @@ def inputs_ds_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray
 
 
 def compute_norm_stats(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
-    """Compute per-channel mean and variance over the full DataArray in one pass.
+    """Compute per-channel min and max over the full DataArray in one pass.
 
     Builds both reductions as a single dask graph so each chunk is read from
     disk once and the full array is never materialized in memory. Suitable for
-    passing directly to a Keras Normalization layer.
+    building a min-max Rescaling layer.
+
+    Min-max (rather than mean/variance z-score) normalization is used because
+    several channels (e.g. specific_humidity, potential_vorticity) have
+    near-zero variance in their native units, which blows up z-scored values
+    to hundreds of standard deviations for ordinary samples and overflows
+    float16 activations. Min-max keeps every channel bounded regardless of
+    how small its variance is.
 
     Args:
         da: DataArray of shape (time, latitude, longitude, channel).
 
     Returns:
-        Tuple of (mean, variance), each of shape (n_channels,) as float32.
+        Tuple of (min, max), each of shape (n_channels,) as float32.
 
     Raises:
         ValueError: If the computed statistics contain NaN values.
@@ -91,18 +98,18 @@ def compute_norm_stats(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
     reduction_dims = ["time", "latitude", "longitude"]
     stats = xr.Dataset(
         {
-            "mean": da.mean(dim=reduction_dims, skipna=False),
-            "variance": da.var(dim=reduction_dims, skipna=False),
+            "min": da.min(dim=reduction_dims, skipna=False),
+            "max": da.max(dim=reduction_dims, skipna=False),
         }
     ).compute()
-    mean = stats["mean"].values.astype(np.float32)
-    variance = stats["variance"].values.astype(np.float32)
-    if np.isnan(mean).any() or np.isnan(variance).any():
+    min_val = stats["min"].values.astype(np.float32)
+    max_val = stats["max"].values.astype(np.float32)
+    if np.isnan(min_val).any() or np.isnan(max_val).any():
         raise ValueError(
             "NaN in normalization statistics — ERA5 data contains missing values. "
             "Check the icechunk store for corrupted or incomplete channels."
         )
-    return mean, variance
+    return min_val, max_val
 
 
 def load_or_compute_norm_stats(
@@ -114,7 +121,8 @@ def load_or_compute_norm_stats(
 
     The cache key is a SHA-256 hash of cache_key_parts (e.g. the store snapshot
     ID), so stats are reused only when every part matches a previous run. Cached
-    stats whose channel count no longer matches ``da`` are ignored and recomputed.
+    stats whose channel count no longer matches ``da``, or that predate the
+    switch to min-max stats, are ignored and recomputed.
 
     Args:
         da: DataArray of shape (time, latitude, longitude, channel).
@@ -122,7 +130,7 @@ def load_or_compute_norm_stats(
         cache_key_parts: Strings that uniquely determine the statistics.
 
     Returns:
-        Tuple of (mean, variance), each of shape (n_channels,) as float32.
+        Tuple of (min, max), each of shape (n_channels,) as float32.
     """
     snapshot_id = cache_key_parts[0]
     if cache_dir is None:
@@ -133,23 +141,23 @@ def load_or_compute_norm_stats(
     cache_path = pathlib.Path(cache_dir) / f"norm_stats_{key}.npz"
     if cache_path.exists():
         cached = np.load(cache_path)
-        if cached["mean"].shape[0] == da.sizes["channel"]:
+        if "min" in cached and cached["min"].shape[0] == da.sizes["channel"]:
             logger.info("Reusing cached normalization stats for snapshot %s from %s.", snapshot_id, cache_path)
-            return cached["mean"], cached["variance"]
+            return cached["min"], cached["max"]
         logger.warning(
-            "Cached normalization stats for snapshot %s have %d channels but data has %d; recomputing.",
+            "Cached normalization stats for snapshot %s are missing or have a channel-count mismatch "
+            "(data has %d channels); recomputing.",
             snapshot_id,
-            cached["mean"].shape[0],
             da.sizes["channel"],
         )
     else:
         logger.info("No cached normalization stats for snapshot %s (key %s); computing.", snapshot_id, key)
 
-    mean, variance = compute_norm_stats(da)
+    min_val, max_val = compute_norm_stats(da)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=cache_path.parent, suffix=".npz.tmp", delete=False) as tmp:
-        np.savez(tmp, mean=mean, variance=variance)
+        np.savez(tmp, min=min_val, max=max_val)
         tmp_path = tmp.name
     os.replace(tmp_path, cache_path)
     logger.info("Saved normalization stats for snapshot %s to %s.", snapshot_id, cache_path)
-    return mean, variance
+    return min_val, max_val

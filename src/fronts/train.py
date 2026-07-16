@@ -445,7 +445,7 @@ def train(
     # Get the number of cpus allocated in the SLURM job
     cpu_count = utils.slurm_cpu_count()
     with dask.config.set(scheduler="threads", num_workers=cpu_count):
-        norm_mean, norm_variance = inputs.load_or_compute_norm_stats(
+        norm_min, norm_max = inputs.load_or_compute_norm_stats(
             train_inputs_da, data_cfg.norm_stats_cache_dir, norm_cache_key_parts
         )
     logger.info(f"Normalization stats computed over full training set  ({time.time() - t0:.1f} s)")
@@ -477,8 +477,8 @@ def train(
             activation=model_cfg.activation,
             output_activation=model_cfg.output_activation,
             modules_per_node=model_cfg.modules_per_node,
-            normalization_mean=norm_mean,
-            normalization_variance=norm_variance,
+            normalization_min=norm_min,
+            normalization_max=norm_max,
         ).build()
         if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
             float32_outputs = [

@@ -150,24 +150,24 @@ def _make_channel_da(seed: int = 3, with_nan: bool = False) -> xr.DataArray:
 class TestComputeNormStats:
     def test_matches_numpy(self):
         da = _make_channel_da()
-        mean, variance = compute_norm_stats(da)
+        min_val, max_val = compute_norm_stats(da)
         values = da.values
-        np.testing.assert_allclose(mean, values.mean(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
-        np.testing.assert_allclose(variance, values.var(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(min_val, values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(max_val, values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
 
     def test_shapes_and_dtype(self):
         da = _make_channel_da()
-        mean, variance = compute_norm_stats(da)
-        assert mean.shape == (4,)
-        assert variance.shape == (4,)
-        assert mean.dtype == np.float32
-        assert variance.dtype == np.float32
+        min_val, max_val = compute_norm_stats(da)
+        assert min_val.shape == (4,)
+        assert max_val.shape == (4,)
+        assert min_val.dtype == np.float32
+        assert max_val.dtype == np.float32
 
     def test_non_dask_input(self):
         da = _make_channel_da().compute()
-        mean, variance = compute_norm_stats(da)
-        np.testing.assert_allclose(mean, da.values.mean(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
-        np.testing.assert_allclose(variance, da.values.var(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        min_val, max_val = compute_norm_stats(da)
+        np.testing.assert_allclose(min_val, da.values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(max_val, da.values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
 
     def test_raises_on_nan(self):
         da = _make_channel_da(with_nan=True)
@@ -191,11 +191,11 @@ class TestLoadOrComputeNormStats:
     def test_cache_hit_skips_compute(self, tmp_path):
         da = _make_channel_da()
         key_parts = ("snap", "channels", "indices")
-        mean, variance = load_or_compute_norm_stats(da, str(tmp_path), key_parts)
+        min_val, max_val = load_or_compute_norm_stats(da, str(tmp_path), key_parts)
         nan_da = _make_channel_da(with_nan=True)
-        cached_mean, cached_variance = load_or_compute_norm_stats(nan_da, str(tmp_path), key_parts)
-        np.testing.assert_array_equal(cached_mean, mean)
-        np.testing.assert_array_equal(cached_variance, variance)
+        cached_min, cached_max = load_or_compute_norm_stats(nan_da, str(tmp_path), key_parts)
+        np.testing.assert_array_equal(cached_min, min_val)
+        np.testing.assert_array_equal(cached_max, max_val)
 
     def test_different_keys_use_different_files(self, tmp_path):
         da = _make_channel_da()
@@ -206,7 +206,22 @@ class TestLoadOrComputeNormStats:
     def test_creates_missing_cache_dir(self, tmp_path):
         da = _make_channel_da()
         cache_dir = tmp_path / "nested" / "cache"
-        mean, variance = load_or_compute_norm_stats(da, str(cache_dir), ("key",))
+        min_val, max_val = load_or_compute_norm_stats(da, str(cache_dir), ("key",))
         assert cache_dir.exists()
-        assert mean.shape == (4,)
-        assert variance.shape == (4,)
+        assert min_val.shape == (4,)
+        assert max_val.shape == (4,)
+
+    def test_stale_mean_variance_cache_is_recomputed(self, tmp_path):
+        """A cache file written by the old mean/variance format has no 'min' key and must be ignored."""
+        da = _make_channel_da()
+        key = "old-format-key"
+        import hashlib
+
+        cache_key = hashlib.sha256(key.encode()).hexdigest()[:16]
+        cache_path = tmp_path / f"norm_stats_{cache_key}.npz"
+        np.savez(cache_path, mean=np.zeros(4, dtype=np.float32), variance=np.ones(4, dtype=np.float32))
+
+        min_val, max_val = load_or_compute_norm_stats(da, str(tmp_path), (key,))
+        direct_min, direct_max = compute_norm_stats(da)
+        np.testing.assert_array_equal(min_val, direct_min)
+        np.testing.assert_array_equal(max_val, direct_max)
