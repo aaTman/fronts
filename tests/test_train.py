@@ -4,7 +4,7 @@ import pytest
 import xarray as xr
 
 from fronts.data.targets import FRONT_CLASS_MAP, filter_timesteps
-from fronts.utils import IcechunkStorageConfig, apply_time_resolution
+from fronts.utils import BoundingBox, IcechunkStorageConfig, apply_time_resolution
 
 try:
     import tensorflow as tf
@@ -275,6 +275,57 @@ class TestLoadDataIntoDataloaderLongitude:
         assert np.all(np.diff(lons) >= 0), f"longitude not monotonic: {lons}"
 
 
+class TestLoadDataIntoDataloaderCoordinates:
+    """``coordinates`` should restrict both inputs and targets to a spatial sub-domain
+    (e.g. a CONUS crop) before batching, matching AIES's CONUS-restricted training.
+    """
+
+    _TIMES = pd.date_range("2020-01-01", periods=4, freq="6h")
+    _LAT = np.array([40.0, 30.0, 20.0, 10.0])  # descending, matching ERA5 convention
+    _LON = np.array([0.0, 10.0, 20.0, 30.0])
+
+    def _write_store(self, tmp_path, name: str, var_name: str) -> IcechunkStorageConfig:
+        storage_config = IcechunkStorageConfig(store_path=str(tmp_path / name), branch_name="main")
+        ds = xr.Dataset(
+            {
+                var_name: xr.DataArray(
+                    np.zeros((len(self._TIMES), len(self._LAT), len(self._LON)), dtype=np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": self._TIMES, "latitude": self._LAT, "longitude": self._LON},
+                )
+            }
+        )
+        write_or_append_icechunk_store(storage_config, ds)
+        return storage_config
+
+    def test_no_coordinates_keeps_full_domain(self, tmp_path):
+        data_config = DatasetConfig(
+            inputs_icechunk_config=self._write_store(tmp_path, "inputs", "temperature"),
+            targets_icechunk_config=self._write_store(tmp_path, "targets", "identifier"),
+            variables=["temperature"],
+            test_years=[2020],
+            val_years=[],
+        )
+        test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
+        assert list(test_dataset.input_ds["latitude"].values) == list(self._LAT)
+        assert list(test_dataset.input_ds["longitude"].values) == list(self._LON)
+
+    def test_coordinates_restricts_inputs_and_targets(self, tmp_path):
+        data_config = DatasetConfig(
+            inputs_icechunk_config=self._write_store(tmp_path, "inputs", "temperature"),
+            targets_icechunk_config=self._write_store(tmp_path, "targets", "identifier"),
+            variables=["temperature"],
+            test_years=[2020],
+            val_years=[],
+            coordinates=BoundingBox(lat_min=15.0, lat_max=35.0, lon_min=5.0, lon_max=25.0),
+        )
+        test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
+        np.testing.assert_array_equal(test_dataset.input_ds["latitude"].values, [30.0, 20.0])
+        np.testing.assert_array_equal(test_dataset.input_ds["longitude"].values, [10.0, 20.0])
+        np.testing.assert_array_equal(test_dataset.target_da["latitude"].values, [30.0, 20.0])
+        np.testing.assert_array_equal(test_dataset.target_da["longitude"].values, [10.0, 20.0])
+
+
 class TestTrainConfigLossClassWeights:
     @pytest.fixture
     def train_config_cls(self):
@@ -298,7 +349,26 @@ class TestTrainConfigLossClassWeights:
     def test_schooner_configs_parse(self, train_config_cls):
         from fronts import utils
 
-        for path in ["configs/schooner_train.yaml", "configs/schooner_pipeline.yaml"]:
+        for path in [
+            "configs/schooner_train.yaml",
+            "configs/schooner_pipeline.yaml",
+            "configs/schooner_train_conus.yaml",
+        ]:
             yaml_data = utils.load_yaml(path)
             cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
             assert cfg.loss_class_weights is None
+
+    def test_conus_config_coordinates_and_channels(self):
+        from fronts import utils
+        from fronts.data.datasets import DatasetConfig
+        from fronts.model import ModelConfig
+
+        yaml_data = utils.load_yaml("configs/schooner_train_conus.yaml")
+        data_cfg = utils.parse_config_section(
+            yaml_data, DatasetConfig, "data_config", type_hooks=utils.YAML_TYPE_HOOKS
+        )
+        model_cfg = utils.parse_config_section(yaml_data, ModelConfig, "model_config")
+
+        assert data_cfg.coordinates == utils.BoundingBox(lat_min=25.0, lat_max=56.75, lon_min=228.0, lon_max=299.75)
+        assert len(data_cfg.variables) == 10
+        assert model_cfg.n_channels == 50

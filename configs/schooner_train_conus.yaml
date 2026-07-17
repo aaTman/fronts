@@ -1,0 +1,82 @@
+run_name: conus_crop_comparison
+
+# Everything below is identical to configs/schooner_train.yaml (same loss, architecture,
+# dilation, learning rate) except data_config.coordinates (a CONUS-only spatial crop,
+# matching the AIES FrontFinder model_1702's domain='conus' extent) and data_config.variables
+# (trimmed to the subset closest to model_1702's 10-variable, 5-level input set). This isolates
+# domain size / front density per training image and input channel count as the tested variable,
+# per the AIES-vs-branch probability-cap comparison.
+#
+# Caveats: model_1702 used 5 pressure levels (surface, 1000, 950, 900, 850); this icechunk
+# store only exposes 6 native levels (1000, 950, 900, 850, 700, 500), so this run uses those
+# 6 rather than an exact 5-level match. model_1702 also used 'r' (mixing ratio) and 'sp_z' (a
+# derived surface-pressure quantity) which have no direct equivalent in this store; those are
+# dropped rather than approximated.
+
+train_config:
+  epochs: 5000
+  seed: 42
+  learning_rate: 0.0001
+  shuffle: true
+  loss_class_weights: null  # null supervises all classes incl. background in the FSS loss, matching the AIES FrontFinder model
+
+data_config:
+  inputs_icechunk_config:
+    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/"
+    branch_name: "main"
+    group_name: "era5"
+  targets_icechunk_config:
+    store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
+    branch_name: "main"
+    virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  batch_size: 32
+  test_years: [2019]
+  val_years: [2018]
+  max_queue_size: 16
+  class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  front_dilation: 1
+  time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
+  coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max]
+  variables: [
+    "temperature",
+    "dewpoint_temperature",
+    "virtual_temperature",
+    "u_component_of_wind",
+    "v_component_of_wind",
+    "relative_humidity",
+    "specific_humidity",
+    "equivalent_potential_temperature",
+    "mean_sea_level_pressure",
+    "2m_temperature",
+    ]
+  norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
+  num_pydataset_workers: 16  # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
+
+model_config:
+  n_classes: 6
+  n_channels: 50  # 8 level-vars x 6 native levels + 2 single-level vars
+  levels: 4
+  filter_num: [16, 32, 64, 128]
+  pool_size: [2, 2]
+  upsample_size: [2, 2]
+  kernel_size: 5
+  first_encoder_connections: true
+  deep_supervision: true
+  batch_normalization: true
+  activation: "gelu"
+  output_activation: "softmax"
+  modules_per_node: 2
+
+callbacks_config:
+  monitor: "val_loss"
+  patience: 3
+  learning_rate_decay_factor: 0.2
+  learning_rate_minimum: 1e-6
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/"
+  test_viz_every_n_epochs: 1  # log a test-set prediction map + performance diagrams to W&B every N epochs; null disables
+  test_viz_sample_size: 200  # number of (seeded, random) test timesteps used for the periodic performance diagram
+
+wandb_config:
+  project_name: "fronts"
+  run_name: "${run_name}"
+  log_freq: 10 # log to W&B every 10 batches instead of waiting for each epoch to finish

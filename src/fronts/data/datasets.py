@@ -40,6 +40,9 @@ class DatasetConfig:
             training loop (passed to ``tf.keras.utils.PyDataset(max_queue_size=...)``).
         max_pydataset_workers: Maximum number of threads used by ``tf.keras.utils.PyDataset`` to
             load batches in parallel. None uses the number of CPUs allocated to the job.
+        coordinates: Optional spatial bounding box to restrict inputs and targets to before
+            batching (e.g. a CONUS crop). None trains on the full domain loaded from the
+            icechunk stores.
     """
 
     inputs_icechunk_config: utils.IcechunkStorageConfig
@@ -54,6 +57,7 @@ class DatasetConfig:
     norm_stats_cache_dir: str | None = None
     max_queue_size: int = 4
     max_pydataset_workers: int = 16
+    coordinates: utils.BoundingBox | None = None
 
 
 class FrontsPyDataset(tf.keras.utils.PyDataset):
