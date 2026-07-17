@@ -1,11 +1,17 @@
-run_name: conus_crop_comparison
+run_name: conus_crop_3h_comparison
 
 # Everything below is identical to configs/schooner_train.yaml (same loss, architecture,
 # dilation, learning rate) except data_config.coordinates (a CONUS-only spatial crop,
-# matching the AIES FrontFinder model_1702's domain='conus' extent) and data_config.variables
-# (trimmed to the subset closest to model_1702's 10-variable, 5-level input set). This isolates
-# domain size / front density per training image and input channel count as the tested variable,
-# per the AIES-vs-branch probability-cap comparison.
+# matching the AIES FrontFinder model_1702's domain='conus' extent), data_config.variables
+# (trimmed to the subset closest to model_1702's 10-variable, 5-level input set), and
+# data_config.time_resolution (3-hourly instead of 6-hourly).
+#
+# A controlled comparison (evaluating the full-domain-trained FSS checkpoint restricted to
+# just the CONUS sub-region) already showed domain/variable scope alone made no meaningful
+# difference to raw probability at true front pixels. Front labels for the CONUS domain are
+# available every 3 hours (unlike the full/USAD domain, which is only 6-hourly), so this run
+# tests training-data VOLUME as the next variable: same domain/variable scope as the prior
+# CONUS run, just twice as many training timesteps.
 #
 # Caveats: model_1702 used 5 pressure levels (surface, 1000, 950, 900, 850); this icechunk
 # store only exposes 6 native levels (1000, 950, 900, 850, 700, 500), so this run uses those
@@ -35,7 +41,7 @@ data_config:
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
-  time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
+  time_resolution: "3h" # CONUS fronts are available 3-hourly, unlike the 6-hourly full/USAD domain
   coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max]
   variables: [
     "temperature",
