@@ -3,11 +3,18 @@ import logging
 import os
 import pathlib
 import tempfile
+from typing import Literal
 
 import numpy as np
 import xarray as xr
 
 logger = logging.getLogger(__name__)
+
+NormalizationMethod = Literal["standardization", "minmax"]
+_NORM_STAT_KEYS: dict[NormalizationMethod, tuple[str, str]] = {
+    "standardization": ("mean", "variance"),
+    "minmax": ("min", "max"),
+}
 
 
 def inputs_ds_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray:
@@ -72,84 +79,112 @@ def inputs_ds_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray
     return result.astype(np.float32)
 
 
-def compute_norm_stats(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
-    """Compute per-channel mean and variance over the full DataArray in one pass.
+def compute_norm_stats(
+    da: xr.DataArray, method: NormalizationMethod = "standardization"
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-channel normalization statistics over the full DataArray in one pass.
 
     Builds both reductions as a single dask graph so each chunk is read from
-    disk once and the full array is never materialized in memory. Suitable for
-    passing directly to a Keras Normalization layer.
+    disk once and the full array is never materialized in memory.
 
     Args:
         da: DataArray of shape (time, latitude, longitude, channel).
+        method: "standardization" returns (mean, variance) for a Keras Normalization
+            layer; "minmax" returns (min, max) for a Keras Rescaling layer. Min-max
+            avoids the huge z-scores that near-zero-variance channels (e.g.
+            specific_humidity, potential_vorticity) produce, which can overflow
+            float16 activations.
 
     Returns:
-        Tuple of (mean, variance), each of shape (n_channels,) as float32.
+        Tuple of two (n_channels,) float32 arrays: (mean, variance) if
+        ``method == "standardization"``, else (min, max).
 
     Raises:
-        ValueError: If the computed statistics contain NaN values.
+        ValueError: If ``method`` is unrecognized, or the computed statistics contain NaN.
     """
+    if method not in _NORM_STAT_KEYS:
+        raise ValueError(f"Unrecognized normalization method {method!r}; expected one of {list(_NORM_STAT_KEYS)}.")
     reduction_dims = ["time", "latitude", "longitude"]
-    stats = xr.Dataset(
-        {
-            "mean": da.mean(dim=reduction_dims, skipna=False),
-            "variance": da.var(dim=reduction_dims, skipna=False),
-        }
-    ).compute()
-    mean = stats["mean"].values.astype(np.float32)
-    variance = stats["variance"].values.astype(np.float32)
-    if np.isnan(mean).any() or np.isnan(variance).any():
+    if method == "standardization":
+        stats = xr.Dataset(
+            {
+                "a": da.mean(dim=reduction_dims, skipna=False),
+                "b": da.var(dim=reduction_dims, skipna=False),
+            }
+        ).compute()
+    else:
+        stats = xr.Dataset(
+            {
+                "a": da.min(dim=reduction_dims, skipna=False),
+                "b": da.max(dim=reduction_dims, skipna=False),
+            }
+        ).compute()
+    first = stats["a"].values.astype(np.float32)
+    second = stats["b"].values.astype(np.float32)
+    if np.isnan(first).any() or np.isnan(second).any():
         raise ValueError(
             "NaN in normalization statistics — ERA5 data contains missing values. "
             "Check the icechunk store for corrupted or incomplete channels."
         )
-    return mean, variance
+    return first, second
 
 
 def load_or_compute_norm_stats(
     da: xr.DataArray,
     cache_dir: str | None,
     cache_key_parts: tuple[str, ...],
+    method: NormalizationMethod = "standardization",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load cached normalization statistics or compute and cache them.
 
     The cache key is a SHA-256 hash of cache_key_parts (e.g. the store snapshot
-    ID), so stats are reused only when every part matches a previous run. Cached
-    stats whose channel count no longer matches ``da`` are ignored and recomputed.
+    ID) plus ``method``, so stats are reused only when every part matches a
+    previous run *and* the cache was written for the same normalization method.
+    This keeps a "standardization" run and a "minmax" run sharing the same
+    ``cache_dir`` from ever colliding on one file: each method gets its own
+    cache filename, so a stale or differently-computed file is simply not found
+    (a clean miss, not a crash) rather than being loaded with the wrong keys.
 
     Args:
         da: DataArray of shape (time, latitude, longitude, channel).
         cache_dir: Directory for cached stats files. None disables caching.
         cache_key_parts: Strings that uniquely determine the statistics.
+        method: "standardization" or "minmax" — see ``compute_norm_stats``.
 
     Returns:
-        Tuple of (mean, variance), each of shape (n_channels,) as float32.
+        Tuple of two (n_channels,) float32 arrays: (mean, variance) if
+        ``method == "standardization"``, else (min, max).
     """
     snapshot_id = cache_key_parts[0]
     if cache_dir is None:
-        logger.info("Normalization cache disabled; computing stats for snapshot %s.", snapshot_id)
-        return compute_norm_stats(da)
+        logger.info("Normalization cache disabled; computing %s stats for snapshot %s.", method, snapshot_id)
+        return compute_norm_stats(da, method=method)
 
-    key = hashlib.sha256("\x1f".join(cache_key_parts).encode()).hexdigest()[:16]
-    cache_path = pathlib.Path(cache_dir) / f"norm_stats_{key}.npz"
+    key_a, key_b = _NORM_STAT_KEYS[method]
+    key = hashlib.sha256("\x1f".join((method, *cache_key_parts)).encode()).hexdigest()[:16]
+    cache_path = pathlib.Path(cache_dir) / f"norm_stats_{method}_{key}.npz"
     if cache_path.exists():
         cached = np.load(cache_path)
-        if cached["mean"].shape[0] == da.sizes["channel"]:
-            logger.info("Reusing cached normalization stats for snapshot %s from %s.", snapshot_id, cache_path)
-            return cached["mean"], cached["variance"]
+        if key_a in cached and cached[key_a].shape[0] == da.sizes["channel"]:
+            logger.info(
+                "Reusing cached %s normalization stats for snapshot %s from %s.", method, snapshot_id, cache_path
+            )
+            return cached[key_a], cached[key_b]
         logger.warning(
-            "Cached normalization stats for snapshot %s have %d channels but data has %d; recomputing.",
+            "Cached %s normalization stats for snapshot %s are missing or have a channel-count mismatch "
+            "(data has %d channels); recomputing.",
+            method,
             snapshot_id,
-            cached["mean"].shape[0],
             da.sizes["channel"],
         )
     else:
-        logger.info("No cached normalization stats for snapshot %s (key %s); computing.", snapshot_id, key)
+        logger.info("No cached %s normalization stats for snapshot %s (key %s); computing.", method, snapshot_id, key)
 
-    mean, variance = compute_norm_stats(da)
+    first, second = compute_norm_stats(da, method=method)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=cache_path.parent, suffix=".npz.tmp", delete=False) as tmp:
-        np.savez(tmp, mean=mean, variance=variance)
+        np.savez(tmp, **{key_a: first, key_b: second})
         tmp_path = tmp.name
     os.replace(tmp_path, cache_path)
-    logger.info("Saved normalization stats for snapshot %s to %s.", snapshot_id, cache_path)
-    return mean, variance
+    logger.info("Saved %s normalization stats for snapshot %s to %s.", method, snapshot_id, cache_path)
+    return first, second

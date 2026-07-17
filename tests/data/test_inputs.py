@@ -174,6 +174,18 @@ class TestComputeNormStats:
         with pytest.raises(ValueError, match="NaN in normalization statistics"):
             compute_norm_stats(da)
 
+    def test_minmax_matches_numpy(self):
+        da = _make_channel_da()
+        min_val, max_val = compute_norm_stats(da, method="minmax")
+        values = da.values
+        np.testing.assert_allclose(min_val, values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(max_val, values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+
+    def test_unrecognized_method_raises(self):
+        da = _make_channel_da()
+        with pytest.raises(ValueError, match="Unrecognized normalization method"):
+            compute_norm_stats(da, method="bogus")  # type: ignore[arg-type]
+
 
 class TestLoadOrComputeNormStats:
     def test_no_cache_dir_matches_direct_compute(self):
@@ -210,3 +222,48 @@ class TestLoadOrComputeNormStats:
         assert cache_dir.exists()
         assert mean.shape == (4,)
         assert variance.shape == (4,)
+
+    def test_minmax_method_round_trips_through_cache(self, tmp_path):
+        da = _make_channel_da()
+        direct_min, direct_max = compute_norm_stats(da, method="minmax")
+        cached_min, cached_max = load_or_compute_norm_stats(da, str(tmp_path), ("key",), method="minmax")
+        np.testing.assert_array_equal(cached_min, direct_min)
+        np.testing.assert_array_equal(cached_max, direct_max)
+
+    def test_standardization_and_minmax_share_cache_dir_without_colliding(self, tmp_path):
+        """Regression test: a cache dir shared by a standardization run and a minmax run
+
+        (e.g. two branches pointed at the same norm_stats_cache_dir) must not crash when
+        one run's cache file is read by the other's method — each method gets its own file.
+        """
+        da = _make_channel_da()
+        key_parts = ("shared-snapshot",)
+        mean, variance = load_or_compute_norm_stats(da, str(tmp_path), key_parts, method="standardization")
+        min_val, max_val = load_or_compute_norm_stats(da, str(tmp_path), key_parts, method="minmax")
+
+        direct_mean, direct_variance = compute_norm_stats(da, method="standardization")
+        direct_min, direct_max = compute_norm_stats(da, method="minmax")
+        np.testing.assert_array_equal(mean, direct_mean)
+        np.testing.assert_array_equal(variance, direct_variance)
+        np.testing.assert_array_equal(min_val, direct_min)
+        np.testing.assert_array_equal(max_val, direct_max)
+        assert len(list(tmp_path.glob("norm_stats_*.npz"))) == 2
+
+    def test_stale_pre_method_cache_file_is_ignored(self, tmp_path):
+        """A cache file from before per-method filenames existed (no 'mean' key at all,
+
+        or written under the old bare `norm_stats_{key}.npz` name) must not crash the
+        loader — it simply isn't found under the new per-method naming and is recomputed.
+        """
+        da = _make_channel_da()
+        key = "old-format-key"
+        import hashlib
+
+        old_cache_key = hashlib.sha256(key.encode()).hexdigest()[:16]
+        old_path = tmp_path / f"norm_stats_{old_cache_key}.npz"
+        np.savez(old_path, min=np.zeros(4, dtype=np.float32), max=np.ones(4, dtype=np.float32))
+
+        mean, variance = load_or_compute_norm_stats(da, str(tmp_path), (key,), method="standardization")
+        direct_mean, direct_variance = compute_norm_stats(da, method="standardization")
+        np.testing.assert_array_equal(mean, direct_mean)
+        np.testing.assert_array_equal(variance, direct_variance)
