@@ -64,6 +64,16 @@ class CallbacksConfig:
             when early stopping is triggered. None disables learning-rate decay.
         learning_rate_minimum: Optional lower bound on the learning rate when decaying.
             None disables learning-rate decay.
+        min_delta: Smallest monitored-value improvement that resets the patience counter.
+            0.0 counts any improvement. Keras's ReduceLROnPlateau default (an absolute
+            1e-4) silently freezes training when the monitored loss is itself ~1e-3:
+            every epoch reads as a plateau, so the learning rate decays to its floor
+            within a dozen epochs regardless of real progress.
+        early_stopping_patience: Number of epochs with no improvement before ending the run
+            when LR decay is active. Should exceed ``patience`` by a few multiples so LR
+            reductions get a chance to rescue a plateau before the run ends. None keeps the
+            pre-existing behavior: with LR decay enabled the run has no stop condition and
+            continues until ``epochs`` or the job walltime.
         model_checkpoint_path: Optional path to save the best model weights to. None disables
             checkpointing.
         test_viz_every_n_epochs: Optional cadence in epochs for logging test-set visualizations.
@@ -76,6 +86,8 @@ class CallbacksConfig:
     patience: int = 8
     learning_rate_decay_factor: float | None = None
     learning_rate_minimum: float | None = None
+    min_delta: float = 0.0
+    early_stopping_patience: int | None = None
     model_checkpoint_path: str | None = None
     test_viz_every_n_epochs: int | None = 10
     test_viz_sample_size: int = 200

@@ -67,6 +67,10 @@ class TrainConfig:
             None — zero-weighting background in the loss leaves ~95% of pixels unsupervised and
             lets predicted probabilities drift toward uniform. Metrics use
             ``data_config.class_weights`` independently of this value.
+        gradient_clip_norm: Per-gradient L2-norm clip passed to the Adam optimizer, or None to
+            leave gradients unclipped. Caps the damage a single outlier batch can do — one
+            unclipped spike can wipe learned features and knock training into a worse basin
+            it never escapes.
     """
 
     loss_class_weights: list[float] | None
@@ -74,6 +78,7 @@ class TrainConfig:
     seed: int = 42
     learning_rate: float = 1e-4
     shuffle: bool = False
+    gradient_clip_norm: float | None = None
 
 
 def load_data_into_dataloader(
@@ -204,11 +209,12 @@ def _compile(
     learning_rate: float,
     metric_class_weights: list[float] | None,
     loss_class_weights: list[float] | None,
+    gradient_clip_norm: float | None = None,
 ) -> int:
     n_out = len(model.outputs)
     loss_fn = losses.fractions_skill_score(mask_size=(3, 3), class_weights=loss_class_weights)
     hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=gradient_clip_norm)
     if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
     model.compile(
@@ -219,34 +225,67 @@ def _compile(
     return n_out
 
 
-def _build_monitor_callback(
+def _build_monitor_callbacks(
     monitor: str,
     patience: int,
     learning_rate_decay_factor: float | None,
     learning_rate_minimum: float | None,
-) -> tf.keras.callbacks.Callback:
-    """Builds a ReduceLROnPlateau callback if both LR-decay params are set, else EarlyStopping.
+    min_delta: float = 0.0,
+    early_stopping_patience: int | None = None,
+) -> list[tf.keras.callbacks.Callback]:
+    """Builds the plateau-monitoring callbacks: LR decay, early stopping, or both.
+
+    With both LR-decay params set, a ReduceLROnPlateau (patience=``patience``) is
+    returned, plus an EarlyStopping when ``early_stopping_patience`` is also set —
+    the stopping patience should exceed the decay patience by a few multiples so
+    LR reductions get a chance to rescue a plateau before the run ends. Without
+    the LR-decay params, a single EarlyStopping with ``patience`` is returned.
 
     Args:
         monitor: Metric name to monitor.
-        patience: Number of epochs with no improvement before acting.
-        learning_rate_decay_factor: Factor to multiply the learning rate by on plateau, or
-            None to use EarlyStopping instead.
-        learning_rate_minimum: Lower bound on the learning rate when decaying, or None to
-            use EarlyStopping instead.
+        patience: Number of epochs with no improvement before decaying the learning
+            rate (or, when LR decay is disabled, before stopping).
+        learning_rate_decay_factor: Factor to multiply the current learning rate by
+            on plateau, or None to disable LR decay.
+        learning_rate_minimum: Lower bound on the learning rate when decaying, or
+            None to disable LR decay.
+        min_delta: Smallest monitored-value change that counts as an improvement. Must be
+            explicit rather than Keras's default: ReduceLROnPlateau defaults to an ABSOLUTE
+            1e-4, which dwarfs real improvements when the loss itself is only ~1e-3 (as the
+            neighborhood Brier loss is), decaying the learning rate to its floor within a
+            dozen epochs and silently freezing training.
+        early_stopping_patience: Number of epochs with no improvement before ending the
+            run when LR decay is active. None disables stopping in that mode, in which
+            case the run continues until ``epochs`` or the job walltime.
 
     Returns:
-        A ReduceLROnPlateau callback if both LR-decay params are provided, otherwise an
-        EarlyStopping callback.
+        List of one or two callbacks.
     """
     if learning_rate_decay_factor is not None and learning_rate_minimum is not None:
-        return tf.keras.callbacks.ReduceLROnPlateau(
-            monitor=monitor,
-            factor=learning_rate_decay_factor,
-            patience=patience,
-            min_lr=learning_rate_minimum,
+        monitor_callbacks: list[tf.keras.callbacks.Callback] = [
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor=monitor,
+                factor=learning_rate_decay_factor,
+                patience=patience,
+                min_lr=learning_rate_minimum,
+                min_delta=min_delta,
+            )
+        ]
+        if early_stopping_patience is not None:
+            monitor_callbacks.append(
+                tf.keras.callbacks.EarlyStopping(
+                    monitor=monitor,
+                    patience=early_stopping_patience,
+                    restore_best_weights=True,
+                    min_delta=min_delta,
+                )
+            )
+        return monitor_callbacks
+    return [
+        tf.keras.callbacks.EarlyStopping(
+            monitor=monitor, patience=patience, restore_best_weights=True, min_delta=min_delta
         )
-    return tf.keras.callbacks.EarlyStopping(monitor=monitor, patience=patience, restore_best_weights=True)
+    ]
 
 
 def _run(
@@ -259,6 +298,8 @@ def _run(
     shuffle: bool,
     learning_rate_decay_factor: float | None = None,
     learning_rate_minimum: float | None = None,
+    monitor_min_delta: float = 0.0,
+    early_stopping_patience: int | None = None,
     model_checkpoint_path: str | None = None,
     wandb_project: str | None = None,
     run_name: str | None = None,
@@ -279,7 +320,14 @@ def _run(
     # Use the W&B Keras callback if logging to W&B, otherwise the standard ModelCheckpoint.
     ckpt_cls = wandb.keras.WandbModelCheckpoint if wandb_project else tf.keras.callbacks.ModelCheckpoint
     callbacks = [
-        _build_monitor_callback(monitor, patience, learning_rate_decay_factor, learning_rate_minimum),
+        *_build_monitor_callbacks(
+            monitor,
+            patience,
+            learning_rate_decay_factor,
+            learning_rate_minimum,
+            min_delta=monitor_min_delta,
+            early_stopping_patience=early_stopping_patience,
+        ),
         fronts_callbacks.GcCallback(),
         # Must run before WandbMetricsLogger: it mutates the shared `logs` dict that
         # WandbMetricsLogger reads, collapsing per-deep-supervision-output keys into
@@ -503,6 +551,7 @@ def train(
             train_cfg.learning_rate,
             metric_class_weights=data_cfg.class_weights,
             loss_class_weights=train_cfg.loss_class_weights,
+            gradient_clip_norm=train_cfg.gradient_clip_norm,
         )
     logger.info("Model built and compiled.")
 
@@ -522,6 +571,9 @@ def train(
             full_pass_epochs,
             train_steps,
         )
+    effective_stopping_patience = callbacks_cfg.early_stopping_patience
+    if effective_stopping_patience is not None:
+        effective_stopping_patience = max(effective_stopping_patience, full_pass_epochs)
     if train_cfg.epochs < full_pass_epochs:
         logger.warning(
             "epochs=%d is fewer than the %d epochs needed for one full training pass; "
@@ -578,6 +630,8 @@ def train(
         patience=effective_patience,
         learning_rate_decay_factor=callbacks_cfg.learning_rate_decay_factor,
         learning_rate_minimum=callbacks_cfg.learning_rate_minimum,
+        monitor_min_delta=callbacks_cfg.min_delta,
+        early_stopping_patience=effective_stopping_patience,
         model_checkpoint_path=callbacks_cfg.model_checkpoint_path,
         wandb_project=wandb_project,
         run_name=run_name,

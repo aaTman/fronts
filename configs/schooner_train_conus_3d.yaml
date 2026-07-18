@@ -24,6 +24,7 @@ train_config:
   learning_rate: 0.0001
   shuffle: true
   loss_class_weights: null  # null supervises all classes incl. background in the FSS loss, matching the AIES FrontFinder model
+  gradient_clip_norm: 1.0  # caps the damage a single outlier batch can do; the brier_3d run (W&B 898culiq) lost its learned features to one unclipped spike
 
 data_config:
   inputs_icechunk_config:
@@ -79,6 +80,8 @@ callbacks_config:
   patience: 3
   learning_rate_decay_factor: 0.2
   learning_rate_minimum: 1e-6
+  min_delta: 0.0  # Keras's absolute 1e-4 default reads every epoch as a plateau at this loss's ~4e-3 magnitude, decaying LR to the floor by ~epoch 13 and freezing training (observed on W&B run conus_3d_comparison)
+  early_stopping_patience: 12  # end the run after 12 epochs with no val_loss improvement (allows ~4 LR decays at patience 3 first); without this, LR-decay mode has no stop condition at all
   model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/"
   test_viz_every_n_epochs: 1  # log a test-set prediction map + performance diagrams to W&B every N epochs; null disables
   test_viz_sample_size: 200  # number of (seeded, random) test timesteps used for the periodic performance diagram
