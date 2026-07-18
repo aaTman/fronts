@@ -93,8 +93,8 @@ class ModelConfig:
     n_channels: int = 30
     levels: int = 4
     filter_num: list[int] = dataclasses.field(default_factory=lambda: [32, 64, 128, 256])
-    pool_size: tuple[int, int] = (2, 2)
-    upsample_size: tuple[int, int] = (2, 2)
+    pool_size: tuple[int, ...] | list[int] = (2, 2)
+    upsample_size: tuple[int, ...] | list[int] = (2, 2)
     squeeze_axes: int | None = None
     kernel_size: int = 3
     first_encoder_connections: bool = False
@@ -302,12 +302,13 @@ class UNet3Plus(UNetBase):
             matrix of the Conv2D/Conv3D layers.
         bias_constraint: Constraint function applied to the bias vector
             in the Conv2D/Conv3D layers.
-        normalization_mean: Per-channel mean of shape (n_channels,). When provided
-            alongside ``normalization_variance``, a ``tf.keras.layers.Normalization``
-            layer is prepended with these statistics baked in as non-trainable weights.
+        normalization_mean: Per-channel mean, shape (n_channels,) for 2D inputs or
+            (n_levels, n_variables) for 3D volume inputs. When provided alongside
+            ``normalization_variance``, a ``tf.keras.layers.Normalization`` layer is
+            prepended with these statistics baked in as non-trainable weights.
             Raw unnormalized inputs can then be passed directly to the saved model.
-        normalization_variance: Per-channel variance of shape (n_channels,). Must be
-            provided together with ``normalization_mean``.
+        normalization_variance: Per-channel variance, same shape as
+            ``normalization_mean``. Must be provided together with it.
 
     Returns:
         A ``tf.keras.models.Model`` object representing the U-Net 3+ model.
@@ -428,8 +429,11 @@ class UNet3Plus(UNetBase):
         tensors["input"] = Input(shape=self.input_shape, name="Input")
 
         if self.normalization_mean is not None and self.normalization_variance is not None:
+            # 1-D stats normalize the flat channel axis (2D model); 2-D stats normalize
+            # the (level, variable) trailing pair of a 3D volume input independently.
+            norm_axis = -1 if np.ndim(self.normalization_mean) == 1 else (-2, -1)
             norm_layer = tf.keras.layers.Normalization(
-                axis=-1,
+                axis=norm_axis,
                 mean=self.normalization_mean,
                 variance=self.normalization_variance,
                 name="input_normalization",
