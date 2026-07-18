@@ -9,6 +9,17 @@ import xarray as xr
 
 logger = logging.getLogger(__name__)
 
+_REDUCTION_DIMS = ("time", "latitude", "longitude")
+
+
+def _norm_stats_shape(da: xr.DataArray) -> tuple[int, ...]:
+    """Shape of the per-channel statistics for ``da``: its dims minus the reduced ones.
+
+    (n_channels,) for the flat 2D-model layout, (n_levels, n_variables) for the 3D
+    volume layout.
+    """
+    return tuple(da.sizes[dim] for dim in da.dims if dim not in _REDUCTION_DIMS)
+
 
 def inputs_ds_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray:
     """Convert a gridded input Dataset to a lazy 4D DataArray without materializing data.
@@ -72,6 +83,57 @@ def inputs_ds_to_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray
     return result.astype(np.float32)
 
 
+def inputs_ds_to_volume_dataarray(ds: xr.Dataset, variables: list[str]) -> xr.DataArray:
+    """Convert a gridded input Dataset to a lazy 5D volume DataArray without materializing data.
+
+    Unlike ``inputs_ds_to_dataarray`` (which flattens level and variable into one
+    channel axis for 2D Conv2D models), this keeps the vertical structure intact
+    for 3D Conv3D models: pressure-level variables form a trailing (level, variable)
+    pair. Single-level variables (e.g. mean_sea_level_pressure) are broadcast along
+    the level dimension as constant columns so they participate as ordinary
+    variables; time-invariant variables are additionally broadcast along time.
+
+    Args:
+        ds: Dataset containing the requested variables with dims
+            (time, level, latitude, longitude) or (time, latitude, longitude);
+            time-invariant variables may omit the time dim.
+        variables: Variable names to select from ds, in the desired variable-axis order.
+
+    Returns:
+        DataArray of shape (time, latitude, longitude, level, variable) with dtype float32.
+
+    Raises:
+        ValueError: If no variables are requested, or a variable cannot be broadcast
+            because the dataset lacks the needed time or level coordinate.
+    """
+    if not variables:
+        raise ValueError("No variables requested.")
+
+    prepared = {}
+    for var in variables:
+        da = ds[var].reset_coords(drop=True)
+        if "time" not in da.dims:
+            if "time" not in ds.coords:
+                raise ValueError(
+                    f"Variable '{var}' has no time dimension and the dataset has no time "
+                    "coordinate to broadcast it along."
+                )
+            da = da.expand_dims(time=ds["time"])
+        if "level" not in da.dims:
+            if "level" not in ds.coords:
+                raise ValueError(
+                    f"Variable '{var}' has no level dimension and the dataset has no level "
+                    "coordinate to broadcast it along."
+                )
+            da = da.expand_dims(level=ds["level"])
+        prepared[var] = da
+
+    stacked = (
+        xr.Dataset(prepared).to_array(dim="variable").transpose("time", "latitude", "longitude", "level", "variable")
+    )
+    return stacked.reset_coords(drop=True).astype(np.float32)
+
+
 def compute_norm_stats(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
     """Compute per-channel min and max over the full DataArray in one pass.
 
@@ -87,15 +149,18 @@ def compute_norm_stats(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
     how small its variance is.
 
     Args:
-        da: DataArray of shape (time, latitude, longitude, channel).
+        da: DataArray of shape (time, latitude, longitude, channel) or
+            (time, latitude, longitude, level, variable); statistics are computed
+            separately for every element of the trailing (non-reduced) dims.
 
     Returns:
-        Tuple of (min, max), each of shape (n_channels,) as float32.
+        Tuple of (min, max) float32 arrays shaped like the trailing dims of ``da``
+        ((n_channels,) or (n_levels, n_variables)).
 
     Raises:
         ValueError: If the computed statistics contain NaN values.
     """
-    reduction_dims = ["time", "latitude", "longitude"]
+    reduction_dims = list(_REDUCTION_DIMS)
     stats = xr.Dataset(
         {
             "min": da.min(dim=reduction_dims, skipna=False),
@@ -121,16 +186,18 @@ def load_or_compute_norm_stats(
 
     The cache key is a SHA-256 hash of cache_key_parts (e.g. the store snapshot
     ID), so stats are reused only when every part matches a previous run. Cached
-    stats whose channel count no longer matches ``da``, or that predate the
+    stats whose shape no longer matches ``da``'s trailing dims (channel-count
+    changes, or a flat cache read for a volume request), or that predate the
     switch to min-max stats, are ignored and recomputed.
 
     Args:
-        da: DataArray of shape (time, latitude, longitude, channel).
+        da: DataArray of shape (time, latitude, longitude, channel) or
+            (time, latitude, longitude, level, variable).
         cache_dir: Directory for cached stats files. None disables caching.
         cache_key_parts: Strings that uniquely determine the statistics.
 
     Returns:
-        Tuple of (min, max), each of shape (n_channels,) as float32.
+        Tuple of (min, max) float32 arrays shaped like the trailing dims of ``da``.
     """
     snapshot_id = cache_key_parts[0]
     if cache_dir is None:
@@ -139,16 +206,17 @@ def load_or_compute_norm_stats(
 
     key = hashlib.sha256("\x1f".join(cache_key_parts).encode()).hexdigest()[:16]
     cache_path = pathlib.Path(cache_dir) / f"norm_stats_{key}.npz"
+    expected_shape = _norm_stats_shape(da)
     if cache_path.exists():
         cached = np.load(cache_path)
-        if "min" in cached and cached["min"].shape[0] == da.sizes["channel"]:
+        if "min" in cached and cached["min"].shape == expected_shape:
             logger.info("Reusing cached normalization stats for snapshot %s from %s.", snapshot_id, cache_path)
             return cached["min"], cached["max"]
         logger.warning(
-            "Cached normalization stats for snapshot %s are missing or have a channel-count mismatch "
-            "(data has %d channels); recomputing.",
+            "Cached normalization stats for snapshot %s are missing or have a shape mismatch "
+            "(data needs stats of shape %s); recomputing.",
             snapshot_id,
-            da.sizes["channel"],
+            expected_shape,
         )
     else:
         logger.info("No cached normalization stats for snapshot %s (key %s); computing.", snapshot_id, key)

@@ -437,10 +437,16 @@ def train(
         f"time_resolution={data_cfg.time_resolution}",
         f"seed={train_cfg.seed}",
     )
+    # Volume-mode stats have a different shape ((level, variable) vs (channel,)), so give
+    # them their own cache key; the extra part is omitted for 2D runs to keep existing
+    # cache files valid.
+    if data_cfg.volume_inputs:
+        norm_cache_key_parts += ("volume_inputs=True",)
     # Re-chunk (metadata-only) the train split's already-small, already-sliced input
-    # Dataset so the variable-stacking and mean/variance reduction build a dask graph
+    # Dataset so the variable-stacking and min/max reduction build a dask graph
     # instead of materializing the whole split eagerly.
-    train_inputs_da = inputs.inputs_ds_to_dataarray(train_dataset.input_ds.chunk("auto"), data_cfg.variables)
+    stack_inputs = inputs.inputs_ds_to_volume_dataarray if data_cfg.volume_inputs else inputs.inputs_ds_to_dataarray
+    train_inputs_da = stack_inputs(train_dataset.input_ds.chunk("auto"), data_cfg.variables)
 
     # Get the number of cpus allocated in the SLURM job
     cpu_count = utils.slurm_cpu_count()
@@ -461,16 +467,23 @@ def train(
 
     strategy = _get_distribution_strategy()
 
+    if data_cfg.volume_inputs:
+        input_shape = (None, None, *train_inputs_da.shape[3:])
+    else:
+        input_shape = (None, None, model_cfg.n_channels)
+    logger.info("Model input shape: %s", input_shape)
+
     logger.info("Building and compiling model...")
     with strategy.scope():
         unet = model.UNet3Plus(
-            input_shape=(None, None, model_cfg.n_channels),
+            input_shape=input_shape,
             num_classes=model_cfg.n_classes,
             levels=model_cfg.levels,
             filter_num=model_cfg.filter_num,
             pool_size=model_cfg.pool_size,
             upsample_size=model_cfg.upsample_size,
             kernel_size=model_cfg.kernel_size,
+            squeeze_axes=model_cfg.squeeze_axes,
             first_encoder_connections=model_cfg.first_encoder_connections,
             deep_supervision=model_cfg.deep_supervision,
             batch_normalization=model_cfg.batch_normalization,

@@ -38,6 +38,9 @@ class DatasetConfig:
             training loop (passed to ``tf.keras.utils.PyDataset(max_queue_size=...)``).
         max_pydataset_workers: Maximum number of threads used by ``tf.keras.utils.PyDataset`` to
             load batches in parallel. None uses the number of CPUs allocated to the job.
+        volume_inputs: If True, batches keep the vertical structure as a separate axis —
+            shape (batch, latitude, longitude, level, variable) for a 3D Conv3D model —
+            instead of flattening level and variable into one channel axis for a 2D model.
     """
 
     inputs_icechunk_config: utils.IcechunkStorageConfig
@@ -51,6 +54,7 @@ class DatasetConfig:
     norm_stats_cache_dir: str | None = None
     max_queue_size: int = 4
     max_pydataset_workers: int = 16
+    volume_inputs: bool = False
 
 
 class FrontsPyDataset(tf.keras.utils.PyDataset):
@@ -127,8 +131,12 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         x_xarray = self.input_ds.isel(time=idxs)
         y_da = self.target_da.isel(time=idxs)
 
-        # Convert inputs to a DataArray of shape (time, latitude, longitude, channel) and load into memory as float32.
-        x = inputs.inputs_ds_to_dataarray(x_xarray, self.data_config.variables).values
+        # Convert inputs to a DataArray — (time, latitude, longitude, channel) for 2D models,
+        # (time, latitude, longitude, level, variable) for 3D — and load into memory as float32.
+        if self.data_config.volume_inputs:
+            x = inputs.inputs_ds_to_volume_dataarray(x_xarray, self.data_config.variables).values
+        else:
+            x = inputs.inputs_ds_to_dataarray(x_xarray, self.data_config.variables).values
 
         # One-hot encode targets, remap front classes to the configured set, and load into memory as float32.
         y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_da))

@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.data.inputs import compute_norm_stats, inputs_ds_to_dataarray, load_or_compute_norm_stats
+from fronts.data.inputs import (
+    compute_norm_stats,
+    inputs_ds_to_dataarray,
+    inputs_ds_to_volume_dataarray,
+    load_or_compute_norm_stats,
+)
 
 N_TIME = 5
 N_LAT = 32
@@ -147,6 +152,72 @@ def _make_channel_da(seed: int = 3, with_nan: bool = False) -> xr.DataArray:
     return da.chunk({"time": 2})
 
 
+class TestVolumeDataarray:
+    def test_dims(self):
+        ds = _make_era5_ds()
+        result = inputs_ds_to_volume_dataarray(ds, _VARS)
+        assert list(result.dims) == ["time", "latitude", "longitude", "level", "variable"]
+
+    def test_shape(self):
+        ds = _make_era5_ds()
+        result = inputs_ds_to_volume_dataarray(ds, _VARS)
+        assert result.shape == (N_TIME, N_LAT, N_LON, _N_LEVELS, _N_VARS)
+
+    def test_dtype(self):
+        ds = _make_era5_ds()
+        result = inputs_ds_to_volume_dataarray(ds, _VARS)
+        assert result.dtype == np.float32
+
+    def test_values_match_source(self):
+        ds = _make_era5_ds()
+        result = inputs_ds_to_volume_dataarray(ds, _VARS).values
+        for var_idx, var in enumerate(_VARS):
+            for lev_idx in range(_N_LEVELS):
+                np.testing.assert_array_equal(
+                    result[:, :, :, lev_idx, var_idx],
+                    ds[var].values[:, lev_idx, :, :],
+                )
+
+    def test_variable_axis_follows_request_order(self):
+        ds = _make_era5_ds()
+        reordered = list(reversed(_VARS))
+        result = inputs_ds_to_volume_dataarray(ds, reordered)
+        assert list(result["variable"].values) == reordered
+
+    def test_single_level_variable_broadcast_along_level(self):
+        ds = _make_mixed_ds()
+        result = inputs_ds_to_volume_dataarray(ds, [*_VARS, "2m_temperature"]).values
+        for lev_idx in range(_N_LEVELS):
+            np.testing.assert_array_equal(result[:, :, :, lev_idx, -1], ds["2m_temperature"].values)
+
+    def test_static_variable_broadcast_along_time_and_level(self):
+        ds = _make_mixed_ds()
+        result = inputs_ds_to_volume_dataarray(ds, [*_VARS, "land_sea_mask"]).values
+        for t in range(N_TIME):
+            for lev_idx in range(_N_LEVELS):
+                np.testing.assert_array_equal(result[t, :, :, lev_idx, -1], ds["land_sea_mask"].values)
+
+    def test_empty_variables_raises(self):
+        ds = _make_era5_ds()
+        with pytest.raises(ValueError, match="No variables requested"):
+            inputs_ds_to_volume_dataarray(ds, [])
+
+
+def _make_volume_da(seed: int = 3, n_levels: int = 3, n_vars: int = 4) -> xr.DataArray:
+    rng = np.random.default_rng(seed)
+    data = rng.standard_normal((N_TIME, N_LAT, N_LON, n_levels, n_vars)).astype(np.float32)
+    da = xr.DataArray(
+        data,
+        dims=["time", "latitude", "longitude", "level", "variable"],
+        coords={
+            "time": np.arange(N_TIME),
+            "level": _LEVELS[:n_levels],
+            "variable": [f"var{i}" for i in range(n_vars)],
+        },
+    )
+    return da.chunk({"time": 2})
+
+
 class TestComputeNormStats:
     def test_matches_numpy(self):
         da = _make_channel_da()
@@ -210,6 +281,37 @@ class TestLoadOrComputeNormStats:
         assert cache_dir.exists()
         assert min_val.shape == (4,)
         assert max_val.shape == (4,)
+
+    def test_volume_da_stats_have_level_variable_shape(self):
+        da = _make_volume_da(n_levels=3, n_vars=4)
+        min_val, max_val = compute_norm_stats(da)
+        assert min_val.shape == (3, 4)
+        assert max_val.shape == (3, 4)
+        values = da.values
+        np.testing.assert_allclose(min_val, values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(max_val, values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+
+    def test_volume_da_stats_round_trip_through_cache(self, tmp_path):
+        da = _make_volume_da()
+        direct_min, direct_max = compute_norm_stats(da)
+        cached_min, cached_max = load_or_compute_norm_stats(da, str(tmp_path), ("volume-key",))
+        np.testing.assert_array_equal(cached_min, direct_min)
+        np.testing.assert_array_equal(cached_max, direct_max)
+        hit_min, hit_max = load_or_compute_norm_stats(da, str(tmp_path), ("volume-key",))
+        np.testing.assert_array_equal(hit_min, direct_min)
+        np.testing.assert_array_equal(hit_max, direct_max)
+
+    def test_flat_cache_with_same_key_is_not_reused_for_volume_da(self, tmp_path):
+        """A (n_channels,) cache entry must be a clean miss for a (level, variable) request."""
+        flat_da = _make_channel_da()
+        key_parts = ("shared-key",)
+        load_or_compute_norm_stats(flat_da, str(tmp_path), key_parts)
+
+        volume_da = _make_volume_da()
+        min_val, max_val = load_or_compute_norm_stats(volume_da, str(tmp_path), key_parts)
+        direct_min, direct_max = compute_norm_stats(volume_da)
+        np.testing.assert_array_equal(min_val, direct_min)
+        np.testing.assert_array_equal(max_val, direct_max)
 
     def test_stale_mean_variance_cache_is_recomputed(self, tmp_path):
         """A cache file written by the old mean/variance format has no 'min' key and must be ignored."""

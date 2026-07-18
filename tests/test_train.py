@@ -298,7 +298,83 @@ class TestTrainConfigLossClassWeights:
     def test_schooner_configs_parse(self, train_config_cls):
         from fronts import utils
 
-        for path in ["configs/schooner_train.yaml", "configs/schooner_pipeline.yaml"]:
+        for path in [
+            "configs/schooner_train.yaml",
+            "configs/schooner_pipeline.yaml",
+            "configs/schooner_train_3d.yaml",
+        ]:
             yaml_data = utils.load_yaml(path)
             cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
             assert cfg.loss_class_weights is None
+
+    def test_3d_config_parses(self):
+        from fronts import utils
+        from fronts.data.datasets import DatasetConfig
+        from fronts.model import ModelConfig
+
+        yaml_data = utils.load_yaml("configs/schooner_train_3d.yaml")
+        data_cfg = utils.parse_config_section(yaml_data, DatasetConfig, "data_config")
+        model_cfg = utils.parse_config_section(yaml_data, ModelConfig, "model_config")
+
+        assert data_cfg.volume_inputs is True
+        assert len(data_cfg.variables) == 10
+        assert model_cfg.squeeze_axes == 3
+        assert list(model_cfg.pool_size) == [2, 2, 1]
+        assert list(model_cfg.upsample_size) == [2, 2, 1]
+        assert model_cfg.kernel_size == 5
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestFrontsPyDatasetVolume:
+    """volume_inputs=True must yield (batch, lat, lon, level, variable) batches for a 3D model."""
+
+    _N_TIME = 4
+    _N_LAT = 6
+    _N_LON = 8
+    _LEVELS = (1000, 950)
+
+    def _make_volume_inputs(self):
+        rng = np.random.default_rng(11)
+        times = np.arange(self._N_TIME)
+        input_ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    rng.standard_normal((self._N_TIME, len(self._LEVELS), self._N_LAT, self._N_LON)).astype(np.float32),
+                    dims=["time", "level", "latitude", "longitude"],
+                    coords={"time": times, "level": list(self._LEVELS)},
+                ),
+                "mean_sea_level_pressure": xr.DataArray(
+                    rng.standard_normal((self._N_TIME, self._N_LAT, self._N_LON)).astype(np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": times},
+                ),
+            }
+        )
+        target_da = xr.DataArray(
+            rng.integers(0, 2, size=(self._N_TIME, self._N_LAT, self._N_LON)).astype(np.int32),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": times},
+        )
+        dummy_store = IcechunkStorageConfig(store_path="unused", branch_name="main")
+        config = DatasetConfig(
+            inputs_icechunk_config=dummy_store,
+            targets_icechunk_config=dummy_store,
+            variables=["temperature", "mean_sea_level_pressure"],
+            test_years=[],
+            val_years=[],
+            volume_inputs=True,
+        )
+        return input_ds, target_da, config
+
+    def test_batch_is_5d(self):
+        input_ds, target_da, config = self._make_volume_inputs()
+        ds = FrontsPyDataset(input_ds, target_da, config, batch_size=2)
+        x_batch, y_batch = ds[0]
+        assert x_batch.shape == (2, self._N_LAT, self._N_LON, len(self._LEVELS), 2)
+        assert y_batch.shape == (2, self._N_LAT, self._N_LON, N_CLASSES)
+
+    def test_single_level_variable_broadcast_in_batch(self):
+        input_ds, target_da, config = self._make_volume_inputs()
+        ds = FrontsPyDataset(input_ds, target_da, config, batch_size=2)
+        x_batch, _ = ds[0]
+        np.testing.assert_array_equal(x_batch[..., 0, 1], x_batch[..., 1, 1])

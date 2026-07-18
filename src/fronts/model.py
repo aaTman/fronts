@@ -93,8 +93,8 @@ class ModelConfig:
     n_channels: int = 30
     levels: int = 4
     filter_num: list[int] = dataclasses.field(default_factory=lambda: [32, 64, 128, 256])
-    pool_size: tuple[int, int] = (2, 2)
-    upsample_size: tuple[int, int] = (2, 2)
+    pool_size: tuple[int, ...] | list[int] = (2, 2)
+    upsample_size: tuple[int, ...] | list[int] = (2, 2)
     squeeze_axes: int | None = None
     kernel_size: int = 3
     first_encoder_connections: bool = False
@@ -302,12 +302,14 @@ class UNet3Plus(UNetBase):
             matrix of the Conv2D/Conv3D layers.
         bias_constraint: Constraint function applied to the bias vector
             in the Conv2D/Conv3D layers.
-        normalization_min: Per-channel min of shape (n_channels,). When provided
+        normalization_min: Per-channel min, shape (n_channels,) for 2D inputs or
+            (n_levels, n_variables) for 3D volume inputs (broadcast against the
+            trailing input dims). When provided
             alongside ``normalization_max``, a min-max ``tf.keras.layers.Rescaling``
             layer is prepended with these statistics baked in as non-trainable weights.
             Raw unnormalized inputs can then be passed directly to the saved model.
-        normalization_max: Per-channel max of shape (n_channels,). Must be
-            provided together with ``normalization_min``.
+        normalization_max: Per-channel max, same shape as ``normalization_min``.
+            Must be provided together with it.
 
     Returns:
         A ``tf.keras.models.Model`` object representing the U-Net 3+ model.
