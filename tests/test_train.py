@@ -12,7 +12,7 @@ try:
     from fronts.data.datasets import DatasetConfig, FrontsPyDataset
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
-    from fronts.train import _build_monitor_callback, load_data_into_dataloader
+    from fronts.train import _build_monitor_callbacks, load_data_into_dataloader
 
     _TF_AVAILABLE = True
 except ImportError:
@@ -126,11 +126,13 @@ class TestApplyTimeResolution:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
-class TestBuildMonitorCallback:
+class TestBuildMonitorCallbacks:
     def test_both_decay_params_set_returns_reduce_lr_on_plateau(self):
-        callback = _build_monitor_callback(
+        callbacks = _build_monitor_callbacks(
             monitor="val_loss", patience=5, learning_rate_decay_factor=0.2, learning_rate_minimum=1e-6
         )
+        assert len(callbacks) == 1
+        callback = callbacks[0]
         assert isinstance(callback, tf.keras.callbacks.ReduceLROnPlateau)
         assert callback.monitor == "val_loss"
         assert callback.factor == 0.2
@@ -138,25 +140,88 @@ class TestBuildMonitorCallback:
         assert callback.min_lr == 1e-6
 
     def test_only_decay_factor_set_returns_early_stopping(self):
-        callback = _build_monitor_callback(
+        callbacks = _build_monitor_callbacks(
             monitor="val_loss", patience=5, learning_rate_decay_factor=0.2, learning_rate_minimum=None
         )
-        assert isinstance(callback, tf.keras.callbacks.EarlyStopping)
+        assert len(callbacks) == 1
+        assert isinstance(callbacks[0], tf.keras.callbacks.EarlyStopping)
 
     def test_only_decay_minimum_set_returns_early_stopping(self):
-        callback = _build_monitor_callback(
+        callbacks = _build_monitor_callbacks(
             monitor="val_loss", patience=5, learning_rate_decay_factor=None, learning_rate_minimum=1e-6
         )
-        assert isinstance(callback, tf.keras.callbacks.EarlyStopping)
+        assert len(callbacks) == 1
+        assert isinstance(callbacks[0], tf.keras.callbacks.EarlyStopping)
 
     def test_neither_set_returns_early_stopping(self):
-        callback = _build_monitor_callback(
+        callbacks = _build_monitor_callbacks(
             monitor="val_loss", patience=5, learning_rate_decay_factor=None, learning_rate_minimum=None
         )
+        assert len(callbacks) == 1
+        callback = callbacks[0]
         assert isinstance(callback, tf.keras.callbacks.EarlyStopping)
         assert callback.monitor == "val_loss"
         assert callback.patience == 5
         assert callback.restore_best_weights is True
+
+    def test_min_delta_defaults_to_zero_not_keras_absolute_1e4(self):
+        """min_delta must default to 0, not Keras's absolute 1e-4.
+
+        At a loss magnitude of ~1e-3, an absolute min_delta of 1e-4 reads every epoch as
+        a plateau and decays the LR to its floor within a dozen epochs.
+        """
+        callbacks = _build_monitor_callbacks(
+            monitor="val_loss", patience=3, learning_rate_decay_factor=0.2, learning_rate_minimum=1e-6
+        )
+        assert callbacks[0].min_delta == 0.0
+
+    def test_min_delta_passed_through_to_both_callback_types(self):
+        reduce_lr = _build_monitor_callbacks(
+            monitor="val_loss",
+            patience=3,
+            learning_rate_decay_factor=0.2,
+            learning_rate_minimum=1e-6,
+            min_delta=1e-5,
+        )[0]
+        assert reduce_lr.min_delta == 1e-5
+        early_stop = _build_monitor_callbacks(
+            monitor="val_loss",
+            patience=3,
+            learning_rate_decay_factor=None,
+            learning_rate_minimum=None,
+            min_delta=1e-5,
+        )[0]
+        assert early_stop.min_delta == 1e-5
+
+    def test_lr_decay_with_early_stopping_returns_both(self):
+        """LR-decay mode alone has no stop condition; early_stopping_patience adds one."""
+        callbacks = _build_monitor_callbacks(
+            monitor="val_loss",
+            patience=3,
+            learning_rate_decay_factor=0.2,
+            learning_rate_minimum=1e-6,
+            min_delta=1e-5,
+            early_stopping_patience=12,
+        )
+        assert len(callbacks) == 2
+        reduce_lr, early_stop = callbacks
+        assert isinstance(reduce_lr, tf.keras.callbacks.ReduceLROnPlateau)
+        assert reduce_lr.patience == 3
+        assert isinstance(early_stop, tf.keras.callbacks.EarlyStopping)
+        assert early_stop.patience == 12
+        assert early_stop.restore_best_weights is True
+        assert early_stop.min_delta == 1e-5
+
+    def test_early_stopping_patience_ignored_without_lr_decay(self):
+        callbacks = _build_monitor_callbacks(
+            monitor="val_loss",
+            patience=5,
+            learning_rate_decay_factor=None,
+            learning_rate_minimum=None,
+            early_stopping_patience=12,
+        )
+        assert len(callbacks) == 1
+        assert callbacks[0].patience == 5
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -309,12 +374,16 @@ class TestTrainConfigLossClassWeights:
 
     def test_3d_config_parses(self):
         from fronts import utils
+        from fronts.callbacks import CallbacksConfig
         from fronts.data.datasets import DatasetConfig
         from fronts.model import ModelConfig
+        from fronts.train import TrainConfig
 
         yaml_data = utils.load_yaml("configs/schooner_train_3d.yaml")
         data_cfg = utils.parse_config_section(yaml_data, DatasetConfig, "data_config")
         model_cfg = utils.parse_config_section(yaml_data, ModelConfig, "model_config")
+        train_cfg = utils.parse_config_section(yaml_data, TrainConfig, "train_config")
+        callbacks_cfg = utils.parse_config_section(yaml_data, CallbacksConfig, "callbacks_config")
 
         assert data_cfg.volume_inputs is True
         assert len(data_cfg.variables) == 10
@@ -322,6 +391,10 @@ class TestTrainConfigLossClassWeights:
         assert list(model_cfg.pool_size) == [2, 2, 1]
         assert list(model_cfg.upsample_size) == [2, 2, 1]
         assert model_cfg.kernel_size == 5
+        assert train_cfg.learning_rate == 1e-4
+        assert train_cfg.gradient_clip_norm == 1.0
+        assert callbacks_cfg.min_delta == 0.0
+        assert callbacks_cfg.early_stopping_patience == 12
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
