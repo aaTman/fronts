@@ -179,12 +179,29 @@ def fractions_skill_score(
     return fss_loss
 
 
+def _bucket_widths(half_x: np.ndarray, max_distinct: int) -> np.ndarray:
+    """Quantize per-row zonal half-widths to at most ``max_distinct`` distinct values.
+
+    Sorted unique widths are split into ``max_distinct`` contiguous groups, and every row
+    takes its group's maximum width, so no neighborhood ever shrinks below what was
+    requested. This bounds the row-group fan-out in ``_lat_dependent_pool``, which
+    otherwise scales with the number of distinct zonal widths across the latitude range
+    and dominates backward-pass memory in ``neighborhood_brier_score``.
+    """
+    unique_vals = np.unique(half_x)
+    if len(unique_vals) <= max_distinct:
+        return half_x
+    representative = {int(v): int(group.max()) for group in np.array_split(unique_vals, max_distinct) for v in group}
+    return np.vectorize(representative.get)(half_x)
+
+
 def _plan_windows(
     latitudes: np.ndarray | Sequence[float],
     resolution_deg: float,
     tolerances_km: Sequence[float],
     max_half_x: int,
     pole_clip_deg: float = 85.0,
+    max_distinct_widths: int | None = None,
 ) -> list[dict[str, int | np.ndarray]]:
     """Precompute window half-widths in pixels for each tolerance scale.
 
@@ -194,6 +211,8 @@ def _plan_windows(
         tolerances_km: Neighborhood tolerance scales in kilometers.
         max_half_x: Upper bound on the zonal half-width in pixels.
         pole_clip_deg: Latitude at which cos(lat) is clipped to keep zonal windows finite near the poles.
+        max_distinct_widths: Upper bound on distinct zonal half-widths per tolerance, via
+            ``_bucket_widths``. None keeps full per-row precision.
 
     Returns:
         One dict per tolerance with ``half_y`` (scalar meridional half-width) and ``half_x``
@@ -207,6 +226,8 @@ def _plan_windows(
         half_y = round(tol / dy_km)
         half_x = np.round(tol / (resolution_deg * KM_PER_DEG * coslat)).astype(int)
         half_x = np.clip(half_x, 0, max_half_x)
+        if max_distinct_widths is not None:
+            half_x = _bucket_widths(half_x, max_distinct_widths)
         plans.append({"half_y": half_y, "half_x": half_x})
     return plans
 
@@ -282,6 +303,7 @@ def neighborhood_brier_score(
     class_weights: list[int | float] | None = None,
     periodic_lon: bool = False,
     max_half_x: int = 128,
+    max_distinct_widths: int | None = 8,
 ) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """Latitude-aware neighborhood Brier loss: a proper alternative to FSS-as-loss.
 
@@ -304,6 +326,10 @@ def neighborhood_brier_score(
         periodic_lon: If True, wraps the zonal window across the longitude edges. Only set for
             a genuine global 360-degree band; domain strips with non-adjacent ends must use False.
         max_half_x: Upper bound on the zonal half-width in pixels.
+        max_distinct_widths: Upper bound on distinct zonal half-widths per tolerance scale.
+            Bounds the row-group fan-out in ``_lat_dependent_pool``, which otherwise scales
+            with the number of distinct widths across the latitude range and dominates
+            backward-pass memory. None keeps full per-row precision.
 
     References:
         Roberts & Lean (2008): https://doi.org/10.1175/2007MWR2123.1
@@ -313,7 +339,7 @@ def neighborhood_brier_score(
     lat = np.asarray(latitudes, dtype=np.float64)
     if resolution_deg is None:
         resolution_deg = float(np.median(np.abs(np.diff(lat))))
-    plans = _plan_windows(lat, resolution_deg, tolerances_km, max_half_x)
+    plans = _plan_windows(lat, resolution_deg, tolerances_km, max_half_x, max_distinct_widths=max_distinct_widths)
 
     if tolerance_weights is None:
         tolerance_weights = [1.0] * len(tolerances_km)

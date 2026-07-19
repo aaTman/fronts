@@ -52,6 +52,37 @@ class TestPlanWindows:
         assert len(plans) == 3
         assert plans[0]["half_y"] < plans[1]["half_y"] < plans[2]["half_y"]
 
+    def test_max_distinct_widths_bounds_unique_half_x_values(self):
+        wide_latitudes = np.arange(89.0, 0.0, -RESOLUTION_DEG)
+        plans = losses._plan_windows(
+            wide_latitudes, RESOLUTION_DEG, (250.0,), max_half_x=128, max_distinct_widths=4
+        )
+        assert len(np.unique(plans[0]["half_x"])) <= 4
+
+    def test_max_distinct_widths_none_leaves_full_precision(self):
+        wide_latitudes = np.arange(89.0, 0.0, -RESOLUTION_DEG)
+        plans = losses._plan_windows(
+            wide_latitudes, RESOLUTION_DEG, (250.0,), max_half_x=128, max_distinct_widths=None
+        )
+        assert len(np.unique(plans[0]["half_x"])) > 4
+
+
+class TestBucketWidths:
+    def test_no_op_when_already_within_limit(self):
+        half_x = np.array([0, 1, 1, 3, 2])
+        np.testing.assert_array_equal(losses._bucket_widths(half_x, max_distinct=8), half_x)
+
+    def test_reduces_distinct_count_to_at_most_max_distinct(self):
+        half_x = np.arange(20)
+        bucketed = losses._bucket_widths(half_x, max_distinct=4)
+        assert len(np.unique(bucketed)) <= 4
+
+    def test_never_shrinks_below_original_value(self):
+        """Bucketing must never make a window narrower than what was actually requested."""
+        half_x = np.arange(20)
+        bucketed = losses._bucket_widths(half_x, max_distinct=4)
+        assert np.all(bucketed >= half_x)
+
 
 class TestLatDependentPool:
     def test_pool_of_ones_is_one_everywhere(self):
