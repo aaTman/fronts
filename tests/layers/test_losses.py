@@ -80,6 +80,43 @@ class TestLatDependentPool:
         )
         np.testing.assert_allclose(pooled.numpy()[:, :, 0, :], 1.0 / 3.0, atol=1e-6)
 
+    @staticmethod
+    def _brute_force_pool(field: np.ndarray, half_y: int, half_x_per_row: np.ndarray, periodic: bool) -> np.ndarray:
+        """Direct per-pixel window mean over valid cells; the definition the fast version must match."""
+        _, n_h, n_w, _ = field.shape
+        out = np.zeros_like(field)
+        for i in range(n_h):
+            half_x = int(half_x_per_row[i])
+            rows = list(range(max(0, i - half_y), min(n_h, i + half_y + 1)))
+            for j in range(n_w):
+                if periodic:
+                    cols = [(j + dj) % n_w for dj in range(-half_x, half_x + 1)]
+                else:
+                    cols = list(range(max(0, j - half_x), min(n_w, j + half_x + 1)))
+                out[:, i, j, :] = field[:, rows][:, :, cols].mean(axis=(1, 2))
+        return out
+
+    @pytest.mark.parametrize("periodic", [False, True])
+    def test_matches_brute_force_with_heterogeneous_widths(self, periodic):
+        """Per-row half-widths (incl. repeats and zero) must reproduce the direct window mean exactly."""
+        rng = np.random.default_rng(0)
+        field = rng.random((2, N_H, 12, 3)).astype(np.float32)
+        half_x_per_row = np.array([0, 1, 1, 3, 2, 2, 3, 0])
+        pooled = losses._lat_dependent_pool(tf.constant(field), 1, half_x_per_row, periodic)
+        expected = self._brute_force_pool(field, 1, half_x_per_row, periodic)
+        np.testing.assert_allclose(pooled.numpy(), expected, atol=1e-5)
+
+    def test_rows_stay_in_original_order(self):
+        """Rows grouped by width for pooling must come back in latitude order.
+
+        Row i carries the constant value i and every window is fully in-domain along x
+        (periodic), so with half_y=0 the pooled row values must equal the row index.
+        """
+        field = np.tile(np.arange(N_H, dtype=np.float32).reshape(1, N_H, 1, 1), (1, 1, N_W, 1))
+        half_x_per_row = np.array([3, 1, 2, 1, 3, 0, 2, 0])
+        pooled = losses._lat_dependent_pool(tf.constant(field), 0, half_x_per_row, periodic_lon=True)
+        np.testing.assert_allclose(pooled.numpy()[0, :, 0, 0], np.arange(N_H), atol=1e-5)
+
 
 class TestNeighborhoodBrierScore:
     def test_perfect_prediction_is_zero(self):
@@ -290,9 +327,9 @@ class TestFSSLossBackgroundSupervision:
 
         loss_unweighted = float(fractions_skill_score(mask_size=(3, 3))(y_true, y_pred).numpy().mean())
         loss_bg_zeroed = float(
-            fractions_skill_score(mask_size=(3, 3), class_weights=[0.0, 1.0, 1.0, 1.0, 1.0, 1.0])(
-                y_true, y_pred
-            ).numpy().mean()
+            fractions_skill_score(mask_size=(3, 3), class_weights=[0.0, 1.0, 1.0, 1.0, 1.0, 1.0])(y_true, y_pred)
+            .numpy()
+            .mean()
         )
 
         assert loss_unweighted > 0.0

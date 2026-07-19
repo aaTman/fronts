@@ -241,25 +241,35 @@ def _lat_dependent_pool(field: tf.Tensor, half_y: int, half_x_per_row: np.ndarra
 
     Each neighborhood fraction is (sum of in-domain cells) / (count of in-domain cells), so the
     window simply shrinks at domain edges rather than reflecting or wrapping.
+
+    Each distinct zonal half-width's box sum runs on only the rows that use that width
+    (gather, box-sum, reassemble) rather than on the full field with row masking. Zonal box
+    sums are row-independent, so this is exact — and it keeps the total work at ~one field
+    regardless of how many distinct widths the latitude range produces (66 on the full
+    domain), where the full-field-per-width version materialized that many full-size
+    intermediates and made this loss ~9x more memory-hungry than a single-scale pooling
+    loss, forcing smaller training batches.
     """
     dtype = field.dtype
-    height = tf.shape(field)[1]
+    hx = np.asarray(half_x_per_row)
     width = tf.shape(field)[2]
-    ones_col = tf.ones((1, height, 1, 1), dtype)
+    ones_col = tf.ones((1, len(hx), 1, 1), dtype)
     ones_row = tf.ones((1, 1, width, 1), dtype)
 
     sum_y = _boxsum_y(field, half_y)
     count_y = _boxsum_y(ones_col, half_y)
 
-    hx = np.asarray(half_x_per_row)
-    out = tf.zeros_like(field)
+    pieces = []
+    row_groups = []
     for v in sorted({int(u) for u in hx}):
-        sum_xy = _boxsum_x(sum_y, v, periodic_lon)
+        rows = np.flatnonzero(hx == v)
+        sum_xy = _boxsum_x(tf.gather(sum_y, rows, axis=1), v, periodic_lon)
         count_x = _boxsum_x(ones_row, v, periodic_lon)
-        mean_v = sum_xy / (count_y * count_x)
-        row_mask = tf.constant((hx == v).astype(np.float32).reshape(1, -1, 1, 1))
-        out += mean_v * tf.cast(row_mask, dtype)
-    return out
+        pieces.append(sum_xy / (tf.gather(count_y, rows, axis=1) * count_x))
+        row_groups.append(rows)
+
+    original_row_order = np.argsort(np.concatenate(row_groups))
+    return tf.gather(tf.concat(pieces, axis=1), original_row_order, axis=1)
 
 
 def neighborhood_brier_score(
