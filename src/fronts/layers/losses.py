@@ -304,6 +304,7 @@ def neighborhood_brier_score(
     periodic_lon: bool = False,
     max_half_x: int = 128,
     max_distinct_widths: int | None = 8,
+    lat_dependent_pool: bool = False,
 ) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """Latitude-aware neighborhood Brier loss: a proper alternative to FSS-as-loss.
 
@@ -329,7 +330,13 @@ def neighborhood_brier_score(
         max_distinct_widths: Upper bound on distinct zonal half-widths per tolerance scale.
             Bounds the row-group fan-out in ``_lat_dependent_pool``, which otherwise scales
             with the number of distinct widths across the latitude range and dominates
-            backward-pass memory. None keeps full per-row precision.
+            backward-pass memory. None keeps full per-row precision. Ignored when
+            ``lat_dependent_pool`` is False.
+        lat_dependent_pool: If True, widen the zonal window with 1/cos(lat) via
+            ``_lat_dependent_pool``. If False (default), pool with a single symmetric
+            ``AveragePooling2D`` window (meridional half-width in both directions, like
+            ``fractions_skill_score``) — cheaper in backward-pass memory, at the cost of
+            under-widening the zonal tolerance away from the equator.
 
     References:
         Roberts & Lean (2008): https://doi.org/10.1175/2007MWR2123.1
@@ -340,6 +347,16 @@ def neighborhood_brier_score(
     if resolution_deg is None:
         resolution_deg = float(np.median(np.abs(np.diff(lat))))
     plans = _plan_windows(lat, resolution_deg, tolerances_km, max_half_x, max_distinct_widths=max_distinct_widths)
+    isotropic_pools = (
+        None
+        if lat_dependent_pool
+        else [
+            tf.keras.layers.AveragePooling2D(
+                pool_size=(2 * plan["half_y"] + 1, 2 * plan["half_y"] + 1), strides=1, padding="same"
+            )
+            for plan in plans
+        ]
+    )
 
     if tolerance_weights is None:
         tolerance_weights = [1.0] * len(tolerances_km)
@@ -368,9 +385,13 @@ def neighborhood_brier_score(
             return tf.reduce_mean(se, axis=spatial_axes)
 
         total = tf.zeros(tf.shape(y_pred)[:1], tf.float32)
-        for plan, tw in zip(plans, tolerance_weights, strict=True):
-            O_n = _lat_dependent_pool(y_true, plan["half_y"], plan["half_x"], periodic_lon)
-            M_n = _lat_dependent_pool(y_pred, plan["half_y"], plan["half_x"], periodic_lon)
+        for i, (plan, tw) in enumerate(zip(plans, tolerance_weights, strict=True)):
+            if lat_dependent_pool:
+                O_n = _lat_dependent_pool(y_true, plan["half_y"], plan["half_x"], periodic_lon)
+                M_n = _lat_dependent_pool(y_pred, plan["half_y"], plan["half_x"], periodic_lon)
+            else:
+                O_n = isotropic_pools[i](y_true)
+                M_n = isotropic_pools[i](y_pred)
             total += float(tw) * _brier(O_n, M_n)
         if include_pixel:
             total += float(pixel_weight) * _brier(y_true, y_pred)

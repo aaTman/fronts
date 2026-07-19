@@ -221,6 +221,50 @@ class TestNeighborhoodBrierScore:
         assert grad is not None
         assert float(tf.reduce_max(tf.abs(grad))) > 0.0
 
+    def test_lat_dependent_pool_defaults_to_false(self):
+        """The lat-aware pooling is opt-in; the default must use the cheap isotropic pool."""
+        y_true = _with_front_row(_one_hot_background(n_h=16), row=4)
+        loss_fn = losses.neighborhood_brier_score(
+            latitudes=np.arange(16 * RESOLUTION_DEG, 0.0, -RESOLUTION_DEG), tolerances_km=(25.0,)
+        )
+        explicit_false = losses.neighborhood_brier_score(
+            latitudes=np.arange(16 * RESOLUTION_DEG, 0.0, -RESOLUTION_DEG),
+            tolerances_km=(25.0,),
+            lat_dependent_pool=False,
+        )
+        y_pred = _with_front_row(_one_hot_background(n_h=16), row=6)
+        np.testing.assert_allclose(loss_fn(y_true, y_pred).numpy(), explicit_false(y_true, y_pred).numpy())
+
+    def test_isotropic_pool_ignores_zonal_widening_at_high_latitude(self):
+        """At high latitude the lat-dependent pool widens zonally; the isotropic pool must not."""
+        n_h = 16
+        n_w = 16
+        latitudes = np.arange(80.0, 80.0 - n_h * RESOLUTION_DEG, -RESOLUTION_DEG)
+        y_true = np.zeros((1, n_h, n_w, N_CLASSES), dtype=np.float32)
+        y_true[:, 4, 4, 0] = 0.0
+        y_true[:, 4, 4, 1] = 1.0
+        y_true[:, 4, :, 0] = 1.0
+        y_true[:, 4, 4, 0] = 0.0
+        y_pred = y_true.copy()
+        y_pred[:, 4, 4, :] = 0.0
+        y_pred[:, 4, 7, 0] = 0.0
+        y_pred[:, 4, 7, 1] = 1.0
+        y_pred[:, 4, 4, 0] = 1.0
+
+        lat_dependent = losses.neighborhood_brier_score(
+            latitudes=latitudes, tolerances_km=(25.0,), lat_dependent_pool=True, max_half_x=16
+        )
+        isotropic = losses.neighborhood_brier_score(
+            latitudes=latitudes, tolerances_km=(25.0,), lat_dependent_pool=False, max_half_x=16
+        )
+        lat_dependent_loss = float(lat_dependent(y_true, y_pred).numpy().mean())
+        isotropic_loss = float(isotropic(y_true, y_pred).numpy().mean())
+        assert lat_dependent_loss < isotropic_loss, (
+            f"lat-dependent pool (half_x~5 at 80deg) should absorb the 3-column zonal miss "
+            f"better than the isotropic pool (half_y-only window): "
+            f"lat_dependent={lat_dependent_loss:.5f}, isotropic={isotropic_loss:.5f}"
+        )
+
     def test_traces_under_tf_function(self):
         y_true = _with_front_row(_one_hot_background(), row=4)
         loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0, 100.0, 250.0))
