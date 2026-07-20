@@ -14,6 +14,7 @@ data_config:
   val_years: [2018]
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  front_dilation: 1
   time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
   variables: [
     "geopotential",
@@ -35,6 +36,7 @@ data_config:
     "2m_dewpoint_temperature",
     ]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
+  normalization_method: minmax
   num_pydataset_workers: 16  # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
 
 eval_config:
@@ -42,6 +44,7 @@ eval_config:
   outdir: "/ourdisk/hpc/ai2es/tman/models/stats/${run_name}/"
   coordinates: [0.25, 80.0, 130.0, 369.75]  # [lat_min, lat_max, lon_min, lon_max]
   front_types: [CF, WF, SF, OF, DL]
+  front_dilation: 1  # match training dilation
   time_start: "2024-01-01T00:00:00"
   time_end: "2024-12-31T18:00:00"
 

@@ -71,6 +71,19 @@ class TrainConfig:
             leave gradients unclipped. Caps the damage a single outlier batch can do — one
             unclipped spike can wipe learned features and knock training into a worse basin
             it never escapes.
+        loss_name: Which training loss to compile with. "fractions_skill_score" uses a
+            fixed pixel-neighborhood mask (see ``fss_mask_size``); "neighborhood_brier_score"
+            uses a physical-distance tolerance instead (see ``nbs_tolerance_km`` and related
+            fields) and does not require label dilation to express positional slack.
+        fss_mask_size: ``mask_size`` passed to ``losses.fractions_skill_score``. Only used
+            when ``loss_name == "fractions_skill_score"``.
+        nbs_tolerance_km: ``tolerance_km`` passed to ``losses.neighborhood_brier_score``.
+            Only used when ``loss_name == "neighborhood_brier_score"``.
+        nbs_periodic_lon: ``periodic_lon`` passed to ``losses.neighborhood_brier_score``.
+            Only used when ``loss_name == "neighborhood_brier_score"``.
+        nbs_lat_dependent_pool: ``lat_dependent_pool`` passed to
+            ``losses.neighborhood_brier_score``. Only used when
+            ``loss_name == "neighborhood_brier_score"``.
     """
 
     loss_class_weights: list[float] | None
@@ -79,6 +92,11 @@ class TrainConfig:
     learning_rate: float = 1e-4
     shuffle: bool = False
     gradient_clip_norm: float | None = None
+    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score"] = "neighborhood_brier_score"
+    fss_mask_size: tuple[int, ...] = (3, 3)
+    nbs_tolerance_km: float = 25.0
+    nbs_periodic_lon: bool = False
+    nbs_lat_dependent_pool: bool = False
 
 
 def load_data_into_dataloader(
@@ -204,20 +222,66 @@ def _show_input_sample(label: str, inputs: np.ndarray | xr.DataArray, n_show: in
         logger.info(f"  {i:<10} {ch.mean():>10.3f} {ch.std():>10.3f} {ch.min():>10.3f} {ch.max():>10.3f}")
 
 
+def _build_loss(
+    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score"],
+    loss_class_weights: list[float] | None,
+    latitudes: np.ndarray,
+    fss_mask_size: tuple[int, ...],
+    nbs_tolerance_km: float,
+    nbs_periodic_lon: bool,
+    nbs_lat_dependent_pool: bool,
+):
+    """Build the configured training loss.
+
+    Args:
+        loss_name: "fractions_skill_score" or "neighborhood_brier_score" — see
+            ``TrainConfig`` for what each option means.
+        loss_class_weights: Per-class loss weights, or None to supervise all classes equally.
+        latitudes: 1-D grid latitudes. Only used by "neighborhood_brier_score".
+        fss_mask_size: Pooling mask size. Only used by "fractions_skill_score".
+        nbs_tolerance_km: Positional tolerance in km. Only used by "neighborhood_brier_score".
+        nbs_periodic_lon: Whether longitude wraps. Only used by "neighborhood_brier_score".
+        nbs_lat_dependent_pool: Whether to use latitude-dependent pooling. Only used by
+            "neighborhood_brier_score".
+
+    Returns:
+        A callable loss function suitable for ``model.compile(loss=...)``.
+
+    Raises:
+        ValueError: If ``loss_name`` is not a recognized loss.
+    """
+    if loss_name == "fractions_skill_score":
+        return losses.fractions_skill_score(mask_size=fss_mask_size, class_weights=loss_class_weights)
+    if loss_name == "neighborhood_brier_score":
+        return losses.neighborhood_brier_score(
+            latitudes=latitudes,
+            tolerance_km=nbs_tolerance_km,
+            class_weights=loss_class_weights,
+            periodic_lon=nbs_periodic_lon,
+            lat_dependent_pool=nbs_lat_dependent_pool,
+        )
+    raise ValueError(
+        f"Unrecognized loss_name {loss_name!r}; expected 'fractions_skill_score' or 'neighborhood_brier_score'."
+    )
+
+
 def _compile(
     model: tf.keras.Model,
     learning_rate: float,
     metric_class_weights: list[float] | None,
-    loss_class_weights: list[float] | None,
+    train_cfg: "TrainConfig",
     latitudes: np.ndarray,
     gradient_clip_norm: float | None = None,
 ) -> int:
     n_out = len(model.outputs)
-    loss_fn = losses.neighborhood_brier_score(
+    loss_fn = _build_loss(
+        loss_name=train_cfg.loss_name,
+        loss_class_weights=train_cfg.loss_class_weights,
         latitudes=latitudes,
-        tolerance_km=25.0,  # reproduces the old 1-px (0.25 deg) label dilation
-        class_weights=loss_class_weights,
-        periodic_lon=False,  # the domain's longitude ends are not adjacent: valid-cell edges, no wrap
+        fss_mask_size=train_cfg.fss_mask_size,
+        nbs_tolerance_km=train_cfg.nbs_tolerance_km,
+        nbs_periodic_lon=train_cfg.nbs_periodic_lon,
+        nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
     )
     hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=gradient_clip_norm)
@@ -504,8 +568,8 @@ def train(
     # Get the number of cpus allocated in the SLURM job
     cpu_count = utils.slurm_cpu_count()
     with dask.config.set(scheduler="threads", num_workers=cpu_count):
-        norm_min, norm_max = inputs.load_or_compute_norm_stats(
-            train_inputs_da, data_cfg.norm_stats_cache_dir, norm_cache_key_parts
+        norm_stat_a, norm_stat_b = inputs.load_or_compute_norm_stats(
+            train_inputs_da, data_cfg.norm_stats_cache_dir, norm_cache_key_parts, method=data_cfg.normalization_method
         )
     logger.info(f"Normalization stats computed over full training set  ({time.time() - t0:.1f} s)")
 
@@ -543,8 +607,9 @@ def train(
             activation=model_cfg.activation,
             output_activation=model_cfg.output_activation,
             modules_per_node=model_cfg.modules_per_node,
-            normalization_min=norm_min,
-            normalization_max=norm_max,
+            normalization_method=data_cfg.normalization_method,
+            normalization_stat_a=norm_stat_a,
+            normalization_stat_b=norm_stat_b,
         ).build()
         if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
             float32_outputs = [
@@ -556,7 +621,7 @@ def train(
             unet,
             train_cfg.learning_rate,
             metric_class_weights=data_cfg.class_weights,
-            loss_class_weights=train_cfg.loss_class_weights,
+            train_cfg=train_cfg,
             latitudes=train_dataset.input_ds["latitude"].values,
             gradient_clip_norm=train_cfg.gradient_clip_norm,
         )

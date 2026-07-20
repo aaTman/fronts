@@ -139,6 +139,21 @@ class TestMixedLevelToDataarray:
         assert result.dtype == np.float32
 
 
+def _make_volume_da(seed: int = 3, n_levels: int = 3, n_vars: int = 4) -> xr.DataArray:
+    rng = np.random.default_rng(seed)
+    data = rng.standard_normal((N_TIME, N_LAT, N_LON, n_levels, n_vars)).astype(np.float32)
+    da = xr.DataArray(
+        data,
+        dims=["time", "latitude", "longitude", "level", "variable"],
+        coords={
+            "time": np.arange(N_TIME),
+            "level": _LEVELS[:n_levels],
+            "variable": [f"var{i}" for i in range(n_vars)],
+        },
+    )
+    return da.chunk({"time": 2})
+
+
 def _make_channel_da(seed: int = 3, with_nan: bool = False) -> xr.DataArray:
     rng = np.random.default_rng(seed)
     data = rng.standard_normal((N_TIME, N_LAT, N_LON, 4)).astype(np.float32)
@@ -203,47 +218,53 @@ class TestVolumeDataarray:
             inputs_ds_to_volume_dataarray(ds, [])
 
 
-def _make_volume_da(seed: int = 3, n_levels: int = 3, n_vars: int = 4) -> xr.DataArray:
-    rng = np.random.default_rng(seed)
-    data = rng.standard_normal((N_TIME, N_LAT, N_LON, n_levels, n_vars)).astype(np.float32)
-    da = xr.DataArray(
-        data,
-        dims=["time", "latitude", "longitude", "level", "variable"],
-        coords={
-            "time": np.arange(N_TIME),
-            "level": _LEVELS[:n_levels],
-            "variable": [f"var{i}" for i in range(n_vars)],
-        },
-    )
-    return da.chunk({"time": 2})
-
-
 class TestComputeNormStats:
     def test_matches_numpy(self):
         da = _make_channel_da()
-        min_val, max_val = compute_norm_stats(da)
+        mean, variance = compute_norm_stats(da)
         values = da.values
-        np.testing.assert_allclose(min_val, values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
-        np.testing.assert_allclose(max_val, values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(mean, values.mean(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(variance, values.var(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
 
     def test_shapes_and_dtype(self):
         da = _make_channel_da()
-        min_val, max_val = compute_norm_stats(da)
-        assert min_val.shape == (4,)
-        assert max_val.shape == (4,)
-        assert min_val.dtype == np.float32
-        assert max_val.dtype == np.float32
+        mean, variance = compute_norm_stats(da)
+        assert mean.shape == (4,)
+        assert variance.shape == (4,)
+        assert mean.dtype == np.float32
+        assert variance.dtype == np.float32
 
     def test_non_dask_input(self):
         da = _make_channel_da().compute()
-        min_val, max_val = compute_norm_stats(da)
-        np.testing.assert_allclose(min_val, da.values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
-        np.testing.assert_allclose(max_val, da.values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        mean, variance = compute_norm_stats(da)
+        np.testing.assert_allclose(mean, da.values.mean(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(variance, da.values.var(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
 
     def test_raises_on_nan(self):
         da = _make_channel_da(with_nan=True)
         with pytest.raises(ValueError, match="NaN in normalization statistics"):
             compute_norm_stats(da)
+
+    def test_minmax_matches_numpy(self):
+        da = _make_channel_da()
+        min_val, max_val = compute_norm_stats(da, method="minmax")
+        values = da.values
+        np.testing.assert_allclose(min_val, values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(max_val, values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+
+    def test_volume_da_stats_have_level_variable_shape(self):
+        da = _make_volume_da(n_levels=3, n_vars=4)
+        mean, variance = compute_norm_stats(da)
+        assert mean.shape == (3, 4)
+        assert variance.shape == (3, 4)
+        values = da.values
+        np.testing.assert_allclose(mean, values.mean(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(variance, values.var(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+
+    def test_unrecognized_method_raises(self):
+        da = _make_channel_da()
+        with pytest.raises(ValueError, match="Unrecognized normalization method"):
+            compute_norm_stats(da, method="bogus")  # type: ignore[arg-type]
 
 
 class TestLoadOrComputeNormStats:
@@ -262,11 +283,11 @@ class TestLoadOrComputeNormStats:
     def test_cache_hit_skips_compute(self, tmp_path):
         da = _make_channel_da()
         key_parts = ("snap", "channels", "indices")
-        min_val, max_val = load_or_compute_norm_stats(da, str(tmp_path), key_parts)
+        mean, variance = load_or_compute_norm_stats(da, str(tmp_path), key_parts)
         nan_da = _make_channel_da(with_nan=True)
-        cached_min, cached_max = load_or_compute_norm_stats(nan_da, str(tmp_path), key_parts)
-        np.testing.assert_array_equal(cached_min, min_val)
-        np.testing.assert_array_equal(cached_max, max_val)
+        cached_mean, cached_variance = load_or_compute_norm_stats(nan_da, str(tmp_path), key_parts)
+        np.testing.assert_array_equal(cached_mean, mean)
+        np.testing.assert_array_equal(cached_variance, variance)
 
     def test_different_keys_use_different_files(self, tmp_path):
         da = _make_channel_da()
@@ -277,29 +298,46 @@ class TestLoadOrComputeNormStats:
     def test_creates_missing_cache_dir(self, tmp_path):
         da = _make_channel_da()
         cache_dir = tmp_path / "nested" / "cache"
-        min_val, max_val = load_or_compute_norm_stats(da, str(cache_dir), ("key",))
+        mean, variance = load_or_compute_norm_stats(da, str(cache_dir), ("key",))
         assert cache_dir.exists()
-        assert min_val.shape == (4,)
-        assert max_val.shape == (4,)
+        assert mean.shape == (4,)
+        assert variance.shape == (4,)
 
-    def test_volume_da_stats_have_level_variable_shape(self):
-        da = _make_volume_da(n_levels=3, n_vars=4)
-        min_val, max_val = compute_norm_stats(da)
-        assert min_val.shape == (3, 4)
-        assert max_val.shape == (3, 4)
-        values = da.values
-        np.testing.assert_allclose(min_val, values.min(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
-        np.testing.assert_allclose(max_val, values.max(axis=(0, 1, 2)), rtol=1e-4, atol=1e-6)
+    def test_minmax_method_round_trips_through_cache(self, tmp_path):
+        da = _make_channel_da()
+        direct_min, direct_max = compute_norm_stats(da, method="minmax")
+        cached_min, cached_max = load_or_compute_norm_stats(da, str(tmp_path), ("key",), method="minmax")
+        np.testing.assert_array_equal(cached_min, direct_min)
+        np.testing.assert_array_equal(cached_max, direct_max)
+
+    def test_standardization_and_minmax_share_cache_dir_without_colliding(self, tmp_path):
+        """A cache dir shared by a standardization run and a minmax run must not collide.
+
+        Two branches pointed at the same norm_stats_cache_dir must not crash when one
+        run's cache file is read by the other's method — each method gets its own file.
+        """
+        da = _make_channel_da()
+        key_parts = ("shared-snapshot",)
+        mean, variance = load_or_compute_norm_stats(da, str(tmp_path), key_parts, method="standardization")
+        min_val, max_val = load_or_compute_norm_stats(da, str(tmp_path), key_parts, method="minmax")
+
+        direct_mean, direct_variance = compute_norm_stats(da, method="standardization")
+        direct_min, direct_max = compute_norm_stats(da, method="minmax")
+        np.testing.assert_array_equal(mean, direct_mean)
+        np.testing.assert_array_equal(variance, direct_variance)
+        np.testing.assert_array_equal(min_val, direct_min)
+        np.testing.assert_array_equal(max_val, direct_max)
+        assert len(list(tmp_path.glob("norm_stats_*.npz"))) == 2
 
     def test_volume_da_stats_round_trip_through_cache(self, tmp_path):
         da = _make_volume_da()
-        direct_min, direct_max = compute_norm_stats(da)
-        cached_min, cached_max = load_or_compute_norm_stats(da, str(tmp_path), ("volume-key",))
-        np.testing.assert_array_equal(cached_min, direct_min)
-        np.testing.assert_array_equal(cached_max, direct_max)
-        hit_min, hit_max = load_or_compute_norm_stats(da, str(tmp_path), ("volume-key",))
-        np.testing.assert_array_equal(hit_min, direct_min)
-        np.testing.assert_array_equal(hit_max, direct_max)
+        direct_mean, direct_variance = compute_norm_stats(da)
+        cached_mean, cached_variance = load_or_compute_norm_stats(da, str(tmp_path), ("volume-key",))
+        np.testing.assert_array_equal(cached_mean, direct_mean)
+        np.testing.assert_array_equal(cached_variance, direct_variance)
+        hit_mean, hit_variance = load_or_compute_norm_stats(da, str(tmp_path), ("volume-key",))
+        np.testing.assert_array_equal(hit_mean, direct_mean)
+        np.testing.assert_array_equal(hit_variance, direct_variance)
 
     def test_flat_cache_with_same_key_is_not_reused_for_volume_da(self, tmp_path):
         """A (n_channels,) cache entry must be a clean miss for a (level, variable) request."""
@@ -308,22 +346,26 @@ class TestLoadOrComputeNormStats:
         load_or_compute_norm_stats(flat_da, str(tmp_path), key_parts)
 
         volume_da = _make_volume_da()
-        min_val, max_val = load_or_compute_norm_stats(volume_da, str(tmp_path), key_parts)
-        direct_min, direct_max = compute_norm_stats(volume_da)
-        np.testing.assert_array_equal(min_val, direct_min)
-        np.testing.assert_array_equal(max_val, direct_max)
+        mean, variance = load_or_compute_norm_stats(volume_da, str(tmp_path), key_parts)
+        direct_mean, direct_variance = compute_norm_stats(volume_da)
+        np.testing.assert_array_equal(mean, direct_mean)
+        np.testing.assert_array_equal(variance, direct_variance)
 
-    def test_stale_mean_variance_cache_is_recomputed(self, tmp_path):
-        """A cache file written by the old mean/variance format has no 'min' key and must be ignored."""
+    def test_stale_pre_method_cache_file_is_ignored(self, tmp_path):
+        """A cache file from before per-method filenames existed must not crash the loader.
+
+        A file with no 'mean' key, or written under the old bare `norm_stats_{key}.npz`
+        name, simply isn't found under the new per-method naming and is recomputed.
+        """
         da = _make_channel_da()
         key = "old-format-key"
         import hashlib
 
-        cache_key = hashlib.sha256(key.encode()).hexdigest()[:16]
-        cache_path = tmp_path / f"norm_stats_{cache_key}.npz"
-        np.savez(cache_path, mean=np.zeros(4, dtype=np.float32), variance=np.ones(4, dtype=np.float32))
+        old_cache_key = hashlib.sha256(key.encode()).hexdigest()[:16]
+        old_path = tmp_path / f"norm_stats_{old_cache_key}.npz"
+        np.savez(old_path, min=np.zeros(4, dtype=np.float32), max=np.ones(4, dtype=np.float32))
 
-        min_val, max_val = load_or_compute_norm_stats(da, str(tmp_path), (key,))
-        direct_min, direct_max = compute_norm_stats(da)
-        np.testing.assert_array_equal(min_val, direct_min)
-        np.testing.assert_array_equal(max_val, direct_max)
+        mean, variance = load_or_compute_norm_stats(da, str(tmp_path), (key,), method="standardization")
+        direct_mean, direct_variance = compute_norm_stats(da, method="standardization")
+        np.testing.assert_array_equal(mean, direct_mean)
+        np.testing.assert_array_equal(variance, direct_variance)

@@ -2,12 +2,15 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.data.targets import one_hot_encode_to_dataarray
+from fronts.data.targets import dilate_fronts, one_hot_encode_to_dataarray
 
 N_TIME = 5
 N_LAT = 80
 N_LON = 80
 N_CLASSES = 6
+
+_SMALL_LAT = 4
+_SMALL_LON = 4
 
 
 @pytest.fixture
@@ -47,3 +50,82 @@ class TestOneHotEncodeToDataarray:
         result = one_hot_encode_to_dataarray(label_da)
         row_sums = result.values.sum(axis=-1)
         np.testing.assert_array_almost_equal(row_sums, np.ones((N_TIME, N_LAT, N_LON)))
+
+
+def _make_one_hot_da(data: np.ndarray) -> xr.DataArray:
+    n_time, _n_lat, _n_lon, _n_classes = data.shape
+    return xr.DataArray(
+        data.astype(np.float32),
+        dims=["time", "latitude", "longitude", "class"],
+        coords={"time": np.arange(n_time)},
+    )
+
+
+def _single_front_pixel_da(cls: int = 1, n_classes: int = N_CLASSES) -> xr.DataArray:
+    data = np.zeros((1, _SMALL_LAT, _SMALL_LON, n_classes), dtype=np.float32)
+    center_lat = _SMALL_LAT // 2
+    center_lon = _SMALL_LON // 2
+    data[0, center_lat, center_lon, cls] = 1.0
+    data[0, :, :, 0] = 1.0 - data[0, :, :, 1:].any(axis=-1)
+    return _make_one_hot_da(data)
+
+
+class TestDilateFronts:
+    def test_no_dilation_returns_unchanged(self):
+        da = _single_front_pixel_da()
+        result = dilate_fronts(da, dilation=0)
+        assert result is da
+
+    def test_shape_preserved(self):
+        da = _single_front_pixel_da()
+        result = dilate_fronts(da, dilation=1)
+        assert result.shape == da.shape
+
+    def test_background_is_complement(self):
+        da = _single_front_pixel_da()
+        result = dilate_fronts(da, dilation=1).values
+        any_front = result[..., 1:].any(axis=-1)
+        np.testing.assert_array_equal(result[..., 0], (~any_front).astype(np.float32))
+
+    def test_front_pixel_expands(self):
+        da = _single_front_pixel_da(cls=1)
+        result = dilate_fronts(da, dilation=1).values
+        center_lat = _SMALL_LAT // 2
+        center_lon = _SMALL_LON // 2
+        front_class = result[0, :, :, 1]
+        neighbor_count = (
+            front_class[center_lat - 1, center_lon]
+            + front_class[center_lat + 1, center_lon]
+            + front_class[center_lat, center_lon - 1]
+            + front_class[center_lat, center_lon + 1]
+        )
+        assert neighbor_count >= 4
+
+
+def _two_adjacent_fronts_da() -> xr.DataArray:
+    data = np.zeros((1, 8, 8, N_CLASSES), dtype=np.float32)
+    data[0, :, 2, 1] = 1.0
+    data[0, :, 4, 3] = 1.0
+    data[0, :, :, 0] = 1.0 - data[0, :, :, 1:].any(axis=-1)
+    return _make_one_hot_da(data)
+
+
+class TestDilateFrontsOverlap:
+    def test_dilated_targets_stay_one_hot(self):
+        result = dilate_fronts(_two_adjacent_fronts_da(), dilation=1).values
+        class_sums = result.sum(axis=-1)
+        np.testing.assert_array_equal(class_sums, np.ones_like(class_sums))
+
+    def test_original_labels_not_overwritten(self):
+        data = np.zeros((1, 8, 8, N_CLASSES), dtype=np.float32)
+        data[0, :, 2, 1] = 1.0
+        data[0, :, 3, 3] = 1.0
+        data[0, :, :, 0] = 1.0 - data[0, :, :, 1:].any(axis=-1)
+        result = dilate_fronts(_make_one_hot_da(data), dilation=1).values
+        np.testing.assert_array_equal(result[0, :, 3, 3], np.ones(8))
+        np.testing.assert_array_equal(result[0, :, 3, 1], np.zeros(8))
+
+    def test_equidistant_collision_resolves_to_lower_class(self):
+        result = dilate_fronts(_two_adjacent_fronts_da(), dilation=1).values
+        np.testing.assert_array_equal(result[0, :, 3, 1], np.ones(8))
+        np.testing.assert_array_equal(result[0, :, 3, 3], np.zeros(8))

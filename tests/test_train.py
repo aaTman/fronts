@@ -12,7 +12,7 @@ try:
     from fronts.data.datasets import DatasetConfig, FrontsPyDataset
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
-    from fronts.train import _build_monitor_callbacks, load_data_into_dataloader
+    from fronts.train import _build_loss, _build_monitor_callbacks, load_data_into_dataloader
 
     _TF_AVAILABLE = True
 except ImportError:
@@ -385,6 +385,76 @@ class TestLoadDataIntoDataloaderCoordinates:
         assert lons.min() >= 105.0 and lons.max() <= 115.0, f"longitude not restricted: {lons}"
 
 
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildLoss:
+    _LATITUDES = np.linspace(25.0, 56.75, 8)
+
+    def test_fss_returns_callable(self):
+        loss_fn = _build_loss(
+            loss_name="fractions_skill_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        assert callable(loss_fn)
+
+    def test_neighborhood_brier_score_returns_callable(self):
+        loss_fn = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        assert callable(loss_fn)
+
+    def test_unrecognized_loss_name_raises(self):
+        with pytest.raises(ValueError, match="Unrecognized loss_name"):
+            _build_loss(
+                loss_name="bogus",  # type: ignore[arg-type]
+                loss_class_weights=None,
+                latitudes=self._LATITUDES,
+                fss_mask_size=(3, 3),
+                nbs_tolerance_km=25.0,
+                nbs_periodic_lon=False,
+                nbs_lat_dependent_pool=False,
+            )
+
+    def test_fss_and_nbs_produce_different_losses_on_same_inputs(self):
+        rng = np.random.default_rng(0)
+        n_classes = 3
+        y_true = tf.one_hot(rng.integers(0, n_classes, size=(2, 8, 8)), n_classes)
+        y_pred = tf.nn.softmax(rng.standard_normal((2, 8, 8, n_classes)).astype(np.float32), axis=-1)
+
+        fss_loss = _build_loss(
+            loss_name="fractions_skill_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        nbs_loss = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        fss_value = float(tf.reduce_mean(fss_loss(y_true, y_pred)))
+        nbs_value = float(tf.reduce_mean(nbs_loss(y_true, y_pred)))
+        assert np.isfinite(fss_value)
+        assert np.isfinite(nbs_value)
+
+
 class TestTrainConfigLossClassWeights:
     @pytest.fixture
     def train_config_cls(self):
@@ -416,6 +486,8 @@ class TestTrainConfigLossClassWeights:
             yaml_data = utils.load_yaml(path)
             cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
             assert cfg.loss_class_weights is None
+            assert cfg.loss_name == "neighborhood_brier_score"
+            assert cfg.nbs_tolerance_km == 25.0
 
     def test_3d_config_parses(self):
         from fronts import utils

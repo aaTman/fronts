@@ -6,6 +6,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Concatenate, Input
 from tensorflow.keras.models import Model
 
+from fronts.data.inputs import NormalizationMethod
 from fronts.layers import modules
 
 
@@ -302,14 +303,17 @@ class UNet3Plus(UNetBase):
             matrix of the Conv2D/Conv3D layers.
         bias_constraint: Constraint function applied to the bias vector
             in the Conv2D/Conv3D layers.
-        normalization_min: Per-channel min, shape (n_channels,) for 2D inputs or
-            (n_levels, n_variables) for 3D volume inputs (broadcast against the
-            trailing input dims). When provided
-            alongside ``normalization_max``, a min-max ``tf.keras.layers.Rescaling``
-            layer is prepended with these statistics baked in as non-trainable weights.
-            Raw unnormalized inputs can then be passed directly to the saved model.
-        normalization_max: Per-channel max, same shape as ``normalization_min``.
-            Must be provided together with it.
+        normalization_method: "standardization" builds a z-score ``tf.keras.layers.
+            Normalization`` layer from ``normalization_stat_a``/``_b`` as mean/variance;
+            "minmax" builds a ``tf.keras.layers.Rescaling`` layer from them as min/max.
+        normalization_stat_a: Per-channel mean (standardization) or min (minmax), shape
+            (n_channels,) for 2D inputs or (n_levels, n_variables) for 3D volume inputs
+            (broadcast against the trailing input dims). When provided alongside
+            ``normalization_stat_b``, the corresponding normalization layer is prepended
+            with these statistics baked in as non-trainable weights. Raw unnormalized
+            inputs can then be passed directly to the saved model.
+        normalization_stat_b: Per-channel variance (standardization) or max (minmax),
+            same shape as ``normalization_stat_a``. Must be provided together with it.
 
     Returns:
         A ``tf.keras.models.Model`` object representing the U-Net 3+ model.
@@ -328,8 +332,9 @@ class UNet3Plus(UNetBase):
     filter_num_aggregate: int | None = None
     first_encoder_connections: bool = False
     deep_supervision: bool = False
-    normalization_min: np.ndarray | None = None
-    normalization_max: np.ndarray | None = None
+    normalization_method: NormalizationMethod = "standardization"
+    normalization_stat_a: np.ndarray | None = None
+    normalization_stat_b: np.ndarray | None = None
 
     def build(self) -> tf.keras.Model:
         """Builds and returns the U-Net 3+ Keras model."""
@@ -423,23 +428,35 @@ class UNet3Plus(UNetBase):
         tensors: dict[str, Any] = {}
         tensors_with_supervision = []
 
-        # Input + optional min-max normalization layer
-        # Min-max (not z-score) keeps every channel bounded even when its native-unit
-        # variance is tiny (e.g. specific_humidity, potential_vorticity), which
-        # otherwise blows up z-scored values to hundreds of standard deviations and
-        # overflows float16 activations. Baked in as non-trainable weights, saved
-        # inside the model on model.save() — no separate normalization file needed.
+        # Input + optional normalization layer, chosen via self.normalization_method.
+        # Baked in as non-trainable weights, saved inside the model on model.save() —
+        # no separate normalization file needed. Min-max keeps every channel bounded
+        # even when its native-unit variance is tiny (e.g. specific_humidity,
+        # potential_vorticity), which otherwise blows up z-scored values to hundreds of
+        # standard deviations and overflows float16 activations; standardization is the
+        # more conventional z-score choice. Pick per run via config.
         tensors["input"] = Input(shape=self.input_shape, name="Input")
 
-        if self.normalization_min is not None and self.normalization_max is not None:
-            channel_range = self.normalization_max - self.normalization_min
-            scale = 1.0 / np.where(channel_range == 0, 1.0, channel_range)
-            offset = -self.normalization_min * scale
-            norm_layer = tf.keras.layers.Rescaling(
-                scale=scale.astype(np.float32),
-                offset=offset.astype(np.float32),
-                name="input_normalization",
-            )
+        if self.normalization_stat_a is not None and self.normalization_stat_b is not None:
+            if self.normalization_method == "minmax":
+                channel_range = self.normalization_stat_b - self.normalization_stat_a
+                scale = 1.0 / np.where(channel_range == 0, 1.0, channel_range)
+                offset = -self.normalization_stat_a * scale
+                norm_layer = tf.keras.layers.Rescaling(
+                    scale=scale.astype(np.float32),
+                    offset=offset.astype(np.float32),
+                    name="input_normalization",
+                )
+            else:
+                # 1-D stats normalize the flat channel axis (2D model); 2-D stats normalize
+                # the (level, variable) trailing pair of a 3D volume input independently.
+                norm_axis = -1 if np.ndim(self.normalization_stat_a) == 1 else (-2, -1)
+                norm_layer = tf.keras.layers.Normalization(
+                    axis=norm_axis,
+                    mean=self.normalization_stat_a,
+                    variance=self.normalization_stat_b,
+                    name="input_normalization",
+                )
             first_tensor = norm_layer(tensors["input"])
         else:
             first_tensor = tensors["input"]

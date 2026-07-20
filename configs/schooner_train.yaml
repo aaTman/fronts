@@ -6,6 +6,8 @@ train_config:
   learning_rate: 0.0005
   shuffle: true
   loss_class_weights: null  # null supervises all classes incl. background in the training loss, matching the AIES FrontFinder model
+  loss_name: neighborhood_brier_score
+  nbs_tolerance_km: 25.0  # reproduces the old 1-px (0.25 deg) label dilation
 
 data_config:
   inputs_icechunk_config:
@@ -21,6 +23,7 @@ data_config:
   val_years: [2018]
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  front_dilation: 1
   time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
   variables: [
     "geopotential",
@@ -42,6 +45,7 @@ data_config:
     "2m_dewpoint_temperature",
     ]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
+  normalization_method: minmax
   num_pydataset_workers: 16  # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
 
 model_config:

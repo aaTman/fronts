@@ -18,7 +18,9 @@ N_CHANNELS = 4
 _INPUT_SHAPE = (None, None, N_CHANNELS)
 
 
-def _build_model(normalization_min=None, normalization_max=None) -> "tf.keras.Model":
+def _build_model(
+    normalization_stat_a=None, normalization_stat_b=None, normalization_method="minmax"
+) -> "tf.keras.Model":
     return fronts_model.UNet3Plus(
         input_shape=_INPUT_SHAPE,
         num_classes=6,
@@ -28,8 +30,9 @@ def _build_model(normalization_min=None, normalization_max=None) -> "tf.keras.Mo
         filter_num=[8, 16, 32],
         deep_supervision=False,
         output_activation="softmax",
-        normalization_min=normalization_min,
-        normalization_max=normalization_max,
+        normalization_method=normalization_method,
+        normalization_stat_a=normalization_stat_a,
+        normalization_stat_b=normalization_stat_b,
     ).build()
 
 
@@ -113,13 +116,51 @@ class TestMinMaxNormalization:
         out_np = out.numpy() if not isinstance(out, (list, tuple)) else out[0].numpy()
         assert np.isfinite(out_np).all()
 
+    def test_uses_rescaling_layer(self):
+        built = _build_model(np.zeros(N_CHANNELS, np.float32), np.ones(N_CHANNELS, np.float32))
+        assert isinstance(built.get_layer("input_normalization"), tf.keras.layers.Rescaling)
+
+
+class TestStandardizationNormalization:
+    def test_no_stats_skips_normalization_layer(self):
+        built = _build_model(normalization_method="standardization")
+        assert not any(layer.name == "input_normalization" for layer in built.layers)
+
+    def test_uses_normalization_layer(self):
+        mean = np.zeros(N_CHANNELS, np.float32)
+        variance = np.ones(N_CHANNELS, np.float32)
+        built = _build_model(mean, variance, normalization_method="standardization")
+        assert isinstance(built.get_layer("input_normalization"), tf.keras.layers.Normalization)
+
+    def test_mean_maps_to_zero(self):
+        mean = np.array([0.0, -10.0, 100.0, 1e-6], dtype=np.float32)
+        variance = np.array([1.0, 4.0, 25.0, 1e-12], dtype=np.float32)
+        built = _build_model(mean, variance, normalization_method="standardization")
+
+        norm_layer = built.get_layer("input_normalization")
+        out = norm_layer(mean.reshape(1, 1, 1, N_CHANNELS)).numpy().reshape(-1)
+        np.testing.assert_allclose(out, 0.0, atol=1e-4)
+
+    def test_forward_pass_finite(self):
+        mean = np.array([0.0, -50.0, 1000.0, 0.0], dtype=np.float32)
+        variance = np.array([1.0, 100.0, 400.0, 1.0], dtype=np.float32)
+        built = _build_model(mean, variance, normalization_method="standardization")
+
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((2, 16, 16, N_CHANNELS)).astype(np.float32)
+        out = built(x, training=False)
+        out_np = out.numpy() if not isinstance(out, (list, tuple)) else out[0].numpy()
+        assert np.isfinite(out_np).all()
+
 
 N_LEVELS_3D = 4
 N_VARS_3D = 3
 _UNET_LEVELS_3D = 3
 
 
-def _build_3d_model(normalization_min=None, normalization_max=None) -> "tf.keras.Model":
+def _build_3d_model(
+    normalization_stat_a=None, normalization_stat_b=None, normalization_method="minmax"
+) -> "tf.keras.Model":
     return fronts_model.UNet3Plus(
         input_shape=(None, None, N_LEVELS_3D, N_VARS_3D),
         num_classes=6,
@@ -135,8 +176,9 @@ def _build_3d_model(normalization_min=None, normalization_max=None) -> "tf.keras
         activation="gelu",
         output_activation="softmax",
         modules_per_node=1,
-        normalization_min=normalization_min,
-        normalization_max=normalization_max,
+        normalization_method=normalization_method,
+        normalization_stat_a=normalization_stat_a,
+        normalization_stat_b=normalization_stat_b,
     ).build()
 
 
@@ -197,6 +239,32 @@ class Test3DMinMaxNormalization:
         at_max = norm_layer(max_val.reshape(1, 1, 1, N_LEVELS_3D, N_VARS_3D)).numpy().reshape(-1)
         np.testing.assert_allclose(at_min, 0.0, atol=1e-5)
         np.testing.assert_allclose(at_max, 1.0, atol=1e-5)
+
+    def test_uses_rescaling_layer(self):
+        min_val = np.zeros((N_LEVELS_3D, N_VARS_3D), np.float32)
+        max_val = np.ones((N_LEVELS_3D, N_VARS_3D), np.float32)
+        built = _build_3d_model(min_val, max_val)
+        assert isinstance(built.get_layer("input_normalization"), tf.keras.layers.Rescaling)
+
+
+class Test3DStandardizationNormalization:
+    def test_uses_normalization_layer(self):
+        mean = np.zeros((N_LEVELS_3D, N_VARS_3D), np.float32)
+        variance = np.ones((N_LEVELS_3D, N_VARS_3D), np.float32)
+        built = _build_3d_model(mean, variance, normalization_method="standardization")
+        assert isinstance(built.get_layer("input_normalization"), tf.keras.layers.Normalization)
+
+    def test_forward_pass_finite(self):
+        rng = np.random.default_rng(3)
+        mean = rng.standard_normal((N_LEVELS_3D, N_VARS_3D)).astype(np.float32)
+        variance = (np.abs(rng.standard_normal((N_LEVELS_3D, N_VARS_3D))) + 0.1).astype(np.float32)
+        built = _build_3d_model(mean, variance, normalization_method="standardization")
+
+        x = rng.standard_normal((2, 16, 16, N_LEVELS_3D, N_VARS_3D)).astype(np.float32)
+        outs = built(x, training=False)
+        outs = outs if isinstance(outs, (list, tuple)) else [outs]
+        for out in outs:
+            assert np.isfinite(out.numpy()).all()
 
 
 class Test3DSerialization:

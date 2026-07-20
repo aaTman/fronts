@@ -14,6 +14,7 @@ data_config:
   val_years: [2018]
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  front_dilation: 1
   time_resolution: "6h"
   variables: [
     "geopotential",
@@ -35,6 +36,7 @@ data_config:
     "2m_dewpoint_temperature",
     ]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
+  normalization_method: minmax
   num_pydataset_workers: 16
 
 generate_config:
@@ -81,6 +83,8 @@ train_config:
   learning_rate: 0.0001
   shuffle: true
   loss_class_weights: null  # null supervises all classes incl. background in the training loss, matching the AIES FrontFinder model
+  loss_name: neighborhood_brier_score
+  nbs_tolerance_km: 25.0  # reproduces the old 1-px (0.25 deg) label dilation
 
 model_config:
   n_classes: 6
@@ -116,5 +120,6 @@ eval_config:
   outdir: "/ourdisk/hpc/ai2es/tman/models/stats/${run_name}/"
   coordinates: [0.25, 80.0, 130.0, 369.75]
   front_types: [CF, WF, SF, OF, DL]
+  front_dilation: 1
   time_start: "2024-01-01T00:00:00"
   time_end: "2024-12-31T18:00:00"

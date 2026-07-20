@@ -54,6 +54,8 @@ class EvalConfig:
             Defaults to full USAD extent.
         front_types: Front type labels in class order (excluding background class 0).
         mask: Restrict statistics to "land" or "ocean" grid points. None means all points.
+        front_dilation: Binary dilation iterations applied to truth labels. None uses
+            the value from the paired DatasetConfig.
         gpu_device: GPU index to use. None runs on CPU.
         time_start: Restrict evaluation to timesteps on or after this date. None means no lower bound.
         time_end: Restrict evaluation to timesteps before this date. None means no upper bound.
@@ -66,6 +68,7 @@ class EvalConfig:
     )
     front_types: list[str] = dataclasses.field(default_factory=lambda: ["CF", "WF", "SF", "OF", "DL"])
     mask: str | None = None
+    front_dilation: int | None = None
     gpu_device: int | None = None
     time_start: datetime.datetime | None = None
     time_end: datetime.datetime | None = None
@@ -187,7 +190,7 @@ def compute_stats(
         model: Loaded Keras model with baked-in normalization, callable as model(x, training=False).
         input_ds: ERA5 input Dataset with dims (time, latitude, longitude) per variable.
         target_da: Raw integer front-code DataArray with dims (time, latitude, longitude).
-        data_config: DatasetConfig providing the variables list.
+        data_config: DatasetConfig providing variables list and front_dilation.
         front_types: Front type labels in class order excluding background (class 0).
         lats: 1-D latitude array.
         lons: 1-D longitude array.
@@ -394,6 +397,9 @@ def run(eval_cfg: EvalConfig, data_cfg: datasets.DatasetConfig) -> None:
     era5_ds = era5_ds.sel(time=common_times)
     fronts_raw = fronts_raw.sel(time=common_times)
 
+    dilation = eval_cfg.front_dilation if eval_cfg.front_dilation is not None else data_cfg.front_dilation
+    effective_data_cfg = dataclasses.replace(data_cfg, front_dilation=dilation)
+
     lats = era5_ds["latitude"].values
     lons = era5_ds["longitude"].values
 
@@ -404,7 +410,7 @@ def run(eval_cfg: EvalConfig, data_cfg: datasets.DatasetConfig) -> None:
         model=keras_model,
         input_ds=era5_ds,
         target_da=fronts_raw,
-        data_config=data_cfg,
+        data_config=effective_data_cfg,
         front_types=eval_cfg.front_types,
         lats=lats,
         lons=lons,
