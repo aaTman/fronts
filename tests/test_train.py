@@ -340,6 +340,51 @@ class TestLoadDataIntoDataloaderLongitude:
         assert np.all(np.diff(lons) >= 0), f"longitude not monotonic: {lons}"
 
 
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestLoadDataIntoDataloaderCoordinates:
+    """data_config.coordinates must actually restrict the loaded domain.
+
+    Regression test for a branch-divergence bug where load_data_into_dataloader silently
+    ignored data_config.coordinates and always loaded the full domain regardless of the
+    bounding box set in the config.
+    """
+
+    _TIMES = pd.date_range("2020-01-01", periods=4, freq="6h")
+    _LAT = np.array([10.0, 20.0, 30.0, 40.0])
+    _LON = np.array([100.0, 110.0, 120.0, 130.0])
+
+    def _write_store(self, tmp_path, name: str, var_name: str) -> IcechunkStorageConfig:
+        storage_config = IcechunkStorageConfig(store_path=str(tmp_path / name), branch_name="main")
+        ds = xr.Dataset(
+            {
+                var_name: xr.DataArray(
+                    np.zeros((len(self._TIMES), len(self._LAT), len(self._LON)), dtype=np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": self._TIMES, "latitude": self._LAT, "longitude": self._LON},
+                )
+            }
+        )
+        write_or_append_icechunk_store(storage_config, ds)
+        return storage_config
+
+    def test_coordinates_restrict_loaded_domain(self, tmp_path):
+        from fronts.utils import BoundingBox
+
+        data_config = DatasetConfig(
+            inputs_icechunk_config=self._write_store(tmp_path, "inputs", "temperature"),
+            targets_icechunk_config=self._write_store(tmp_path, "targets", "identifier"),
+            variables=["temperature"],
+            test_years=[2020],
+            val_years=[],
+            coordinates=BoundingBox(lat_min=15.0, lat_max=25.0, lon_min=105.0, lon_max=115.0),
+        )
+        test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
+        lats = test_dataset.input_ds["latitude"].values
+        lons = test_dataset.input_ds["longitude"].values
+        assert lats.min() >= 15.0 and lats.max() <= 25.0, f"latitude not restricted: {lats}"
+        assert lons.min() >= 105.0 and lons.max() <= 115.0, f"longitude not restricted: {lons}"
+
+
 class TestTrainConfigLossClassWeights:
     @pytest.fixture
     def train_config_cls(self):

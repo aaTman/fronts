@@ -38,6 +38,9 @@ class DatasetConfig:
             training loop (passed to ``tf.keras.utils.PyDataset(max_queue_size=...)``).
         max_pydataset_workers: Maximum number of threads used by ``tf.keras.utils.PyDataset`` to
             load batches in parallel. None uses the number of CPUs allocated to the job.
+        coordinates: Optional spatial bounding box to restrict inputs and targets to before
+            batching (e.g. a CONUS crop). None trains on the full domain loaded from the
+            icechunk stores.
         volume_inputs: If True, batches keep the vertical structure as a separate axis —
             shape (batch, latitude, longitude, level, variable) for a 3D Conv3D model —
             instead of flattening level and variable into one channel axis for a 2D model.
@@ -54,6 +57,7 @@ class DatasetConfig:
     norm_stats_cache_dir: str | None = None
     max_queue_size: int = 4
     max_pydataset_workers: int = 16
+    coordinates: utils.BoundingBox | None = None
     volume_inputs: bool = False
 
 

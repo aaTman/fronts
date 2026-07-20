@@ -132,6 +132,11 @@ def load_data_into_dataloader(
     logger.info("Loading %s targets...", split)
     targets_da = _open(data_config.targets_icechunk_config)["identifier"]
 
+    if data_config.coordinates is not None:
+        logger.info("Restricting to spatial domain: %s", data_config.coordinates)
+        inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
+        targets_da = utils.select_spatial_domain(targets_da, data_config.coordinates)
+
     # The time indexes aren't identical between the two datasets
     common_times = np.intersect1d(targets_da.time.values, inputs_ds.time.values)
 
@@ -654,7 +659,9 @@ def main() -> None:
     args = parser.parse_args()
 
     yaml_data = utils.load_yaml(args.config)
-    data_cfg = utils.parse_config_section(yaml_data, datasets.DatasetConfig, "data_config")
+    data_cfg = utils.parse_config_section(
+        yaml_data, datasets.DatasetConfig, "data_config", type_hooks=utils.YAML_TYPE_HOOKS
+    )
     model_cfg = utils.parse_config_section(yaml_data, model.ModelConfig, "model_config")
     callbacks_cfg = utils.parse_config_section(yaml_data, fronts_callbacks.CallbacksConfig, "callbacks_config")
     wandb_cfg = (
