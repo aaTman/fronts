@@ -152,7 +152,7 @@ class TestLatDependentPool:
 class TestNeighborhoodBrierScore:
     def test_perfect_prediction_is_zero(self):
         y_true = _with_front_row(_one_hot_background(), row=4)
-        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0, 100.0))
+        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         result = loss_fn(y_true, y_true.copy()).numpy()
         assert result.shape == (N_BATCH,)
         np.testing.assert_allclose(result, 0.0, atol=1e-7)
@@ -160,14 +160,14 @@ class TestNeighborhoodBrierScore:
     def test_wrong_prediction_is_positive(self):
         y_true = _with_front_row(_one_hot_background(), row=4)
         y_pred = _one_hot_background()
-        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0,))
+        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         assert loss_fn(y_true, y_pred).numpy().min() > 0.0
 
     def test_batch_elements_scored_independently(self):
         y_true = _with_front_row(_one_hot_background(), row=4)
         y_pred = y_true.copy()
         y_pred[1] = _one_hot_background(n_batch=1)[0]
-        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0,))
+        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         result = loss_fn(y_true, y_pred).numpy()
         assert result[0] == pytest.approx(0.0, abs=1e-7)
         assert result[1] > 0.0
@@ -177,7 +177,7 @@ class TestNeighborhoodBrierScore:
         n_h = 16
         latitudes = np.arange(n_h * RESOLUTION_DEG, 0.0, -RESOLUTION_DEG)
         y_true = _with_front_row(_one_hot_background(n_h=n_h), row=4)
-        loss_fn = losses.neighborhood_brier_score(latitudes=latitudes, tolerances_km=(25.0,))
+        loss_fn = losses.neighborhood_brier_score(latitudes=latitudes, tolerance_km=25.0)
         exact = loss_fn(y_true, _with_front_row(_one_hot_background(n_h=n_h), row=4)).numpy().mean()
         near = loss_fn(y_true, _with_front_row(_one_hot_background(n_h=n_h), row=5)).numpy().mean()
         far = loss_fn(y_true, _with_front_row(_one_hot_background(n_h=n_h), row=12)).numpy().mean()
@@ -190,14 +190,14 @@ class TestNeighborhoodBrierScore:
         y_pred = np.zeros_like(y_true)
         class_weights = [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         weighted = losses.neighborhood_brier_score(
-            latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0,), class_weights=class_weights
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, class_weights=class_weights
         )
-        unweighted = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0,))
+        unweighted = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         assert weighted(y_true, y_pred).numpy().max() == pytest.approx(0.0, abs=1e-7)
         assert unweighted(y_true, y_pred).numpy().min() > 0.0
 
     def test_resolution_inferred_from_descending_latitudes(self):
-        loss_fn = losses.neighborhood_brier_score(latitudes=POLAR_LATITUDES, tolerances_km=(25.0,))
+        loss_fn = losses.neighborhood_brier_score(latitudes=POLAR_LATITUDES, tolerance_km=25.0)
         y_true = _with_front_row(_one_hot_background(), row=4)
         result = loss_fn(y_true, _one_hot_background()).numpy()
         assert np.all(np.isfinite(result)) and result.min() > 0.0
@@ -205,16 +205,16 @@ class TestNeighborhoodBrierScore:
     def test_include_pixel_sharpens_near_miss_penalty(self):
         y_true = _with_front_row(_one_hot_background(), row=4)
         y_pred = _with_front_row(_one_hot_background(), row=5)
-        base = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0,))
+        base = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         with_pixel = losses.neighborhood_brier_score(
-            latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0,), include_pixel=True, pixel_weight=1.0
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, include_pixel=True, pixel_weight=1.0
         )
         assert with_pixel(y_true, y_pred).numpy().mean() > base(y_true, y_pred).numpy().mean()
 
     def test_gradient_flows_to_predictions(self):
         y_true = tf.constant(_with_front_row(_one_hot_background(), row=4))
         y_pred = tf.Variable(np.full((N_BATCH, N_H, N_W, N_CLASSES), 1.0 / N_CLASSES, dtype=np.float32))
-        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0, 100.0))
+        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         with tf.GradientTape() as tape:
             loss = tf.reduce_mean(loss_fn(y_true, y_pred))
         grad = tape.gradient(loss, y_pred)
@@ -225,11 +225,11 @@ class TestNeighborhoodBrierScore:
         """The lat-aware pooling is opt-in; the default must use the cheap isotropic pool."""
         y_true = _with_front_row(_one_hot_background(n_h=16), row=4)
         loss_fn = losses.neighborhood_brier_score(
-            latitudes=np.arange(16 * RESOLUTION_DEG, 0.0, -RESOLUTION_DEG), tolerances_km=(25.0,)
+            latitudes=np.arange(16 * RESOLUTION_DEG, 0.0, -RESOLUTION_DEG), tolerance_km=25.0
         )
         explicit_false = losses.neighborhood_brier_score(
             latitudes=np.arange(16 * RESOLUTION_DEG, 0.0, -RESOLUTION_DEG),
-            tolerances_km=(25.0,),
+            tolerance_km=25.0,
             lat_dependent_pool=False,
         )
         y_pred = _with_front_row(_one_hot_background(n_h=16), row=6)
@@ -252,10 +252,10 @@ class TestNeighborhoodBrierScore:
         y_pred[:, 4, 4, 0] = 1.0
 
         lat_dependent = losses.neighborhood_brier_score(
-            latitudes=latitudes, tolerances_km=(25.0,), lat_dependent_pool=True, max_half_x=16
+            latitudes=latitudes, tolerance_km=25.0, lat_dependent_pool=True, max_half_x=16
         )
         isotropic = losses.neighborhood_brier_score(
-            latitudes=latitudes, tolerances_km=(25.0,), lat_dependent_pool=False, max_half_x=16
+            latitudes=latitudes, tolerance_km=25.0, lat_dependent_pool=False, max_half_x=16
         )
         lat_dependent_loss = float(lat_dependent(y_true, y_pred).numpy().mean())
         isotropic_loss = float(isotropic(y_true, y_pred).numpy().mean())
@@ -267,7 +267,7 @@ class TestNeighborhoodBrierScore:
 
     def test_traces_under_tf_function(self):
         y_true = _with_front_row(_one_hot_background(), row=4)
-        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerances_km=(25.0, 100.0, 250.0))
+        loss_fn = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         traced = tf.function(loss_fn)
         result = traced(tf.constant(y_true), tf.constant(_one_hot_background())).numpy()
         assert result.shape == (N_BATCH,)

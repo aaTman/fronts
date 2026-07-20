@@ -210,7 +210,7 @@ def _compile(
     n_out = len(model.outputs)
     loss_fn = losses.neighborhood_brier_score(
         latitudes=latitudes,
-        tolerances_km=(25.0, 100.0, 250.0),  # 25 km reproduces the old 1-px (0.25 deg) label dilation
+        tolerance_km=25.0,  # reproduces the old 1-px (0.25 deg) label dilation
         class_weights=loss_class_weights,
         periodic_lon=False,  # the domain's longitude ends are not adjacent: valid-cell edges, no wrap
     )

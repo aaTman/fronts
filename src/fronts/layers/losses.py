@@ -296,8 +296,7 @@ def _lat_dependent_pool(field: tf.Tensor, half_y: int, half_x_per_row: np.ndarra
 def neighborhood_brier_score(
     latitudes: np.ndarray | Sequence[float],
     resolution_deg: float | None = None,
-    tolerances_km: Sequence[float] = (25.0, 100.0, 250.0),
-    tolerance_weights: Sequence[float] | None = None,
+    tolerance_km: float = 25.0,
     include_pixel: bool = False,
     pixel_weight: float = 0.1,
     class_weights: list[int | float] | None = None,
@@ -308,18 +307,19 @@ def neighborhood_brier_score(
 ) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """Latitude-aware neighborhood Brier loss: a proper alternative to FSS-as-loss.
 
-    Returns the fractions Brier score (MSE of observed vs forecast neighborhood fractions)
-    summed over scales in ``tolerances_km``. Proper; rewards calibrated probabilities.
-    NO sigmoid discretization (would break propriety). Tolerance is isotropic in km per
-    latitude; domain edges use valid-cell normalization. Set the smallest tolerance to the
-    label positional slack (replaces label dilation).
+    Single-neighborhood, single-pool design — one ``tolerance_km`` window, one pooling
+    call per tensor, mirroring ``fractions_skill_score``'s single ``mask_size``. Returns
+    the fractions Brier score (MSE of observed vs forecast neighborhood fractions).
+    Proper; rewards calibrated probabilities. NO sigmoid discretization (would break
+    propriety). Tolerance is isotropic in km per latitude; domain edges use valid-cell
+    normalization. Set the tolerance to the label positional slack (replaces label
+    dilation).
 
     Args:
         latitudes: Grid latitudes in degrees, one per output row. Must match the model's
             output height; every deep-supervision head must emit at full resolution.
         resolution_deg: Grid spacing in degrees. None infers it from ``latitudes``.
-        tolerances_km: Neighborhood tolerance scales in kilometers, one Brier term per scale.
-        tolerance_weights: Relative weight per tolerance scale. None weights all scales equally.
+        tolerance_km: Neighborhood tolerance in kilometers.
         include_pixel: If True, adds a pixelwise (un-pooled) Brier term for sharpness.
         pixel_weight: Relative weight of the pixelwise term when ``include_pixel`` is True.
         class_weights: Weights to apply to each class. Length must equal the number of classes
@@ -327,11 +327,10 @@ def neighborhood_brier_score(
         periodic_lon: If True, wraps the zonal window across the longitude edges. Only set for
             a genuine global 360-degree band; domain strips with non-adjacent ends must use False.
         max_half_x: Upper bound on the zonal half-width in pixels.
-        max_distinct_widths: Upper bound on distinct zonal half-widths per tolerance scale.
-            Bounds the row-group fan-out in ``_lat_dependent_pool``, which otherwise scales
-            with the number of distinct widths across the latitude range and dominates
-            backward-pass memory. None keeps full per-row precision. Ignored when
-            ``lat_dependent_pool`` is False.
+        max_distinct_widths: Upper bound on distinct zonal half-widths. Bounds the row-group
+            fan-out in ``_lat_dependent_pool``, which otherwise scales with the number of
+            distinct widths across the latitude range and dominates backward-pass memory.
+            None keeps full per-row precision. Ignored when ``lat_dependent_pool`` is False.
         lat_dependent_pool: If True, widen the zonal window with 1/cos(lat) via
             ``_lat_dependent_pool``. If False (default), pool with a single symmetric
             ``AveragePooling2D`` window (meridional half-width in both directions, like
@@ -346,21 +345,16 @@ def neighborhood_brier_score(
     lat = np.asarray(latitudes, dtype=np.float64)
     if resolution_deg is None:
         resolution_deg = float(np.median(np.abs(np.diff(lat))))
-    plans = _plan_windows(lat, resolution_deg, tolerances_km, max_half_x, max_distinct_widths=max_distinct_widths)
-    isotropic_pools = (
+    plan = _plan_windows(lat, resolution_deg, (tolerance_km,), max_half_x, max_distinct_widths=max_distinct_widths)[0]
+    isotropic_pool = (
         None
         if lat_dependent_pool
-        else [
-            tf.keras.layers.AveragePooling2D(
-                pool_size=(2 * plan["half_y"] + 1, 2 * plan["half_y"] + 1), strides=1, padding="same"
-            )
-            for plan in plans
-        ]
+        else tf.keras.layers.AveragePooling2D(
+            pool_size=(2 * plan["half_y"] + 1, 2 * plan["half_y"] + 1), strides=1, padding="same"
+        )
     )
 
-    if tolerance_weights is None:
-        tolerance_weights = [1.0] * len(tolerances_km)
-    weight_sum = float(sum(tolerance_weights)) + (pixel_weight if include_pixel else 0.0)
+    weight_sum = 1.0 + (pixel_weight if include_pixel else 0.0)
 
     cw: tf.Tensor | None = tf.cast(class_weights, tf.float32) if class_weights is not None else None
 
@@ -384,15 +378,13 @@ def neighborhood_brier_score(
                 se *= cw
             return tf.reduce_mean(se, axis=spatial_axes)
 
-        total = tf.zeros(tf.shape(y_pred)[:1], tf.float32)
-        for i, (plan, tw) in enumerate(zip(plans, tolerance_weights, strict=True)):
-            if lat_dependent_pool:
-                O_n = _lat_dependent_pool(y_true, plan["half_y"], plan["half_x"], periodic_lon)
-                M_n = _lat_dependent_pool(y_pred, plan["half_y"], plan["half_x"], periodic_lon)
-            else:
-                O_n = isotropic_pools[i](y_true)
-                M_n = isotropic_pools[i](y_pred)
-            total += float(tw) * _brier(O_n, M_n)
+        if lat_dependent_pool:
+            O_n = _lat_dependent_pool(y_true, plan["half_y"], plan["half_x"], periodic_lon)
+            M_n = _lat_dependent_pool(y_pred, plan["half_y"], plan["half_x"], periodic_lon)
+        else:
+            O_n = isotropic_pool(y_true)
+            M_n = isotropic_pool(y_pred)
+        total = _brier(O_n, M_n)
         if include_pixel:
             total += float(pixel_weight) * _brier(y_true, y_pred)
         return total / weight_sum
