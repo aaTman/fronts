@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -297,6 +299,28 @@ class TestFrontsPyDataset:
         np.testing.assert_array_equal(ds._order, np.arange(N_TIME))
         ds.on_epoch_end()
         np.testing.assert_array_equal(ds._order, np.arange(N_TIME))
+
+    def test_drop_remainder_drops_undersized_final_batch(self, era5_ds, front_da, data_config):
+        """N_TIME=5 with batch_size=2 has a 1-sample remainder batch that must be dropped.
+
+        A trailing batch smaller than batch_size splits unevenly across replicas under
+        MirroredStrategy, which triggers CUDNN_STATUS_BAD_PARAM in Conv3DBackpropFilterV2
+        (https://github.com/tensorflow/tensorflow/issues/60935).
+        """
+        batch_size = 2
+        ds = self._make_ds(era5_ds, front_da, data_config, batch_size=batch_size, drop_remainder=True)
+        assert len(ds) == N_TIME // batch_size
+        for i in range(len(ds)):
+            x_batch, y_batch = ds[i]
+            assert x_batch.shape[0] == batch_size
+            assert y_batch.shape[0] == batch_size
+
+    def test_drop_remainder_false_keeps_undersized_final_batch(self, era5_ds, front_da, data_config):
+        batch_size = 2
+        ds = self._make_ds(era5_ds, front_da, data_config, batch_size=batch_size, drop_remainder=False)
+        assert len(ds) == math.ceil(N_TIME / batch_size)
+        total_samples = sum(ds[i][0].shape[0] for i in range(len(ds)))
+        assert total_samples == N_TIME
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

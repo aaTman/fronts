@@ -104,6 +104,7 @@ def load_data_into_dataloader(
     split: Literal["train", "val", "test"],
     seed: int = 0,
     shuffle: bool = False,
+    drop_remainder: bool = False,
 ) -> datasets.FrontsPyDataset:
     """Load, align, and encode ERA5 input and fronts data for training.
 
@@ -122,6 +123,9 @@ def load_data_into_dataloader(
         split: Type of dataset to load ("train", "val", "test").
         seed: Integer seed for the RNG used when subsampling timesteps.
         shuffle: If True, reshuffles the sample order at the end of every epoch.
+        drop_remainder: If True, drop the final under-sized batch each epoch so every
+            batch has exactly ``data_config.batch_size`` samples — see
+            ``datasets.FrontsPyDataset`` for why this matters under multi-GPU training.
         workers: Number of ``PyDataset`` prefetch threads. 1 (the ``PyDataset``
             default) fetches each batch synchronously on the main thread, serializing
             every batch's icechunk read with the GPU training step.
@@ -201,6 +205,7 @@ def load_data_into_dataloader(
         shuffle=shuffle,
         workers=data_workers,
         max_queue_size=data_config.max_queue_size,
+        drop_remainder=drop_remainder,
     )
 
 
@@ -538,7 +543,9 @@ def train(
     for key, value in run_meta.items():
         logger.info("run_meta %s=%s", key, value)
 
-    train_dataset = load_data_into_dataloader(data_cfg, split="train", seed=train_cfg.seed, shuffle=train_cfg.shuffle)
+    train_dataset = load_data_into_dataloader(
+        data_cfg, split="train", seed=train_cfg.seed, shuffle=train_cfg.shuffle, drop_remainder=True
+    )
     val_dataset = load_data_into_dataloader(data_cfg, split="val", seed=train_cfg.seed)
 
     logger.info(f"Total batches in training set: {len(train_dataset)}")

@@ -88,6 +88,12 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         target_da: This split's raw integer front-code DataArray, shape (time, latitude, longitude).
         batch_size: Number of timesteps per batch.
         shuffle: If True, reshuffles the sample order at the end of every epoch.
+        drop_remainder: If True, drop the final under-sized batch instead of yielding it,
+            so every batch has exactly ``batch_size`` samples. A trailing batch smaller
+            than ``batch_size`` splits unevenly across replicas under
+            ``tf.distribute.MirroredStrategy``, which triggers a cuDNN backend bug
+            (``CUDNN_STATUS_BAD_PARAM`` in ``Conv3DBackpropFilterV2``) on that batch's
+            backward pass (see https://github.com/tensorflow/tensorflow/issues/60935).
     """
 
     def __init__(
@@ -100,6 +106,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         seed: int = 0,
         workers: int = 1,
         max_queue_size: int = 10,
+        drop_remainder: bool = False,
     ):
         super().__init__(workers=workers, max_queue_size=max_queue_size)
         if input_ds.sizes["time"] != target_da.sizes["time"]:
@@ -111,6 +118,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         self.data_config = data_config
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.drop_remainder = drop_remainder
         self._rng = np.random.default_rng(seed)
         self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
 
@@ -125,6 +133,8 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
 
     def __len__(self) -> int:
         """Returns the number of batches per epoch."""
+        if self.drop_remainder:
+            return self._total // self.batch_size
         return math.ceil(self._total / self.batch_size)
 
     def on_epoch_end(self) -> None:
