@@ -26,7 +26,7 @@ train_config:
   loss_class_weights: null  # null supervises all classes incl. background in the training loss, matching the AIES FrontFinder model
   gradient_clip_norm: 1.0  # caps the damage a single outlier batch can do; the brier_3d run (W&B 898culiq) lost its learned features to one unclipped spike
   loss_name: brier_skill_score
-  nbs_tolerance_km: 25.0  # reproduces the old 1-px (0.25 deg) label dilation
+  nbs_tolerance_km: 25.0
 
 data_config:
   inputs_icechunk_config:
