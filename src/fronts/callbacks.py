@@ -1,5 +1,6 @@
 """Keras callbacks for training: resource monitoring, W&B metric cleanup, and periodic test-set visualization."""
 
+import collections
 import dataclasses
 import gc
 import logging
@@ -34,8 +35,12 @@ OFFICE_REGIONS: dict[str, utils.BoundingBox] = {
 
 LITE_THRESHOLDS = np.linspace(0.05, 1.0, 20, dtype=np.float32)
 
-_PER_OUTPUT_HSS_RE = re.compile(r"^sup\d+_.+_hss$")
 _PER_OUTPUT_LOSS_RE = re.compile(r"^sup\d+_.+_loss$")
+# Matches any per-output metric key, e.g. "sup1_softmax_hss" or "sup1_softmax_hss_hard" —
+# captures everything after "sup{N}_{activation}_" as the metric name, so any custom
+# metric passed to model.compile is aggregated the same way without needing a
+# metric-name-specific regex (see MetricsConsolidationCallback).
+_PER_OUTPUT_METRIC_RE = re.compile(r"^sup\d+_[^_]+_(?P<metric>.+)$")
 
 
 def _strip_val_prefix(key: str) -> str:
@@ -96,11 +101,18 @@ class CallbacksConfig:
 class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
     """Collapses per-deep-supervision-output metrics into single aggregate curves.
 
-    Keras compiles the same loss/metric for every deep-supervision output, producing
-    one ``sup{N}_{activation}_hss``/``_loss`` key per output. Keras already aggregates
-    the per-output losses into a single ``loss``/``val_loss``, so those per-output keys
-    are simply dropped; HSS has no built-in aggregate, so this callback averages the
-    per-output values into ``hss``/``val_hss`` before deleting them.
+    Keras compiles the same loss/metrics for every deep-supervision output, producing
+    one ``sup{N}_{activation}_{metric_name}``/``_loss`` key per output for every metric
+    passed to ``model.compile`` (e.g. ``hss``, ``hss_hard``, ...). Keras already
+    aggregates the per-output losses into a single ``loss``/``val_loss``, so those
+    per-output keys are simply dropped; custom metrics have no built-in aggregate, so
+    this callback averages each metric's per-output values into ``{metric_name}``/
+    ``val_{metric_name}`` before deleting the per-output keys — generically, by
+    whatever name Keras assigned the metric, not a hardcoded ``hss``. A metric wrapped
+    as a raw ``@tf.function`` reports a fixed ``.name`` from the function it decorates
+    (not the reassignable ``__name__``) — use ``tf.keras.metrics.MeanMetricWrapper(fn,
+    name=...)`` to give a custom metric a distinct name, or every metric literally named
+    ``hss`` collides and Keras silently renames the extras to ``hss_1``, ``hss_2``, etc.
 
     Must run before ``wandb.keras.WandbMetricsLogger`` in the callbacks list passed to
     ``model.fit`` — Keras shares one mutable ``logs`` dict across every callback's
@@ -114,11 +126,15 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
         if not logs:
             return
         for prefix, is_val_key in (("", False), ("val_", True)):
-            hss_keys = [
-                k for k in logs if k.startswith("val_") == is_val_key and _PER_OUTPUT_HSS_RE.match(_strip_val_prefix(k))
-            ]
-            if hss_keys:
-                logs[f"{prefix}hss"] = float(np.mean([logs.pop(k) for k in hss_keys]))
+            keys_by_metric: dict[str, list[str]] = collections.defaultdict(list)
+            for key in logs:
+                if key.startswith("val_") != is_val_key:
+                    continue
+                match = _PER_OUTPUT_METRIC_RE.match(_strip_val_prefix(key))
+                if match and match["metric"] != "loss":
+                    keys_by_metric[match["metric"]].append(key)
+            for metric_name, keys in keys_by_metric.items():
+                logs[f"{prefix}{metric_name}"] = float(np.mean([logs.pop(k) for k in keys]))
 
         for key in [k for k in logs if _PER_OUTPUT_LOSS_RE.match(_strip_val_prefix(k))]:
             logs.pop(key)
