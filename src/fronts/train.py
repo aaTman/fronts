@@ -289,8 +289,10 @@ def _compile(
         nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
     )
     hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
-    hss_hard_fn = metrics.heidke_skill_score(class_weights=metric_class_weights, threshold=0.5)
-    hss_hard_fn.__name__ = "hss_0.5_threshold"
+    hss_hard_fn = tf.keras.metrics.MeanMetricWrapper(
+        fn=metrics.heidke_skill_score(class_weights=metric_class_weights, threshold=0.5),
+        name="hss_hard",
+    )
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=gradient_clip_norm)
     if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
