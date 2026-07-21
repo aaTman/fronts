@@ -1,4 +1,4 @@
-run_name: brier_conus_3d_comparison
+run_name: fractions_conus_3d_comparison
 
 # 3D-instantiation experiment. Inspecting model_1702.h5 directly revealed the AIES
 # FrontFinder model is a 3D U-Net — input (lat, lon, 5 levels, 10 variables), 33 Conv3D
@@ -25,7 +25,7 @@ train_config:
   shuffle: true
   loss_class_weights: null  # null supervises all classes incl. background in the training loss, matching the AIES FrontFinder model
   gradient_clip_norm: 1.0  # caps the damage a single outlier batch can do; the brier_3d run (W&B 898culiq) lost its learned features to one unclipped spike
-  loss_name: neighborhood_brier_score
+  loss_name: fractions_skill_score
   nbs_tolerance_km: 25.0  # reproduces the old 1-px (0.25 deg) label dilation
 
 data_config:
