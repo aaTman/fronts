@@ -191,10 +191,21 @@ class Test3DBuild:
     def test_model_name_marks_3d(self, built_3d_model):
         assert built_3d_model.name == "unet_3plus_3D"
 
-    def test_all_convolutions_are_3d(self, built_3d_model):
+    def test_encoder_decoder_convolutions_are_3d(self, built_3d_model):
         conv_classes = {type(layer).__name__ for layer in built_3d_model.layers if "Conv" in type(layer).__name__}
         assert "Conv3D" in conv_classes
-        assert "Conv2D" not in conv_classes
+
+    def test_collapse_layer_is_conv2d_not_conv3d(self, built_3d_model):
+        """The level-collapsing supervision head is Conv2D (see modules.py for why).
+
+        A Conv3D whose output collapses a spatial axis to size 1 triggers a cuDNN v8
+        backend tensor-descriptor bug in Conv3DBackpropFilterV2 during training; the
+        collapse is computed via reshape + pointwise Conv2D instead.
+        """
+        collapse_layers = [layer for layer in built_3d_model.layers if layer.name.endswith("_Conv2D_collapse")]
+        assert len(collapse_layers) == _UNET_LEVELS_3D
+        assert all(type(layer).__name__ == "Conv2D" for layer in collapse_layers)
+        assert not any(layer.name.endswith("_Conv3D_collapse") for layer in built_3d_model.layers)
 
     def test_one_output_per_supervised_level(self, built_3d_model):
         assert len(built_3d_model.outputs) == _UNET_LEVELS_3D
@@ -225,6 +236,37 @@ class Test3DForwardPass:
         outs = built_3d_model(x, training=False)
         outs = outs if isinstance(outs, (list, tuple)) else [outs]
         assert outs[0].shape == (1, 24, 32, 6)
+
+
+class Test3DTrainingStep:
+    """Regression test for CUDNN_STATUS_BAD_PARAM in Conv3DBackpropFilterV2.
+
+    A Conv3D collapsing a spatial axis to size 1 (the level-collapsing supervision
+    heads' old design) crashed cuDNN v8's backend tensor-descriptor validation
+    specifically during the *backward* pass — a forward-only test would not have
+    caught it. This drives an actual gradient computation through every supervision
+    head, matching the training-step scenario that crashed in production.
+    """
+
+    def test_gradients_are_finite_through_every_supervision_head(self, built_3d_model):
+        rng = np.random.default_rng(4)
+        x = tf.constant(rng.standard_normal((2, 16, 16, N_LEVELS_3D, N_VARS_3D)).astype(np.float32))
+        y_true = [
+            tf.one_hot(rng.integers(0, 6, size=(2, 16, 16)), 6) for _ in range(_UNET_LEVELS_3D)
+        ]
+
+        with tf.GradientTape() as tape:
+            outs = built_3d_model(x, training=True)
+            outs = outs if isinstance(outs, (list, tuple)) else [outs]
+            loss = tf.add_n(
+                [tf.reduce_mean(tf.keras.losses.categorical_crossentropy(yt, out)) for yt, out in zip(y_true, outs)]
+            )
+
+        gradients = tape.gradient(loss, built_3d_model.trainable_variables)
+        assert gradients, "no trainable variables found"
+        for grad, var in zip(gradients, built_3d_model.trainable_variables):
+            assert grad is not None, f"no gradient computed for {var.name}"
+            assert np.isfinite(grad.numpy()).all(), f"non-finite gradient for {var.name}"
 
 
 class Test3DMinMaxNormalization:

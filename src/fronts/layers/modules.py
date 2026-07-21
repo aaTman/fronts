@@ -615,6 +615,25 @@ def upsample(
     return tensor
 
 
+@tf.keras.utils.register_keras_serializable(package="fronts")
+class _MergeLastTwoAxes(tf.keras.layers.Layer):
+    """Merges a tensor's last two axes into one, leaving every leading axis untouched.
+
+    Used to fold a 3D volume's level axis into its channel axis ahead of a pointwise
+    Conv2D — see ``deep_supervision_side_output`` for why. Runs inside ``call()`` so
+    ``tf.shape``/``tf.reshape`` see real per-call dynamic values rather than the
+    ``None`` placeholders a symbolic ``KerasTensor``'s static shape reports for
+    unknown (e.g. lat/lon) axes.
+    """
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        merged_size = inputs.shape[-2] * inputs.shape[-1]
+        new_shape = tf.concat([tf.shape(inputs)[:-2], [merged_size]], axis=0)
+        merged = tf.reshape(inputs, new_shape)
+        merged.set_shape((*inputs.shape[:-2], merged_size))
+        return merged
+
+
 def deep_supervision_side_output(
     tensor: tf.Tensor,
     num_classes: int,
@@ -727,27 +746,50 @@ def deep_supervision_side_output(
 
     ### Squeeze the given dimensions/axes ###
     if squeeze_axes is not None:
-        conv_kwargs["kernel_size"] = [1 for _ in range(tensor_dims - 2)]
-
         squeeze_axes_list: list[int] = [squeeze_axes] if isinstance(squeeze_axes, int) else list(squeeze_axes)
 
-        squeeze_axes_sizes = [tensor.shape[ax_to_squeeze] for ax_to_squeeze in squeeze_axes_list]
+        if tensor_dims == 5:
+            # A Conv3D whose output collapses a spatial axis to size 1 (kernel spanning the
+            # full axis, "valid" padding) triggers a cuDNN v8 backend tensor-descriptor bug
+            # (CUDNN_STATUS_BAD_PARAM in Conv3DBackpropFilterV2) during the backward pass.
+            # Since every other axis already uses kernel_size 1, this convolution is exactly
+            # a per-(lat, lon) linear projection over the concatenation of the squeezed axis
+            # and the channel axis — compute it as a reshape (merging those two statically
+            # sized axes; lat/lon stay dynamic and untouched) followed by a pointwise Conv2D,
+            # which avoids Conv3D — and the buggy backward op — entirely.
+            if len(squeeze_axes_list) != 1 or squeeze_axes_list[0] != tensor_dims - 2:
+                raise NotImplementedError(
+                    "3D deep supervision collapse only supports squeezing the single axis "
+                    f"immediately before the channel axis (axis {tensor_dims - 2}); "
+                    f"received squeeze_axes={squeeze_axes!r}."
+                )
+            tensor = _MergeLastTwoAxes(name=f"{name}_merge_level_channel")(tensor)
 
-        for ax, size in enumerate(squeeze_axes_sizes):
-            # Set kernel to full dimension size so the output collapses to 1
-            conv_kwargs["kernel_size"][squeeze_axes_list[ax] - 1] = size
+            collapse_kwargs = dict(conv_kwargs)
+            collapse_kwargs["kernel_size"] = (1, 1)
+            collapse_kwargs["padding"] = "same"
+            collapse_kwargs["name"] = f"{name}_Conv2D_collapse"
+            tensor = Conv2D(filters=num_classes, **collapse_kwargs)(tensor)
+        else:
+            conv_kwargs["kernel_size"] = [1 for _ in range(tensor_dims - 2)]
 
-        # "same" padding would preserve size; "valid" lets the kernel shrink the dim to 1
-        conv_kwargs["padding"] = "valid"
-        conv_kwargs["name"] = f"{name}_Conv{tensor_dims - 2}D_collapse"
+            squeeze_axes_sizes = [tensor.shape[ax_to_squeeze] for ax_to_squeeze in squeeze_axes_list]
 
-        tensor = conv_layer(filters=num_classes, **conv_kwargs)(
-            tensor
-        )  # This convolution layer contains num_classes filters, one for each class
-        # The collapse convolution leaves each squeezed axis with size 1; drop those axes.
-        # Keras 3's Reshape requires a fully-known target shape, so it cannot squeeze
-        # tensors whose spatial dims are dynamic (None) — ops.squeeze handles them.
-        tensor = tf.keras.ops.squeeze(tensor, axis=tuple(squeeze_axes_list))
+            for ax, size in enumerate(squeeze_axes_sizes):
+                # Set kernel to full dimension size so the output collapses to 1
+                conv_kwargs["kernel_size"][squeeze_axes_list[ax] - 1] = size
+
+            # "same" padding would preserve size; "valid" lets the kernel shrink the dim to 1
+            conv_kwargs["padding"] = "valid"
+            conv_kwargs["name"] = f"{name}_Conv{tensor_dims - 2}D_collapse"
+
+            tensor = conv_layer(filters=num_classes, **conv_kwargs)(
+                tensor
+            )  # This convolution layer contains num_classes filters, one for each class
+            # The collapse convolution leaves each squeezed axis with size 1; drop those axes.
+            # Keras 3's Reshape requires a fully-known target shape, so it cannot squeeze
+            # tensors whose spatial dims are dynamic (None) — ops.squeeze handles them.
+            tensor = tf.keras.ops.squeeze(tensor, axis=tuple(squeeze_axes_list))
 
     activation_kwargs = {"name": f"{name}_{activation}"}
     activation_config = keras_builders.ActivationConfig(
