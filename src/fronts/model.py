@@ -88,7 +88,17 @@ class TemperatureScaledModel(tf.keras.Model):
 
 @dataclasses.dataclass
 class ModelConfig:
-    """Hyperparameter configuration for building a UNet3Plus model."""
+    """Hyperparameter configuration for building a UNet3Plus model.
+
+    Attributes:
+        pretrained_weights_path: Path to a prior ``.keras`` checkpoint to warm-start weights from
+            instead of random initialization. The model's ``input_normalization`` layer is always
+            reset to this run's own domain-specific stats after loading, regardless of what the
+            checkpoint's normalization layer contained.
+        freeze_layer_prefixes: Layer name prefixes (matched via ``layer.name.startswith(prefix)``)
+            to freeze (``trainable=False``) after loading ``pretrained_weights_path``, e.g. ``["En"]``
+            freezes the whole encoder path. Only valid when ``pretrained_weights_path`` is set.
+    """
 
     n_classes: int = 6
     n_channels: int = 30
@@ -104,6 +114,13 @@ class ModelConfig:
     activation: str = "gelu"
     output_activation: str = "softmax"
     modules_per_node: int = 2
+    pretrained_weights_path: str | None = None
+    freeze_layer_prefixes: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate that freeze_layer_prefixes is only set alongside a pretrained checkpoint."""
+        if self.freeze_layer_prefixes is not None and self.pretrained_weights_path is None:
+            raise ValueError("freeze_layer_prefixes requires pretrained_weights_path to be set.")
 
 
 @dataclasses.dataclass

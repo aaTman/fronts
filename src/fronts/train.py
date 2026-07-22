@@ -270,6 +270,56 @@ def _build_loss(
     )
 
 
+def _load_pretrained_weights(
+    unet: tf.keras.Model,
+    pretrained_weights_path: str,
+    normalization_stat_a: np.ndarray,
+    normalization_stat_b: np.ndarray,
+) -> None:
+    """Warm-start unet's weights from a prior checkpoint, keeping this run's normalization stats.
+
+    Mismatched layers are skipped rather than raising, so a checkpoint whose supervision heads differ
+    in shape or count (e.g. a different `levels`) still transfers its shared encoder/decoder weights.
+    The `input_normalization` layer is then reset to `normalization_stat_a`/`normalization_stat_b` —
+    the stats already computed for this run's domain in `train()` — since the checkpoint's own
+    normalization weights reflect its own (possibly different) training domain.
+
+    Args:
+        unet: Freshly built model to load weights into, in place.
+        pretrained_weights_path: Path to a saved ``.keras`` checkpoint.
+        normalization_stat_a: This run's normalization stat A (mean or min), as passed to
+            ``model.UNet3Plus``.
+        normalization_stat_b: This run's normalization stat B (variance or max).
+    """
+    logger.info("Warm-starting model weights from %s", pretrained_weights_path)
+    unet.load_weights(pretrained_weights_path, skip_mismatch=True)
+    norm_layer = unet.get_layer("input_normalization")
+    if isinstance(norm_layer, tf.keras.layers.Normalization):
+        norm_layer.mean.assign(normalization_stat_a)
+        norm_layer.variance.assign(normalization_stat_b)
+    elif isinstance(norm_layer, tf.keras.layers.Rescaling):
+        channel_range = normalization_stat_b - normalization_stat_a
+        scale = 1.0 / np.where(channel_range == 0, 1.0, channel_range)
+        norm_layer.scale = scale.astype(np.float32)
+        norm_layer.offset = (-normalization_stat_a * scale).astype(np.float32)
+    logger.info("Reset input_normalization to this run's domain-specific stats.")
+
+
+def _freeze_layers(unet: tf.keras.Model, freeze_layer_prefixes: list[str]) -> None:
+    """Set layer.trainable = False for every layer whose name starts with any given prefix.
+
+    Args:
+        unet: Model whose layers will be frozen in place.
+        freeze_layer_prefixes: Layer name prefixes to match via ``layer.name.startswith(prefix)``.
+    """
+    frozen = 0
+    for layer in unet.layers:
+        if any(layer.name.startswith(prefix) for prefix in freeze_layer_prefixes):
+            layer.trainable = False
+            frozen += 1
+    logger.info("Froze %d/%d layers matching prefixes %s", frozen, len(unet.layers), freeze_layer_prefixes)
+
+
 def _compile(
     model: tf.keras.Model,
     learning_rate: float,
@@ -622,6 +672,10 @@ def train(
             normalization_stat_a=norm_stat_a,
             normalization_stat_b=norm_stat_b,
         ).build()
+        if model_cfg.pretrained_weights_path is not None:
+            _load_pretrained_weights(unet, model_cfg.pretrained_weights_path, norm_stat_a, norm_stat_b)
+        if model_cfg.freeze_layer_prefixes is not None:
+            _freeze_layers(unet, model_cfg.freeze_layer_prefixes)
         if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
             float32_outputs = [
                 tf.keras.layers.Activation("linear", dtype="float32", name=f"output_{i}_float32")(out)
