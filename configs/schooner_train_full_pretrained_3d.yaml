@@ -7,13 +7,17 @@ run_name: brier_3d_full_domain_pretrained_conus
 # what the CONUS checkpoint's normalization layer contained (see train._load_pretrained_weights).
 # freeze_layer_prefixes starts by freezing the encoder ("En") and only fine-tuning the
 # decoder and supervision heads on the full domain; remove that line to fine-tune end-to-end.
+# The dryline class (index 5) is zero-weighted in both the loss and metrics below: the full
+# domain has no dryline labels not because drylines don't occur there but because the label
+# data doesn't cover them, so training with a nonzero weight would actively teach the model
+# "dryline never happens," eroding what the CONUS checkpoint already learned for that class.
 
 train_config:
   epochs: 5000
   seed: 42
   learning_rate: 0.0001
   shuffle: true
-  loss_class_weights: null
+  loss_class_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 0.0]  # background, CF, WF, SF, OF, dryline
   gradient_clip_norm: 1.0
   loss_name: neighborhood_brier_score
   nbs_tolerance_km: 25.0
@@ -31,7 +35,7 @@ data_config:
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
-  class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 0.0]  # background, CF, WF, SF, OF, dryline
   front_dilation: 1
   time_resolution: "6h"
   volume_inputs: true
