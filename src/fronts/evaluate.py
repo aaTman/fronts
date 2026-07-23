@@ -36,8 +36,8 @@ from fronts.model import SharedTargetModel
 log = logging.getLogger(__name__)
 
 # Note that FRONT_TYPE_CLASS_INDEX is not the number from the fronts data, but the index
-# in the one-hot encoded array (0=background, 1=CF, 2=WF, 3=SF, 4=OF, 5=DL)
-FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
+# in the one-hot encoded array (0=background, 1=CF, 2=WF, 3=SF, 4=OF, 5=DL, 6=TROF, 7=TT, 8=INST)
+FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5, "TROF": 6, "TT": 7, "INST": 8}
 NEIGHBORHOODS_KM = np.array([50, 100, 150, 200, 250])
 N_THRESHOLDS = 100
 THRESHOLDS = np.linspace(0.01, 1.0, N_THRESHOLDS, dtype=np.float32)
@@ -66,7 +66,9 @@ class EvalConfig:
     coordinates: utils.BoundingBox = dataclasses.field(
         default_factory=lambda: utils.BoundingBox(lat_min=0.25, lat_max=80.0, lon_min=130.0, lon_max=369.75)
     )
-    front_types: list[str] = dataclasses.field(default_factory=lambda: ["CF", "WF", "SF", "OF", "DL"])
+    front_types: list[str] = dataclasses.field(
+        default_factory=lambda: ["CF", "WF", "SF", "OF", "DL", "TROF", "TT", "INST"]
+    )
     mask: str | None = None
     front_dilation: int | None = None
     gpu_device: int | None = None

@@ -43,6 +43,9 @@ FRONT_COLORS: dict[str, str] = {
     "SF": "limegreen",
     "OF": "darkviolet",
     "DL": "chocolate",
+    "TROF": "goldenrod",
+    "TT": "deeppink",
+    "INST": "gray",
 }
 
 CONTOUR_CMAPS: dict[str, str] = {
@@ -51,6 +54,9 @@ CONTOUR_CMAPS: dict[str, str] = {
     "SF": "Greens",
     "OF": "Purples",
     "DL": "copper_r",
+    "TROF": "YlOrBr",
+    "TT": "PuRd",
+    "INST": "Greys",
 }
 
 FRONT_NAMES: dict[str, str] = {
@@ -59,9 +65,12 @@ FRONT_NAMES: dict[str, str] = {
     "SF": "Stationary front",
     "OF": "Occluded front",
     "DL": "Dryline",
+    "TROF": "Trough",
+    "TT": "Tropical trough",
+    "INST": "Instability axis",
 }
 
-FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
+FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5, "TROF": 6, "TT": 7, "INST": 8}
 
 
 class _LayoutConfig(TypedDict):
