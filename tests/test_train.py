@@ -14,7 +14,14 @@ try:
     from fronts.data.datasets import DatasetConfig, FrontsPyDataset
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
-    from fronts.train import _build_loss, _build_monitor_callbacks, load_data_into_dataloader
+    from fronts.model import ModelConfig, UNet3Plus
+    from fronts.train import (
+        _build_loss,
+        _build_monitor_callbacks,
+        _freeze_layers,
+        _load_pretrained_weights,
+        load_data_into_dataloader,
+    )
 
     _TF_AVAILABLE = True
 except ImportError:
@@ -592,3 +599,107 @@ class TestFrontsPyDatasetVolume:
         ds = FrontsPyDataset(input_ds, target_da, config, batch_size=2)
         x_batch, _ = ds[0]
         np.testing.assert_array_equal(x_batch[..., 0, 1], x_batch[..., 1, 1])
+
+
+def _build_small_unet(
+    levels: int = 3,
+    deep_supervision: bool = False,
+    normalization_stat_a: np.ndarray | None = None,
+    normalization_stat_b: np.ndarray | None = None,
+) -> "tf.keras.Model":
+    filter_num = [8, 16, 32, 64][:levels]
+    return UNet3Plus(
+        input_shape=(None, None, 4),
+        num_classes=6,
+        pool_size=(2, 2),
+        upsample_size=(2, 2),
+        levels=levels,
+        filter_num=filter_num,
+        deep_supervision=deep_supervision,
+        output_activation="softmax",
+        normalization_method="minmax",
+        normalization_stat_a=normalization_stat_a,
+        normalization_stat_b=normalization_stat_b,
+    ).build()
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestLoadPretrainedWeights:
+    def test_encoder_decoder_weights_transferred(self, tmp_path):
+        min_val = np.zeros(4, dtype=np.float32)
+        max_val = np.ones(4, dtype=np.float32)
+        pretrained = _build_small_unet(normalization_stat_a=min_val, normalization_stat_b=max_val)
+        checkpoint_path = str(tmp_path / "pretrained.keras")
+        pretrained.save(checkpoint_path)
+
+        fresh = _build_small_unet(normalization_stat_a=min_val, normalization_stat_b=max_val)
+        pretrained_kernel = pretrained.get_layer("En1_Conv2D_1").get_weights()[0]
+        fresh_kernel_before = fresh.get_layer("En1_Conv2D_1").get_weights()[0]
+        assert not np.allclose(pretrained_kernel, fresh_kernel_before)
+
+        _load_pretrained_weights(fresh, checkpoint_path, min_val, max_val)
+
+        fresh_kernel_after = fresh.get_layer("En1_Conv2D_1").get_weights()[0]
+        np.testing.assert_allclose(fresh_kernel_after, pretrained_kernel)
+
+    def test_normalization_reset_to_new_stats_not_checkpoint_stats(self, tmp_path):
+        checkpoint_min = np.array([0.0, -10.0, 100.0, 0.0], dtype=np.float32)
+        checkpoint_max = np.array([1.0, 10.0, 200.0, 1.0], dtype=np.float32)
+        pretrained = _build_small_unet(normalization_stat_a=checkpoint_min, normalization_stat_b=checkpoint_max)
+        checkpoint_path = str(tmp_path / "pretrained.keras")
+        pretrained.save(checkpoint_path)
+
+        full_domain_min = np.array([-50.0, -80.0, 0.0, 0.0], dtype=np.float32)
+        full_domain_max = np.array([50.0, 80.0, 1000.0, 1.0], dtype=np.float32)
+        fresh = _build_small_unet(normalization_stat_a=full_domain_min, normalization_stat_b=full_domain_max)
+
+        _load_pretrained_weights(fresh, checkpoint_path, full_domain_min, full_domain_max)
+
+        norm_layer = fresh.get_layer("input_normalization")
+        expected_scale = 1.0 / (full_domain_max - full_domain_min)
+        expected_offset = -full_domain_min * expected_scale
+        np.testing.assert_allclose(norm_layer.scale, expected_scale, atol=1e-5)
+        np.testing.assert_allclose(norm_layer.offset, expected_offset, atol=1e-5)
+
+    def test_mismatched_supervision_head_shape_skipped_not_fatal(self, tmp_path):
+        min_val = np.zeros(4, dtype=np.float32)
+        max_val = np.ones(4, dtype=np.float32)
+        pretrained = _build_small_unet(
+            levels=3, deep_supervision=True, normalization_stat_a=min_val, normalization_stat_b=max_val
+        )
+        checkpoint_path = str(tmp_path / "pretrained.keras")
+        pretrained.save(checkpoint_path)
+
+        fresh = _build_small_unet(
+            levels=4, deep_supervision=True, normalization_stat_a=min_val, normalization_stat_b=max_val
+        )
+        pretrained_kernel = pretrained.get_layer("En1_Conv2D_1").get_weights()[0]
+
+        _load_pretrained_weights(fresh, checkpoint_path, min_val, max_val)
+
+        fresh_kernel_after = fresh.get_layer("En1_Conv2D_1").get_weights()[0]
+        np.testing.assert_allclose(fresh_kernel_after, pretrained_kernel)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestFreezeLayers:
+    def test_prefix_match_freezes_expected_layers(self):
+        unet = _build_small_unet(levels=3, deep_supervision=True)
+        _freeze_layers(unet, ["En"])
+        for layer in unet.layers:
+            if layer.name.startswith("En"):
+                assert layer.trainable is False
+            elif layer.name.startswith("De") or layer.name.startswith("sup"):
+                assert layer.trainable is True
+
+    def test_no_prefixes_frozen_when_prefix_absent(self):
+        unet = _build_small_unet(levels=3, deep_supervision=True)
+        _freeze_layers(unet, ["NonexistentPrefix"])
+        assert all(layer.trainable for layer in unet.layers)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestModelConfigFreezeValidation:
+    def test_freeze_prefixes_without_pretrained_path_raises(self):
+        with pytest.raises(ValueError):
+            ModelConfig(freeze_layer_prefixes=["En"], pretrained_weights_path=None)
