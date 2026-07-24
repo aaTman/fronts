@@ -117,3 +117,25 @@ class TestOpenArraylakeEra5Validation:
     def test_unknown_variable_raises(self):
         with pytest.raises(ValueError, match="no known Arraylake mapping"):
             sources.open_arraylake_era5("arraylake://earthmover-public/era5", ["not_a_variable"])
+
+
+class TestLatestTimeFromDataset:
+    def test_returns_max_of_time_coordinate(self):
+        ds = xr.Dataset(coords={"time": _TIME})
+        result = sources._latest_time_from_dataset(ds)
+        assert result == _TIME.max().to_numpy()
+
+    def test_returns_numpy_datetime64(self):
+        ds = xr.Dataset(coords={"time": _TIME})
+        result = sources._latest_time_from_dataset(ds)
+        assert isinstance(result, np.datetime64)
+
+    def test_uses_valid_time_when_time_absent(self):
+        ds = xr.Dataset(coords={"valid_time": _TIME})
+        result = sources._latest_time_from_dataset(ds)
+        assert result == _TIME.max().to_numpy()
+
+    def test_raises_when_neither_coordinate_present(self):
+        ds = xr.Dataset(coords={"latitude": _LAT})
+        with pytest.raises(ValueError, match="no 'time' or 'valid_time' coordinate"):
+            sources._latest_time_from_dataset(ds)

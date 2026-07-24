@@ -3,6 +3,7 @@
 import logging
 
 import arraylake
+import numpy as np
 import xarray as xr
 
 logger = logging.getLogger(__name__)
@@ -115,3 +116,44 @@ def open_arraylake_era5(era5_uri: str, variables: list[str]) -> xr.Dataset:
         f"and single-level variables {single_level_variables}"
     )
     return xr.merge(datasets, join="inner", compat="override")
+
+
+def _latest_time_from_dataset(ds: xr.Dataset) -> np.datetime64:
+    """Return the maximum value of a dataset's ``time`` or ``valid_time`` coordinate.
+
+    Args:
+        ds: Dataset carrying a ``time`` or ``valid_time`` coordinate, either
+            Google-ARCO- or Arraylake-named.
+
+    Returns:
+        The latest timestamp present.
+
+    Raises:
+        ValueError: If neither coordinate is present.
+    """
+    for coord_name in ("time", "valid_time"):
+        if coord_name in ds.coords:
+            return np.datetime64(ds[coord_name].max().item(), "ns")
+    raise ValueError("Dataset has no 'time' or 'valid_time' coordinate.")
+
+
+def latest_arraylake_time(era5_uri: str) -> np.datetime64:
+    """Return the most recent timestamp available in the Arraylake ERA5 store.
+
+    Opens only the single-level group's time coordinate, without reading any
+    data variables, so this is cheap to call before every real-time inference
+    run.
+
+    Args:
+        era5_uri: URI of the form ``arraylake://org/repo``.
+
+    Returns:
+        The latest available timestamp.
+    """
+    repo_name = parse_arraylake_repo(era5_uri)
+    client = arraylake.Client()
+    repo = client.get_repo(repo_name)
+    session = repo.readonly_session("main")
+    ds = xr.open_zarr(session.store, group=ARRAYLAKE_SINGLE_GROUP, chunks=None)
+    ds = _rename_to_google(ds, GOOGLE_TO_ARRAYLAKE_SINGLE)
+    return _latest_time_from_dataset(ds)
