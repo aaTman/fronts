@@ -7,6 +7,14 @@ import xarray as xr
 fc = pytest.importorskip("fronts.callbacks")
 
 
+class TestFrontTypeClassIndex:
+    def test_matches_full_nine_class_mapping(self):
+        assert list(fc.FRONT_TYPE_CLASS_INDEX) == ["CF", "WF", "SF", "OF", "DL", "TROF", "TT", "INST"]
+        assert fc.FRONT_TYPE_CLASS_INDEX == {
+            "CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5, "TROF": 6, "TT": 7, "INST": 8,
+        }
+
+
 class TestMetricsConsolidationCallback:
     def test_aggregates_hss_and_strips_per_output_keys(self):
         logs = {
