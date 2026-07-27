@@ -1,4 +1,4 @@
-run_name: brier_3d_all_vars_full_domain_pretrained_conus
+run_name: brier_3d_all_vars_full_domain_pretrained_conus_dissipating_forming_troughs
 
 # Full-domain 3D run warm-started from the CONUS-domain checkpoint produced by
 # schooner_train_conus_3d.yaml (run_name brier_conus_3d_comparison). Architecture fields
