@@ -81,7 +81,7 @@ model_config:
   activation: "gelu"
   output_activation: "softmax"
   modules_per_node: 2
-  pretrained_weights_path: "/ourdisk/hpc/ai2es/tman/models/brier_conus_3d_comparison/_best_loss.keras"  # fill in once experiment/conus-brier-3d finishes; skip_mismatch=True drops the output-layer weights since the CONUS checkpoint has 6 classes vs this run's 9
+  pretrained_weights_path: "/ourdisk/hpc/ai2es/tman/models/brier_conus_3d_all_vars_dissipating_forming_troughs/_best_loss.keras"  # fill in once experiment/conus-brier-3d finishes; skip_mismatch=True drops the output-layer weights since the CONUS checkpoint has 6 classes vs this run's 9
   freeze_layer_prefixes: ["En"]  # start with frozen encoder; remove this line to fine-tune end-to-end
 
 callbacks_config:
