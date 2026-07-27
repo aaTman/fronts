@@ -1,4 +1,4 @@
-run_name: brier_conus_3d_all_vars_dissipating_forming_troughs
+run_name: brier_3d_all_vars_dissipating_forming_troughs
 
 # 3D-instantiation experiment on the full domain with the neighborhood Brier loss.
 # Inspecting model_1702.h5 directly revealed the AIES FrontFinder model is a 3D U-Net —
