@@ -1,4 +1,4 @@
-run_name: brier_conus_3d_all_vars
+run_name: brier_conus_3d_all_vars_dissipating_forming_troughs
 
 # 3D-instantiation experiment. Inspecting model_1702.h5 directly revealed the AIES
 # FrontFinder model is a 3D U-Net — input (lat, lon, 5 levels, 10 variables), 33 Conv3D

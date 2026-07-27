@@ -1,4 +1,4 @@
-run_name: neighborhood_brier_loss
+run_name: brier_conus_3d_all_vars_dissipating_forming_troughs
 
 data_config:
   inputs_icechunk_config:
