@@ -7,8 +7,8 @@ markdown table with deltas against a reference run. Runs whose directory name co
 ``out_of_domain`` are footnoted.
 
 Usage:
-    python -m fronts.aies1702.compare \
-        --stats_root /ourdisk/hpc/ai2es/tman/models/stats/aies1702/ \
+    python -m fronts.model_1702.compare \
+        --stats_root /ourdisk/hpc/ai2es/tman/models/stats/model_1702/ \
         --reference model_1702_conus --out comparison.csv
 """
 
@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from fronts.aies1702 import figures
+from fronts.model_1702 import figures
 
 log = logging.getLogger(__name__)
 

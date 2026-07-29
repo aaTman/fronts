@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.aies1702 import legacy_formulas, store
+from fronts.model_1702 import legacy_formulas, store
 
 N_TIME = 2
 N_LAT = 3

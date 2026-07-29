@@ -9,8 +9,8 @@ import tensorflow as tf
 import xarray as xr
 
 from fronts import evaluate, utils
-from fronts.aies1702 import adapter, normalization, run_eval
 from fronts.data import datasets
+from fronts.model_1702 import adapter, normalization, run_eval
 
 N_TIME = 8
 N_LAT = 32
@@ -170,17 +170,17 @@ class TestConfigParsing:
         ],
     )
     def test_harness_configs_parse(self, config_name):
-        config_path = os.path.join("configs", "aies1702", config_name)
+        config_path = os.path.join("configs", "model_1702", config_name)
         yaml_data = utils.load_yaml(config_path)
         harness_cfg = utils.parse_config_section(
             yaml_data, run_eval.HarnessEvalConfig, "harness_eval_config", utils.YAML_TYPE_HOOKS
         )
         data_cfg = utils.parse_config_section(yaml_data, datasets.DatasetConfig, "data_config", utils.YAML_TYPE_HOOKS)
-        assert harness_cfg.model_kind in (run_eval.MODEL_KIND_AIES1702, run_eval.MODEL_KIND_KERAS)
+        assert harness_cfg.model_kind in (run_eval.MODEL_KIND_1702, run_eval.MODEL_KIND_KERAS)
         assert set(harness_cfg.regions) <= set(run_eval.REGION_CHOICES)
         assert harness_cfg.front_types == FRONT_TYPES
         assert isinstance(harness_cfg.coordinates, utils.BoundingBox)
-        if harness_cfg.model_kind == run_eval.MODEL_KIND_AIES1702:
+        if harness_cfg.model_kind == run_eval.MODEL_KIND_1702:
             assert data_cfg.variables == list(normalization.VARIABLES)
         assert data_cfg.volume_inputs
 
@@ -188,7 +188,7 @@ class TestConfigParsing:
         from fronts.data import generate
 
         for config_name in ("generate_conus.yaml", "generate_full.yaml"):
-            config_path = os.path.join("configs", "aies1702", config_name)
+            config_path = os.path.join("configs", "model_1702", config_name)
             era5_config = utils.open_config_yaml_as_dataclass(
                 config_path, generate.ERA5DataLoaderConfig, config_key="era5_config", type_hooks=utils.YAML_TYPE_HOOKS
             )

@@ -7,7 +7,7 @@ import pytest
 import xarray as xr
 
 from fronts import utils
-from fronts.aies1702 import case_study, normalization
+from fronts.model_1702 import case_study, normalization
 
 N_LAT = 6
 N_LON = 8
@@ -58,7 +58,7 @@ def test_panel_title_matches_paper_caption_style():
 
 
 def test_config_parses():
-    config_path = os.path.join("configs", "aies1702", "case_study_xmas2023.yaml")
+    config_path = os.path.join("configs", "model_1702", "case_study_xmas2023.yaml")
     yaml_data = utils.load_yaml(config_path)
     case_cfg = utils.parse_config_section(yaml_data, case_study.CaseStudyConfig, "case_config", utils.YAML_TYPE_HOOKS)
     assert len(case_cfg.times) == 4
@@ -96,8 +96,8 @@ def test_predict_case_shape():
 
 
 @pytest.mark.skipif(
-    not os.environ.get("AIES1702_RENDER_TESTS"),
-    reason="set AIES1702_RENDER_TESTS=1 to run figure rendering (needs cartopy Natural Earth data)",
+    not os.environ.get("MODEL_1702_RENDER_TESTS"),
+    reason="set MODEL_1702_RENDER_TESTS=1 to run figure rendering (needs cartopy Natural Earth data)",
 )
 def test_render_case_figure_writes_file(tmp_path):
     built = _tiny_inputs_ds(CASE_TIMES)

@@ -7,8 +7,8 @@ regions — writing ``stats_{spatial,aggregate,derived}{_region}.nc`` files with
 naming scheme as ``fronts.evaluate`` so the standard plotting code consumes them unchanged.
 
 Usage:
-    python -m fronts.aies1702.run_eval --config_path configs/aies1702/eval_1702_conus.yaml
-    python -m fronts.aies1702.run_eval --config_path configs/aies1702/eval_1702_full.yaml --region WPC
+    python -m fronts.model_1702.run_eval --config_path configs/model_1702/eval_1702_conus.yaml
+    python -m fronts.model_1702.run_eval --config_path configs/model_1702/eval_1702_full.yaml --region WPC
 """
 
 import argparse
@@ -21,13 +21,13 @@ import numpy as np
 import tensorflow as tf
 
 from fronts import evaluate, utils
-from fronts.aies1702 import adapter, loader
 from fronts.data import datasets
 from fronts.model import SharedTargetModel
+from fronts.model_1702 import adapter, loader
 
 log = logging.getLogger(__name__)
 
-MODEL_KIND_AIES1702 = "aies1702"
+MODEL_KIND_1702 = "model_1702"
 MODEL_KIND_KERAS = "keras"
 
 # Copied verbatim from fronts.callbacks.OFFICE_REGIONS (Unified Surface Analysis / WPC manual
@@ -49,9 +49,9 @@ class HarnessEvalConfig:
     """Configuration for a harness evaluation run.
 
     Attributes:
-        model_path: Path to the checkpoint — ``model_1702.h5`` for kind "aies1702", a
+        model_path: Path to the checkpoint — ``model_1702.h5`` for kind "model_1702", a
             ``.keras`` file for kind "keras".
-        model_kind: "aies1702" (legacy loader + normalization adapter) or "keras"
+        model_kind: "model_1702" (legacy loader + normalization adapter) or "keras"
             (standard 2.0 checkpoint + class-padding adapter).
         outdir: Directory to write the stats NetCDF files into.
         coordinates: Spatial bounding box as [lat_min, lat_max, lon_min, lon_max].
@@ -140,7 +140,7 @@ def build_model_adapter(harness_cfg: HarnessEvalConfig, lat_ascending: bool):
     Raises:
         ValueError: If the model kind is unknown.
     """
-    if harness_cfg.model_kind == MODEL_KIND_AIES1702:
+    if harness_cfg.model_kind == MODEL_KIND_1702:
         log.info("Loading legacy model_1702 from %s …", harness_cfg.model_path)
         model = loader.load_model_1702(harness_cfg.model_path)
         return adapter.FrontFinder1702Adapter(model, lat_ascending=lat_ascending)

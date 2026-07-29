@@ -12,7 +12,7 @@ derivation, and cached to a local NetCDF so repeat renders and TF-free environme
 fetch: with ``inputs_cache_path`` present, no network or data-source access is needed.
 
 Usage:
-    python -m fronts.aies1702.case_study --config_path configs/aies1702/case_study_xmas2023.yaml
+    python -m fronts.model_1702.case_study --config_path configs/model_1702/case_study_xmas2023.yaml
 """
 
 import argparse
@@ -30,8 +30,8 @@ import pandas as pd
 import xarray as xr
 
 from fronts import utils
-from fronts.aies1702 import adapter, loader, store
 from fronts.data import inputs
+from fronts.model_1702 import adapter, loader, store
 from fronts.plot import plot
 from fronts.plot import utils as plot_utils
 

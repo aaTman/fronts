@@ -3,9 +3,9 @@
 # characterize generalization, not the model's published skill.
 
 harness_eval_config:
-  model_path: "/ourdisk/hpc/ai2es/tman/models/aies1702/model_1702.h5"
-  model_kind: "aies1702"
-  outdir: "/ourdisk/hpc/ai2es/tman/models/stats/aies1702/model_1702_full_out_of_domain/"
+  model_path: "/ourdisk/hpc/ai2es/tman/models/model_1702/model_1702.h5"
+  model_kind: "model_1702"
+  outdir: "/ourdisk/hpc/ai2es/tman/models/stats/model_1702/model_1702_full_out_of_domain/"
   coordinates: [0.25, 80.0, 130.0, 369.75]
   regions: [full, land, ocean, OPC_west, WPC, OPC_east, HFO, NHC]
   front_types: [CF, WF, SF, OF, DL]
@@ -18,7 +18,7 @@ harness_eval_config:
 
 data_config:
   inputs_icechunk_config:
-    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/aies1702"
+    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/model_1702"
     branch_name: "main"
     group_name: "full"
   targets_icechunk_config:

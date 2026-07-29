@@ -1,5 +1,6 @@
-# model_1702 input side-store: full USAD domain, 2019, 6-hourly (matches full-domain label
-# cadence). Out-of-domain for model_1702 (CONUS-trained); results are caveated accordingly.
+# model_1702 input side-store: CONUS, 2019, 3-hourly (matches CONUS front-label cadence).
+# variables/pressure_levels are informational: fronts.model_1702.store fixes the model_1702
+# requirements (surface + 1000/950/900/850 from z, t, u, v, q, sp, t2m, d2m, u10, v10).
 
 era5_config:
   era5_uri: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
@@ -17,17 +18,17 @@ era5_config:
     ]
   pressure_levels: [1000, 950, 900, 850]
   time_start: "2019-01-01T00:00:00"
-  time_end: "2019-12-31T18:00:00"
-  time_resolution: "6h"
-  coordinates: [0.25, 80.0, 130.0, 369.75]
+  time_end: "2019-12-31T21:00:00"
+  time_resolution: "3h"
+  coordinates: [25.0, 56.75, 228.0, 299.75]
   storage_options:
     token: "anon"
   chunks: null
   zarr_async_concurrency: 128
 
 icechunk_storage_config:
-  store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/aies1702"
+  store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/model_1702"
   branch_name: "main"
-  commit_message: "AIES model_1702 side-store, full domain 2019 6-hourly"
-  group_name: "full"
-  write_batch_size: 100
+  commit_message: "AIES model_1702 side-store, CONUS 2019 3-hourly"
+  group_name: "conus"
+  write_batch_size: 200

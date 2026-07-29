@@ -1,10 +1,11 @@
-# model_1702 over CONUS restricted to the 6-hourly timestep grid — the fair head-to-head
-# against 2.0 baselines whose input store is 6-hourly.
+# model_1702 over CONUS (its training domain) at the native 3-hourly CONUS label cadence.
+# Faithful-to-paper standalone numbers; the 6h variant is the fair head-to-head with the
+# 6-hourly-trained 2.0 baselines.
 
 harness_eval_config:
-  model_path: "/ourdisk/hpc/ai2es/tman/models/aies1702/model_1702.h5"
-  model_kind: "aies1702"
-  outdir: "/ourdisk/hpc/ai2es/tman/models/stats/aies1702/model_1702_conus_6h/"
+  model_path: "/ourdisk/hpc/ai2es/tman/models/model_1702/model_1702.h5"
+  model_kind: "model_1702"
+  outdir: "/ourdisk/hpc/ai2es/tman/models/stats/model_1702/model_1702_conus/"
   coordinates: [25.0, 56.75, 228.0, 299.75]
   regions: [full, land, ocean]
   front_types: [CF, WF, SF, OF, DL]
@@ -12,12 +13,12 @@ harness_eval_config:
   batch_size: 8
   time_start: "2019-01-01T00:00:00"
   time_end: "2020-01-01T00:00:00"
-  time_resolution: "6h"
+  time_resolution: null
   gpu_device: 0
 
 data_config:
   inputs_icechunk_config:
-    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/aies1702"
+    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/model_1702"
     branch_name: "main"
     group_name: "conus"
   targets_icechunk_config:
@@ -29,6 +30,6 @@ data_config:
   val_years: [2018]
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
-  time_resolution: "6h"
+  time_resolution: "3h"
   volume_inputs: true
   variables: [T, Td, Tv, u, v, r, q, RH, sp_z, theta_e]

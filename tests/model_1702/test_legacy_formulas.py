@@ -8,8 +8,8 @@ training inputs.
 import numpy as np
 import pytest
 
-from fronts.aies1702 import legacy_formulas
 from fronts.data import derived
+from fronts.model_1702 import legacy_formulas
 
 
 def test_vapor_pressure_scalar():

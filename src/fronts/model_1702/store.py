@@ -7,7 +7,7 @@ store mimics the 2.0 inputs-store layout — variables with dims (time, level, l
 longitude) — so ``fronts.data.datasets.FrontsPyDataset`` consumes it unchanged; the surface
 level is stored under the numeric sentinel 1013 (matching the legacy ``*_1013`` aliases).
 
-Run: ``python -m fronts.aies1702.store --config configs/aies1702/generate_conus.yaml``
+Run: ``python -m fronts.model_1702.store --config configs/model_1702/generate_conus.yaml``
 """
 
 import argparse
@@ -21,8 +21,8 @@ import xarray as xr
 import zarr
 
 from fronts import utils
-from fronts.aies1702 import legacy_formulas, normalization
 from fronts.data import generate, sources
+from fronts.model_1702 import legacy_formulas, normalization
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

@@ -23,7 +23,7 @@ EXPECTED_OUTPUT_CLASSES = 6
 EXPECTED_OUTPUT_COUNT = 4
 
 
-@keras.saving.register_keras_serializable(package="aies1702")
+@keras.saving.register_keras_serializable(package="model_1702")
 class LevelSqueeze(keras.layers.Layer):
     """Drop-in replacement for the legacy ``tf.compat.v1.squeeze`` TFOpLambda layers."""
 

@@ -4,7 +4,7 @@
 # structures are comparable but amplitudes read lower.
 
 case_config:
-  model_path: "/ourdisk/hpc/ai2es/tman/models/aies1702/model_1702.h5"
+  model_path: "/ourdisk/hpc/ai2es/tman/models/model_1702/model_1702.h5"
   times:
     - "2023-12-26T00:00:00"
     - "2023-12-26T12:00:00"
@@ -15,7 +15,7 @@ case_config:
   era5_uri: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
   storage_options:
     token: "anon"
-  inputs_cache_path: "/ourdisk/hpc/ai2es/tman/data/fronts/aies1702_case_inputs/xmas2023.nc"
-  outdir: "/ourdisk/hpc/ai2es/tman/models/case_studies/aies1702/"
+  inputs_cache_path: "/ourdisk/hpc/ai2es/tman/data/fronts/model_1702_case_inputs/xmas2023.nc"
+  outdir: "/ourdisk/hpc/ai2es/tman/models/case_studies/model_1702/"
   figure_name: "xmas2023_fig14_style.png"
   gpu_device: null

@@ -4,7 +4,7 @@
 harness_eval_config:
   model_path: "/ourdisk/hpc/ai2es/tman/models/brier_3d_full_domain_pretrained_conus/_best_loss.keras"
   model_kind: "keras"
-  outdir: "/ourdisk/hpc/ai2es/tman/models/stats/aies1702/baseline_conus/"
+  outdir: "/ourdisk/hpc/ai2es/tman/models/stats/model_1702/baseline_conus/"
   coordinates: [25.0, 56.75, 228.0, 299.75]
   regions: [full, land, ocean]
   front_types: [CF, WF, SF, OF, DL]

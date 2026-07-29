@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.aies1702 import compare, figures
+from fronts.model_1702 import compare, figures
 
 NEIGHBORHOODS = [50, 100, 150, 200, 250]
 THRESHOLDS = np.linspace(0.01, 1.0, 100)

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from keras.src.legacy.saving import legacy_h5_format, saving_utils
 
-from fronts.aies1702 import loader
+from fronts.model_1702 import loader
 
 MODEL_1702_PATH = os.path.expanduser("~/data/fronts/model_1702.h5")
 

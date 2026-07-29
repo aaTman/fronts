@@ -16,7 +16,7 @@ import keras
 import numpy as np
 import tensorflow as tf
 
-from fronts.aies1702 import normalization
+from fronts.model_1702 import normalization
 
 NUM_EVAL_CLASSES = 9
 NUM_LEGACY_CLASSES = 6

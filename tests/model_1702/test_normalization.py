@@ -5,7 +5,7 @@ import os
 import numpy as np
 import pytest
 
-from fronts.aies1702 import normalization
+from fronts.model_1702 import normalization
 
 PROPERTIES_PATH = os.path.expanduser("~/data/fronts/model_1702_properties.txt")
 

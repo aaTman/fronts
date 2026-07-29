@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from fronts.aies1702 import adapter, normalization
+from fronts.model_1702 import adapter, normalization
 
 N_LAT = 4
 N_LON = 6
