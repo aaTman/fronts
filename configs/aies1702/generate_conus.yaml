@@ -3,7 +3,7 @@
 # requirements (surface + 1000/950/900/850 from z, t, u, v, q, sp, t2m, d2m, u10, v10).
 
 era5_config:
-  era5_uri: "arraylake://earthmover-public/era5"
+  era5_uri: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
   variables: [
     "geopotential",
     "temperature",
@@ -21,7 +21,8 @@ era5_config:
   time_end: "2019-12-31T21:00:00"
   time_resolution: "3h"
   coordinates: [25.0, 56.75, 228.0, 299.75]
-  storage_options: null
+  storage_options:
+    token: "anon"
   chunks: null
   zarr_async_concurrency: 128
 

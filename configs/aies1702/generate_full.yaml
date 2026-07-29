@@ -2,7 +2,7 @@
 # cadence). Out-of-domain for model_1702 (CONUS-trained); results are caveated accordingly.
 
 era5_config:
-  era5_uri: "arraylake://earthmover-public/era5"
+  era5_uri: "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
   variables: [
     "geopotential",
     "temperature",
@@ -20,7 +20,8 @@ era5_config:
   time_end: "2019-12-31T18:00:00"
   time_resolution: "6h"
   coordinates: [0.25, 80.0, 130.0, 369.75]
-  storage_options: null
+  storage_options:
+    token: "anon"
   chunks: null
   zarr_async_concurrency: 128
 
