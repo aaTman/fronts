@@ -3,8 +3,8 @@
 #SBATCH --partition=ai2es
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=80G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=128G
 #SBATCH --gres=gpu:1
 #SBATCH --time=48:00:00
 #SBATCH --output=/ourdisk/hpc/ai2es/tman/logs/model_1702_comparison_%j_out.txt
