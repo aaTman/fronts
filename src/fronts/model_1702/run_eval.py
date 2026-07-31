@@ -208,20 +208,25 @@ def run(harness_cfg: HarnessEvalConfig, data_cfg: datasets.DatasetConfig) -> Non
     effective_data_cfg = dataclasses.replace(data_cfg, front_dilation=harness_cfg.front_dilation)
     os.makedirs(harness_cfg.outdir, exist_ok=True)
 
+    all_preds, all_targets = evaluate.predict_batches(
+        model=model,
+        input_ds=input_ds,
+        target_da=fronts_raw,
+        data_config=effective_data_cfg,
+        batch_size=harness_cfg.batch_size,
+        class_weights=data_cfg.class_weights,
+    )
+
     for region in harness_cfg.regions:
         log.info("Evaluating region '%s' …", region)
         spatial_mask = build_region_mask(region, lats, lons)
-        spatial_ds, aggregate_ds, derived_ds = evaluate.compute_stats(
-            model=model,
-            input_ds=input_ds,
-            target_da=fronts_raw,
-            data_config=effective_data_cfg,
+        spatial_ds, aggregate_ds, derived_ds = evaluate.accumulate_stats(
+            all_preds=all_preds,
+            all_targets=all_targets,
             front_types=harness_cfg.front_types,
             lats=lats,
             lons=lons,
             spatial_mask=spatial_mask,
-            batch_size=harness_cfg.batch_size,
-            class_weights=data_cfg.class_weights,
         )
         suffix = "" if region == REGION_FULL else f"_{region}"
         for name, ds in (("spatial", spatial_ds), ("aggregate", aggregate_ds), ("derived", derived_ds)):

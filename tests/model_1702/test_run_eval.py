@@ -158,6 +158,53 @@ class TestComputeStatsIntegration:
         assert 0.0 < total_half < total_full
 
 
+class CountingModel:
+    """Wraps a model and counts Python-level calls, to verify inference isn't repeated."""
+
+    def __init__(self, base):
+        self.base = base
+        self.call_count = 0
+
+    def __call__(self, x, training=False):
+        self.call_count += 1
+        return self.base(x, training=training)
+
+
+class TestPredictOnceAccumulatePerRegion:
+    def test_model_not_reinvoked_across_multiple_regions(
+        self, synthetic_side_store_ds, synthetic_targets, side_store_data_config
+    ):
+        """run_eval.run()'s pattern: predict_batches once, accumulate_stats per region."""
+        counting = CountingModel(SoftmaxProbeModel())
+        model = adapter.FrontFinder1702Adapter(counting, lat_ascending=False)
+        lats = synthetic_side_store_ds["latitude"].values
+        lons = synthetic_side_store_ds["longitude"].values
+
+        all_preds, all_targets = evaluate.predict_batches(
+            model=model,
+            input_ds=synthetic_side_store_ds,
+            target_da=synthetic_targets,
+            data_config=side_store_data_config,
+            batch_size=4,
+            class_weights=side_store_data_config.class_weights,
+        )
+        call_count_after_predict = counting.call_count
+        assert call_count_after_predict > 0
+
+        for region in ("full", "land", "ocean"):
+            spatial_mask = run_eval.build_region_mask(region, lats, lons)
+            evaluate.accumulate_stats(
+                all_preds=all_preds,
+                all_targets=all_targets,
+                front_types=FRONT_TYPES,
+                lats=lats,
+                lons=lons,
+                spatial_mask=spatial_mask,
+            )
+
+        assert counting.call_count == call_count_after_predict
+
+
 class TestConfigParsing:
     @pytest.mark.parametrize(
         "config_name",
