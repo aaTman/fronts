@@ -288,8 +288,9 @@ def accumulate_stats(
     _above = np.empty((n_fronts, n_lat, n_lon, N_THRESHOLDS), dtype=bool)
     _bool_buf = np.empty_like(_above)
     _float_buf = np.empty((n_fronts, n_lat, n_lon, N_THRESHOLDS), dtype=np.float32)
+    _float_buf2 = np.empty_like(_float_buf)
     _above_f32 = np.empty_like(_float_buf)
-    _expanded = np.empty((n_nbhd, n_lat, n_lon, n_fronts), dtype=bool)
+    _above_weighted = np.empty_like(_float_buf)
     w_4d = lat_weights[np.newaxis, :, :, np.newaxis]
     w_flat = lat_weights.ravel()
 
@@ -305,42 +306,44 @@ def accumulate_stats(
         truth_f = truth_fronts.transpose(2, 0, 1)  # (F, lat, lon)
 
         np.greater_equal(pred_f[:, :, :, np.newaxis], THRESHOLDS, out=_above)
+        _above_f32[:] = _above
+        np.multiply(_above_f32, w_4d, out=_above_weighted)
 
         truth_4d = truth_f[:, :, :, np.newaxis]  # (F, lat, lon, 1) — tiny view
 
-        # TN: ~above & ~truth, weighted.
+        # TN: ~above & ~truth, weighted. Broadcast into every neighborhood slot at once —
+        # TN/FN don't depend on the neighborhood radius.
         np.logical_not(_above, out=_bool_buf)
         np.logical_and(_bool_buf, ~truth_4d, out=_bool_buf)
         np.multiply(_bool_buf, w_4d, out=_float_buf)
-        for ni in range(n_nbhd):
-            spatial["tn"][:, :, :, ni, :] += _float_buf
+        spatial["tn"] += _float_buf[:, :, :, np.newaxis, :]
         aggregate["tn"] += _float_buf.sum(axis=(1, 2))[:, np.newaxis, :]
 
         # FN: ~above & truth, weighted.
         np.logical_not(_above, out=_bool_buf)
         np.logical_and(_bool_buf, truth_4d, out=_bool_buf)
         np.multiply(_bool_buf, w_4d, out=_float_buf)
-        for ni in range(n_nbhd):
-            spatial["fn"][:, :, :, ni, :] += _float_buf
+        spatial["fn"] += _float_buf[:, :, :, np.newaxis, :]
         aggregate["fn"] += _float_buf.sum(axis=(1, 2))[:, np.newaxis, :]
 
-        _expanded[:] = _expand_all_neighborhoods(truth_fronts, n_nbhd, lat_pixels_per_step, lon_pixels_per_lat)
-        exp_f = _expanded.transpose(3, 0, 1, 2)  # (F, n_nbhd, lat, lon)
+        # Force contiguity: matmul below falls back to a slow non-BLAS path on the
+        # transpose-then-reshape view (~96x slower than on a contiguous copy).
+        expanded = _expand_all_neighborhoods(truth_fronts, n_nbhd, lat_pixels_per_step, lon_pixels_per_lat)
+        exp_f = np.ascontiguousarray(expanded.transpose(3, 0, 1, 2))  # (F, n_nbhd, lat, lon)
 
-        _above_f32[:] = _above
         above_flat = _above_f32.reshape(n_fronts, n_lat * n_lon, N_THRESHOLDS)
         exp_flat = exp_f.reshape(n_fronts, n_nbhd, n_lat * n_lon)
         aggregate["tp"] += np.matmul(exp_flat * w_flat, above_flat)
         aggregate["fp"] += np.matmul((~exp_flat) * w_flat, above_flat)
 
+        # TP + FP == above_weighted exactly for a 0/1 mask, so FP is derived by subtraction
+        # instead of a second logical_and + multiply pass.
         for ni in range(n_nbhd):
             exp_ni = exp_f[:, ni, :, :, np.newaxis]  # (F, lat, lon, 1) — tiny view
-            np.logical_and(_above, exp_ni, out=_bool_buf)
-            np.multiply(_bool_buf, w_4d, out=_float_buf)
+            np.multiply(_above_weighted, exp_ni, out=_float_buf)
             spatial["tp"][:, :, :, ni, :] += _float_buf
-            np.logical_and(_above, ~exp_ni, out=_bool_buf)
-            np.multiply(_bool_buf, w_4d, out=_float_buf)
-            spatial["fp"][:, :, :, ni, :] += _float_buf
+            np.subtract(_above_weighted, _float_buf, out=_float_buf2)
+            spatial["fp"][:, :, :, ni, :] += _float_buf2
 
     dims_sp = ("latitude", "longitude", "neighborhood", "threshold")
     dims_ag = ("neighborhood", "threshold")
