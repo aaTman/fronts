@@ -120,7 +120,7 @@ def predict_case(model: object, built: xr.Dataset) -> np.ndarray:
         built: Derived legacy-variable dataset from :func:`load_case_inputs`.
 
     Returns:
-        Prediction array shaped (time, lat, lon, 9).
+        Prediction array shaped (time, lat, lon, 6).
     """
     x = inputs.inputs_ds_to_volume_dataarray(built, list(built.data_vars)).values
     return np.asarray(model(x, training=False))

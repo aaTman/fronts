@@ -100,7 +100,7 @@ class ModelConfig:
             freezes the whole encoder path. Only valid when ``pretrained_weights_path`` is set.
     """
 
-    n_classes: int = 9
+    n_classes: int = 6
     n_channels: int = 30
     levels: int = 4
     filter_num: list[int] = dataclasses.field(default_factory=lambda: [32, 64, 128, 256])

@@ -78,7 +78,7 @@ def side_store_data_config():
         test_years=[2019],
         val_years=[2018],
         batch_size=4,
-        class_weights=[0.0] + [1.0] * 8,
+        class_weights=[0.0] + [1.0] * 5,
         front_dilation=1,
         volume_inputs=True,
     )

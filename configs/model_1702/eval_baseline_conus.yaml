@@ -27,7 +27,7 @@ data_config:
   batch_size: 8
   test_years: [2019]
   val_years: [2018]
-  class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
   time_resolution: "6h"
   volume_inputs: true

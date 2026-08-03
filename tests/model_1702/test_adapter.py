@@ -32,8 +32,7 @@ class TestFrontFinder1702Adapter:
     def test_output_contract(self, raw_batch):
         wrapped = adapter.FrontFinder1702Adapter(OrientationProbeModel(), lat_ascending=False)
         out = np.asarray(wrapped(tf.constant(raw_batch)))
-        assert out.shape == (2, N_LAT, N_LON, 9)
-        assert (out[..., 6:] == 0.0).all()
+        assert out.shape == (2, N_LAT, N_LON, 6)
 
     def test_normalization_and_orientation_round_trip(self, raw_batch):
         wrapped = adapter.FrontFinder1702Adapter(OrientationProbeModel(), lat_ascending=False)
@@ -65,28 +64,18 @@ class TestFrontFinder1702Adapter:
             return wrapped(x, training=False)
 
         out = np.asarray(eval_step(tf.constant(raw_batch)))
-        assert out.shape == (2, N_LAT, N_LON, 9)
+        assert out.shape == (2, N_LAT, N_LON, 6)
 
 
 class TestClassPaddingAdapter:
-    def test_pads_six_class_output(self, raw_batch):
+    def test_six_class_output_passes_through(self, raw_batch):
         def six_class_model(x, training=False):
             return [tf.ones((tf.shape(x)[0], N_LAT, N_LON, 6)) / 6.0]
 
         wrapped = adapter.ClassPaddingAdapter(six_class_model)
         out = np.asarray(wrapped(tf.constant(raw_batch)))
-        assert out.shape == (2, N_LAT, N_LON, 9)
-        assert (out[..., 6:] == 0.0).all()
-        np.testing.assert_allclose(out[..., :6], 1.0 / 6.0)
-
-    def test_nine_class_output_passes_through(self, raw_batch):
-        def nine_class_model(x, training=False):
-            return tf.ones((tf.shape(x)[0], N_LAT, N_LON, 9)) / 9.0
-
-        wrapped = adapter.ClassPaddingAdapter(nine_class_model)
-        out = np.asarray(wrapped(tf.constant(raw_batch)))
-        assert out.shape == (2, N_LAT, N_LON, 9)
-        np.testing.assert_allclose(out, 1.0 / 9.0)
+        assert out.shape == (2, N_LAT, N_LON, 6)
+        np.testing.assert_allclose(out, 1.0 / 6.0)
 
     def test_too_many_classes_raises(self, raw_batch):
         def ten_class_model(x, training=False):

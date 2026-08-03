@@ -135,7 +135,7 @@ def build_model_adapter(harness_cfg: HarnessEvalConfig, lat_ascending: bool):
             descending; the adapter flips when needed).
 
     Returns:
-        A callable ``model(x, training=False)`` emitting (batch, lat, lon, 9) predictions.
+        A callable ``model(x, training=False)`` emitting (batch, lat, lon, 6) predictions.
 
     Raises:
         ValueError: If the model kind is unknown.
