@@ -20,7 +20,14 @@ from fronts.plot import plot as plot_module
 logger = logging.getLogger(__name__)
 
 FRONT_TYPE_CLASS_INDEX: dict[str, int] = {
-    "CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5, "TROF": 6, "TT": 7, "INST": 8,
+    "CF": 1,
+    "WF": 2,
+    "SF": 3,
+    "OF": 4,
+    "DL": 5,
+    "TROF": 6,
+    "TT": 7,
+    "INST": 8,
 }
 
 # Office-of-responsibility regions for the Unified Surface Analysis (WPC manual, p.25).
