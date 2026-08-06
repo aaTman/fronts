@@ -1,9 +1,28 @@
 import numpy as np
 import xarray as xr
 
-# Original front codes → experiment class indices
-# 0 = no front (background), 1-4 kept as-is, 16 (dryline) → 5, all others → 0
-FRONT_CLASS_MAP = {1: 1, 2: 2, 3: 3, 4: 4, 16: 5}
+# Original front codes → experiment class indices.
+# 0 = no front (background), 1-4 kept as-is, forming (5-8) and dissipating (9-12) variants
+# collapse into their parent front class, 14=TROF -> 6, 15=TT -> 7, 16=DL -> 5, INST (13) is
+# its own class -> 8. All other codes map to 0.
+FRONT_CLASS_MAP = {
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 1,
+    6: 2,
+    7: 3,
+    8: 4,
+    9: 1,
+    10: 2,
+    11: 3,
+    12: 4,
+    13: 8,
+    14: 6,
+    15: 7,
+    16: 5,
+}
 
 
 def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.ndarray:
@@ -21,10 +40,17 @@ def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.nd
     Returns:
         Boolean array of shape (time,).
     """
-    # Compute any() over space before .compute() so only (n_codes, n_times) booleans
-    # are materialised rather than the full spatial array.
+    # Compute any() over space before .compute() so only (n_classes, n_times) booleans
+    # are materialised rather than the full spatial array. Group raw codes by target class
+    # so e.g. a forming OR dissipating cold front both count toward "cold front present".
+    codes_by_class: dict[int, list[int]] = {}
+    for code, cls in FRONT_CLASS_MAP.items():
+        codes_by_class.setdefault(cls, []).append(code)
     presence = xr.concat(
-        [(fronts_da == code).any(dim=["latitude", "longitude"]) for code in FRONT_CLASS_MAP],
+        [
+            xr.concat([(fronts_da == code) for code in codes], dim="code").any(dim=["code", "latitude", "longitude"])
+            for codes in codes_by_class.values()
+        ],
         dim="front_type",
     ).compute()
     has_all_types = presence.all(dim="front_type").values
@@ -36,10 +62,12 @@ _SEASON_NAMES = ("DJF", "MAM", "JJA", "SON")
 
 
 def remap_fronts(da: xr.DataArray) -> xr.DataArray:
-    """Map front codes to 6-class experiment labels without loading data.
+    """Map front codes to 9-class experiment labels without loading data.
 
-    Classes: 0=none, 1=CF, 2=WF, 3=SF, 4=OF, 5=dryline. All other original codes map to
-        0.
+    Classes: 0=none, 1=CF, 2=WF, 3=SF, 4=OF, 5=dryline, 6=trough, 7=tropical trough,
+        8=instability axis. Forming and dissipating front codes collapse into their
+        parent front class (e.g. CF-F and CF-D both map to 1). All other original codes
+        map to 0.
 
     Returns:
         Lazy int32 DataArray of the same shape as ``da``.
@@ -139,7 +167,7 @@ def dilate_fronts(da: xr.DataArray, dilation: int) -> xr.DataArray:
     )
 
 
-def one_hot_encode_to_dataarray(da: xr.DataArray, num_classes: int = 6) -> xr.DataArray:
+def one_hot_encode_to_dataarray(da: xr.DataArray, num_classes: int = 9) -> xr.DataArray:
     """One-hot encode a DataArray of integer class labels without loading data.
 
     Broadcasts ``da`` against a class axis so no data is materialized until

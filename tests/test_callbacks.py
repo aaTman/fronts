@@ -1,10 +1,28 @@
 """Tests for fronts.callbacks: W&B metric consolidation and test-set visualization helpers."""
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 import xarray as xr
 
 fc = pytest.importorskip("fronts.callbacks")
+
+
+class TestFrontTypeClassIndex:
+    def test_matches_full_nine_class_mapping(self):
+        assert list(fc.FRONT_TYPE_CLASS_INDEX) == ["CF", "WF", "SF", "OF", "DL", "TROF", "TT", "INST"]
+        assert fc.FRONT_TYPE_CLASS_INDEX == {
+            "CF": 1,
+            "WF": 2,
+            "SF": 3,
+            "OF": 4,
+            "DL": 5,
+            "TROF": 6,
+            "TT": 7,
+            "INST": 8,
+        }
 
 
 class TestMetricsConsolidationCallback:
@@ -146,18 +164,89 @@ class TestVisualizationCallbackPredict:
         result = cb._predict(cb.subsample_x)
         np.testing.assert_allclose(result, cb.subsample_x)
 
-    def test_never_calls_batch_accumulating_predict(self, monkeypatch):
-        # model.predict() accumulates every batch's output into one GPU-resident tensor
-        # before returning, which is exactly what OOMs on large full-domain subsamples;
-        # _predict must go through predict_on_batch instead (see callbacks.py:_predict).
+    def test_never_uses_predict_on_batch(self, monkeypatch):
+        # predict_on_batch is not safe under tf.distribute.MirroredStrategy: it does not
+        # shard/gather a batch across replicas the way predict() does, and can silently
+        # return far more rows than requested (see test_returns_exact_row_count_under_
+        # mirrored_strategy below, and callbacks.py:_predict). _predict must go through
+        # model.predict() only.
         cb = self._make_callback(n_samples=5, predict_batch_size=2)
         monkeypatch.setattr(
             cb.model,
-            "predict",
-            lambda *a, **k: (_ for _ in ()).throw(AssertionError("model.predict() must not be called")),
+            "predict_on_batch",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("model.predict_on_batch() must not be called")),
         )
         result = cb._predict(cb.subsample_x)
         np.testing.assert_allclose(result, cb.subsample_x)
+
+    def test_calls_predict_in_bounded_macro_chunks(self, monkeypatch):
+        # _predict must never hand the whole subsample to a single model.predict() call —
+        # that's exactly the unbounded GPU-resident accumulation that OOMs on large
+        # full-domain subsamples (see callbacks.py:_predict).
+        cb = self._make_callback(n_samples=50, predict_batch_size=2)
+        call_sizes = []
+        real_predict = cb.model.predict
+
+        def spying_predict(x, **kwargs):
+            call_sizes.append(x.shape[0])
+            return real_predict(x, **kwargs)
+
+        monkeypatch.setattr(cb.model, "predict", spying_predict)
+        result = cb._predict(cb.subsample_x)
+
+        np.testing.assert_allclose(result, cb.subsample_x)
+        assert len(call_sizes) > 1
+        assert all(size <= 2 * fc._PREDICT_MACRO_CHUNK_MULTIPLIER for size in call_sizes)
+
+    def test_returns_exact_row_count_under_mirrored_strategy(self):
+        # Regression test for a real training crash: predict_on_batch under a 4-replica
+        # MirroredStrategy silently returned 4x too many rows for a batch of 4 (one full
+        # copy of the batch per replica instead of a sharded/gathered result), which
+        # downstream IndexError'd in accumulate_lite_stats on a truth array sized to the
+        # true sample count. model.predict() shards/gathers correctly.
+        #
+        # Simulating replicas via logical CPU devices requires configuring them before
+        # TF's context is initialized, which earlier tests in this shared suite have
+        # already done — so this runs in a fresh subprocess instead of in-process.
+        script = """
+import numpy as np
+import tensorflow as tf
+
+physical_cpus = tf.config.list_physical_devices("CPU")
+tf.config.set_logical_device_configuration(
+    physical_cpus[0], [tf.config.LogicalDeviceConfiguration() for _ in range(4)]
+)
+logical_cpus = tf.config.list_logical_devices("CPU")
+strategy = tf.distribute.MirroredStrategy(devices=[d.name for d in logical_cpus])
+
+with strategy.scope():
+    inputs = tf.keras.Input(shape=(2, 2, 1))
+    model = tf.keras.Model(inputs, inputs)  # identity
+
+from fronts import callbacks as fc
+
+n_samples = 200
+predict_batch_size = strategy.num_replicas_in_sync
+cb = fc.TestVisualizationCallback(
+    active_day_x=np.zeros((2, 2, 1), dtype=np.float32),
+    active_day_y=np.zeros((2, 2, 1), dtype=np.float32),
+    active_day_label="active day",
+    subsample_x=np.arange(n_samples * 4, dtype=np.float32).reshape(n_samples, 2, 2, 1),
+    subsample_y=np.zeros((n_samples, 2, 2, 1), dtype=np.float32),
+    lats=np.array([0.0, 1.0]),
+    lons=np.array([0.0, 1.0]),
+    front_types=["CF"],
+    predict_batch_size=predict_batch_size,
+)
+cb.set_model(model)
+
+result = cb._predict(cb.subsample_x)
+assert result.shape[0] == n_samples, f"expected {n_samples} rows, got {result.shape[0]}"
+print("OK")
+"""
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        assert "OK" in proc.stdout
 
     def test_predict_batch_size_field_is_required(self):
         with pytest.raises(TypeError):

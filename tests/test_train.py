@@ -27,7 +27,11 @@ try:
 except ImportError:
     _TF_AVAILABLE = False
 
-_ALL_CODES = list(FRONT_CLASS_MAP.keys())  # [1, 2, 3, 4, 15]
+# One canonical raw code per output class (background excluded): CF, WF, SF, OF, DL, TROF, TT, INST.
+_CANONICAL_CODE_BY_CLASS: dict[int, int] = {}
+for _code, _cls in FRONT_CLASS_MAP.items():
+    _CANONICAL_CODE_BY_CLASS.setdefault(_cls, _code)
+_ALL_CODES = [_CANONICAL_CODE_BY_CLASS[cls] for cls in sorted(_CANONICAL_CODE_BY_CLASS)]
 
 
 def _make_fronts(time_codes: list[list[int]], lat: int = 4, lon: int = 8) -> xr.DataArray:
@@ -46,7 +50,7 @@ def _make_fronts(time_codes: list[list[int]], lat: int = 4, lon: int = 8) -> xr.
 N_TIME = 5
 N_LAT = 32
 N_LON = 64
-N_CLASSES = 6
+N_CLASSES = 9
 
 
 class TestFilterTimesteps:

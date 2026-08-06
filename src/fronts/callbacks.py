@@ -19,7 +19,16 @@ from fronts.plot import plot as plot_module
 
 logger = logging.getLogger(__name__)
 
-FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
+FRONT_TYPE_CLASS_INDEX: dict[str, int] = {
+    "CF": 1,
+    "WF": 2,
+    "SF": 3,
+    "OF": 4,
+    "DL": 5,
+    "TROF": 6,
+    "TT": 7,
+    "INST": 8,
+}
 
 # Office-of-responsibility regions for the Unified Surface Analysis (WPC manual, p.25).
 # The 30N split and the 140W HFO/NHC boundary come from the manual; WPC vs OPC is
@@ -34,6 +43,10 @@ OFFICE_REGIONS: dict[str, utils.BoundingBox] = {
 }
 
 LITE_THRESHOLDS = np.linspace(0.05, 1.0, 20, dtype=np.float32)
+
+# How many predict_batch_size-sized steps model.predict() is allowed to accumulate on GPU
+# before TestVisualizationCallback._predict flushes the result to CPU and starts a new call.
+_PREDICT_MACRO_CHUNK_MULTIPLIER = 8
 
 _PER_OUTPUT_LOSS_RE = re.compile(r"^sup\d+_.+_loss$")
 # Matches any per-output metric key, e.g. "sup1_softmax_hss" or "sup1_softmax_hss_hard" —
@@ -320,15 +333,29 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
         super().__init__()
 
     def _predict(self, x: np.ndarray) -> np.ndarray:
-        """Run the model's finest-resolution (first) output, chunked by ``predict_batch_size``."""
-        # model.predict() batches its forward passes but still accumulates every batch's
-        # output into one GPU-resident tensor before returning; at full spatial resolution
-        # (e.g. full-CONUS-domain runs) that accumulated buffer, on top of training's
-        # already-resident GPU memory, reliably OOMs. Looping over predict_on_batch and
-        # moving each batch to CPU immediately keeps only one batch's output on GPU at a time.
+        """Run the model's finest-resolution (first) output, in bounded macro-chunks.
+
+        ``model.predict()`` batches its forward passes via ``batch_size``, but that only
+        bounds the per-step compute — it still accumulates every requested sample's output
+        into one GPU-resident tensor before returning. At full spatial resolution (e.g.
+        full-CONUS-domain runs) that accumulated buffer, on top of training's already-
+        resident GPU memory, reliably OOMs for large subsamples (e.g. 200 timesteps).
+        Calling ``predict()`` on bounded macro-chunks and moving each one to CPU
+        immediately caps how much stays GPU-resident at once.
+
+        ``predict_on_batch`` was tried here first as a per-``predict_batch_size``-chunk
+        alternative, but it is not safe under ``tf.distribute.MirroredStrategy``: it does
+        not shard/gather a batch across replicas the way ``predict()`` does, and can
+        silently return far more rows than requested (observed 4x on a 4-replica batch of
+        4). ``predict()`` must be kept for correctness; only the chunk size fed to it
+        is bounded here.
+        """
+        macro_chunk_size = self.predict_batch_size * _PREDICT_MACRO_CHUNK_MULTIPLIER
         outputs: list[np.ndarray] = []
-        for start in range(0, x.shape[0], self.predict_batch_size):
-            pred = self.model.predict_on_batch(x[start : start + self.predict_batch_size])
+        for start in range(0, x.shape[0], macro_chunk_size):
+            pred = self.model.predict(
+                x[start : start + macro_chunk_size], batch_size=self.predict_batch_size, verbose=0
+            )
             if isinstance(pred, (list, tuple)):
                 pred = pred[0]
             outputs.append(np.asarray(pred))
