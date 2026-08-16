@@ -1,4 +1,4 @@
-run_name: ablation_geopotential
+run_name: ablation_pv_and_theta_e
 
 train_config:
   epochs: 5000
@@ -27,11 +27,11 @@ data_config:
   time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
   variables:
     [
-      "potential_temperature",
+      "equivalent_potential_temperature",
       "u_component_of_wind",
       "v_component_of_wind",
       "specific_humidity",
-      "geopotential",
+      "potential_vorticity",
     ]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax
