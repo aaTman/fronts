@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fronts — ESPR</title>
+  <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body, #map { height: 100%; margin: 0; background: #0b0e14; }
+    #panel {
+      position: absolute; top: 12px; left: 12px; z-index: 10;
+      background: rgba(15, 18, 26, 0.88); color: #e6e8ee;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      border-radius: 10px; padding: 12px 14px; min-width: 220px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+    }
+    #panel h1 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+    .model-toggle { display: flex; gap: 6px; margin-bottom: 10px; }
+    .model-toggle button {
+      flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid #3a3f4d;
+      background: #1c2130; color: #c8cbd6; cursor: pointer; font-size: 12px;
+    }
+    .model-toggle button.active { background: #3d6bff; border-color: #3d6bff; color: #fff; }
+    .class-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+    .class-row input[type="checkbox"] { accent-color: #3d6bff; }
+    .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    #meta { margin-top: 10px; font-size: 11px; color: #8b90a0; border-top: 1px solid #2a2f3d; padding-top: 8px; }
+    #meta.error { color: #ff8080; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="panel">
+    <h1>Fronts</h1>
+    <div class="model-toggle">
+      <button id="btn-best_loss" data-model="best_loss">best_loss</button>
+      <button id="btn-model_1702" data-model="model_1702">model_1702</button>
+    </div>
+    <div id="class-toggles"></div>
+    <div id="meta">loading…</div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "maplibre-gl": "https://esm.sh/maplibre-gl@4",
+        "@carbonplan/zarr-layer": "https://esm.sh/@carbonplan/zarr-layer"
+      }
+    }
+  </script>
+  <script type="module">
+    import maplibregl from "maplibre-gl";
+    import { ZarrLayer } from "@carbonplan/zarr-layer";
+
+    // -----------------------------------------------------------------
+    // Config: which zarr pyramid store backs each model, and how each
+    // front class is colored. Colors are deliberately explicit hex-array
+    // gradients (rather than relying on a "colormap name" string) since
+    // @carbonplan/zarr-layer's documented API takes an array of hex/rgb
+    // stops, not a named palette -- see webapp/README.md for why this
+    // diverges from the color hints topozarr embeds in the zarr attrs.
+    // -----------------------------------------------------------------
+    const ZARR_ROOT = "/data"; // Caddy serves the zarr store tree under /data -- see deploy/Caddyfile
+    const MODELS = {
+      best_loss: { label: "best_loss", latestPointer: `${ZARR_ROOT}/best_loss/latest.json` },
+      model_1702: { label: "model_1702", latestPointer: `${ZARR_ROOT}/model_1702/latest.json` },
+    };
+    const CLASS_STYLE = {
+      cold: { color: "#3d6bff", label: "Cold" },
+      warm: { color: "#ff4d4d", label: "Warm" },
+      stationary: { color: "#37b24d", label: "Stationary" },
+      occluded: { color: "#a445ff", label: "Occluded" },
+    };
+    function gradient(hex) {
+      // transparent -> full class color, so probability=0 is invisible
+      return ["rgba(0,0,0,0)", hex];
+    }
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: {
+        version: 8,
+        sources: {
+          basemap: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "© OpenStreetMap contributors",
+          },
+        },
+        layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+      },
+      center: [-95, 40],
+      zoom: 3,
+    });
+
+    let activeModel = "best_loss";
+    let activeStorePath = null;
+    const activeLayers = new Map(); // className -> ZarrLayer instance
+
+    function setMeta(text, isError = false) {
+      const el = document.getElementById("meta");
+      el.textContent = text;
+      el.classList.toggle("error", isError);
+    }
+
+    function buildClassToggles() {
+      const container = document.getElementById("class-toggles");
+      container.innerHTML = "";
+      for (const [cls, style] of Object.entries(CLASS_STYLE)) {
+        const row = document.createElement("label");
+        row.className = "class-row";
+        row.innerHTML = `
+          <input type="checkbox" data-class="${cls}" checked />
+          <span class="swatch" style="background:${style.color}"></span>
+          ${style.label}
+        `;
+        row.querySelector("input").addEventListener("change", (e) => {
+          const layer = activeLayers.get(cls);
+          if (layer) layer.opacity = e.target.checked ? 0.85 : 0;
+          // zarr-layer doesn't expose a live opacity setter on all versions;
+          // fall back to remove/re-add if needed.
+          if (map.getLayer(`fronts-${cls}`)) {
+            map.setPaintProperty?.(`fronts-${cls}`, "raster-opacity", e.target.checked ? 0.85 : 0);
+          }
+        });
+        container.appendChild(row);
+      }
+    }
+
+    async function resolveLatestStore(model) {
+      // Each model directory publishes a small latest.json pointer file
+      // (written by the scheduler after each successful cycle) so the
+      // frontend never has to guess the most recent IFS cycle's store name.
+      const res = await fetch(MODELS[model].latestPointer, { cache: "no-store" });
+      if (!res.ok) throw new Error(`no published run for ${model} (HTTP ${res.status})`);
+      const { store, cycle_time } = await res.json();
+      return { storePath: `${ZARR_ROOT}/${model}/${store}`, cycleTime: cycle_time };
+    }
+
+    function clearLayers() {
+      for (const cls of Object.keys(activeLayers)) {
+        if (map.getLayer(`fronts-${cls}`)) map.removeLayer(`fronts-${cls}`);
+      }
+      activeLayers.clear();
+    }
+
+    async function loadModel(model) {
+      document.querySelectorAll(".model-toggle button").forEach((b) => {
+        b.classList.toggle("active", b.dataset.model === model);
+      });
+      activeModel = model;
+      setMeta("loading…");
+      try {
+        const { storePath, cycleTime } = await resolveLatestStore(model);
+        activeStorePath = storePath;
+        clearLayers();
+        for (const [cls, style] of Object.entries(CLASS_STYLE)) {
+          const layer = new ZarrLayer({
+            id: `fronts-${cls}`,
+            source: storePath,
+            variable: cls,
+            clim: [0, 1],
+            colormap: gradient(style.color),
+            opacity: 0.85,
+          });
+          map.addLayer(layer);
+          activeLayers.set(cls, layer);
+        }
+        setMeta(`${MODELS[model].label} · cycle ${cycleTime}`);
+      } catch (err) {
+        console.error(err);
+        setMeta(`${MODELS[model].label}: ${err.message}`, true);
+      }
+    }
+
+    document.querySelectorAll(".model-toggle button").forEach((btn) => {
+      btn.addEventListener("click", () => loadModel(btn.dataset.model));
+    });
+
+    buildClassToggles();
+    map.on("load", () => loadModel(activeModel));
+  </script>
+</body>
+</html>

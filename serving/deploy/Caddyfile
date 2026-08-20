@@ -1,0 +1,22 @@
+# fronts.espr.ai -- static viewer + read-only zarr data, served from the
+# Proxmox VM/CT that runs frontfinder. Reach it via a Cloudflare Tunnel
+# (avoids port-forwarding / exposing mandelhub's residential IP), per the
+# same pattern used for the earlier zarr hazard-viewer prototype.
+
+fronts.espr.ai {
+    root * /srv/frontfinder/webapp
+    file_server
+    try_files {path} /index.html
+
+    # Zarr pyramid stores + latest.json pointers, written by
+    # frontfinder.scheduler.run_cycle on each IFS cycle. Served read-only,
+    # range-request support is on by default in Caddy's file_server.
+    handle_path /data/* {
+        root * /srv/frontfinder/output
+        file_server browse
+        header Cache-Control "public, max-age=60"   # short TTL: latest.json changes ~4x/day
+        header Access-Control-Allow-Origin "*"       # zarr-layer reads chunks via fetch()
+    }
+
+    encode gzip
+}

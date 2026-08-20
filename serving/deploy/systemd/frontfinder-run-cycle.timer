@@ -1,0 +1,13 @@
+[Unit]
+Description=Run frontfinder ~7h after each IFS synoptic cycle (00/06/12/18Z)
+
+[Timer]
+# Matches the `publish_lag_hours=7` default in scheduler/cli.py -- if you
+# tune one, tune the other. Randomized delay spreads load if this box ever
+# runs other scheduled jobs too.
+OnCalendar=*-*-* 07,13,19,01:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frontfinder-serving"
+version = "0.1.0"
+description = "Batch inference + zarr serving pipeline for ESPR's Fronts product"
+requires-python = ">=3.11"  # topozarr==0.0.4 requires >=3.11
+dependencies = [
+    # Core pipeline
+    "numpy>=1.26",
+    "xarray>=2024.1",
+    "zarr>=3.0",
+    "xproj>=0.1",
+    "topozarr==0.0.4",  # pinned: pre-1.0, "APIs may change without notice" per its own docs
+
+    # Inference (CPU build only -- no GPU on mandelhub)
+    "tensorflow-cpu>=2.16",
+    "keras>=3.0",
+
+    # IFS ingestion (network-dependent; not exercised by the unit test suite)
+    "ecmwf-opendata>=0.3",
+    "cfgrib>=0.9",
+    "eccodes>=1.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["frontfinder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["frontfinder/tests"]
