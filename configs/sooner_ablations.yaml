@@ -1,4 +1,4 @@
-run_name: ablation_pv_and_theta_e_conus
+run_name: ablation_pressure_levels
 
 train_config:
   epochs: 5000
