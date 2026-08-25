@@ -1038,3 +1038,69 @@ class TestStaticSingleLevelVariables:
         assert result is not None
         assert "land_sea_mask" in result.variables
         assert len(result.times) == 4
+
+
+class TestExternalStaticVariables:
+    """Static variables sourced from sources.STATIC_VARIABLE_SOURCES (e.g. geopotential_at_surface)."""
+
+    @pytest.fixture
+    def geopotential_source_zarr(self, tmp_path: pathlib.Path, time_range: pd.DatetimeIndex) -> pathlib.Path:
+        rng = np.random.default_rng(17)
+        values = np.broadcast_to(
+            rng.standard_normal((len(LAT), len(LON))).astype(np.float32),
+            (len(time_range), len(LAT), len(LON)),
+        )
+        ds = xr.Dataset(
+            {
+                "geopotential_at_surface": xr.DataArray(
+                    values,
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": time_range, "latitude": LAT, "longitude": LON},
+                )
+            }
+        )
+        path = tmp_path / "geopotential_source.zarr"
+        ds.to_zarr(path)
+        return path
+
+    @pytest.fixture
+    def registered_geopotential_source(self, geopotential_source_zarr: pathlib.Path, monkeypatch) -> pathlib.Path:
+        monkeypatch.setitem(
+            derived.sources.STATIC_VARIABLE_SOURCES, "geopotential_at_surface", str(geopotential_source_zarr)
+        )
+        return geopotential_source_zarr
+
+    def test_download_merges_static_variable(self, era5_config, registered_geopotential_source):
+        cfg = dataclasses.replace(era5_config, variables=[*ERA5_VARS, "geopotential_at_surface"])
+        result = generate.generate_era5_download_data(cfg)
+        assert "geopotential_at_surface" in result.data_vars
+        assert "time" not in result["geopotential_at_surface"].dims
+
+    def test_download_static_variable_only(self, era5_config, registered_geopotential_source):
+        cfg = dataclasses.replace(era5_config, variables=["geopotential_at_surface"])
+        result = generate.generate_era5_download_data(cfg)
+        assert set(result.data_vars) == {"geopotential_at_surface"}
+
+    def test_values_cropped_to_configured_domain(self, era5_config, registered_geopotential_source):
+        cfg = dataclasses.replace(era5_config, variables=["geopotential_at_surface"])
+        result = generate.generate_era5_download_data(cfg)
+        expected = xr.open_zarr(registered_geopotential_source, chunks=None)["geopotential_at_surface"].isel(time=0)
+        expected = utils.select_spatial_domain(expected, cfg.coordinates)
+        np.testing.assert_array_equal(result["geopotential_at_surface"].values, expected.values)
+
+    def test_execute_adds_missing_static_variable(
+        self, tmp_path, era5_config, minimal_ds, registered_geopotential_source
+    ):
+        sc = utils.IcechunkStorageConfig(
+            store_path=str(tmp_path / "external_static_store"),
+            branch_name="main",
+            group_name="era5",
+        )
+        generate.write_or_append_icechunk_store(sc, minimal_ds)
+        cfg = dataclasses.replace(era5_config, variables=[*ERA5_VARS, "geopotential_at_surface"])
+        strategy = generate.determine_write_strategy(cfg, generate.inspect_store(sc))
+        assert strategy.missing_variables == ["geopotential_at_surface"]
+        strategy.execute(cfg, sc)
+        result = generate.inspect_store(sc)
+        assert result is not None
+        assert "geopotential_at_surface" in result.variables

@@ -93,34 +93,77 @@ def arco_zarr(tmp_path: pathlib.Path, base_ds: xr.Dataset) -> pathlib.Path:
 
 class TestClassifyVariables:
     def test_all_direct(self):
-        direct, derived_vars = derived.classify_variables(["temperature", "geopotential"], _ARCO_VARS)
+        direct, derived_vars, static_vars = derived.classify_variables(["temperature", "geopotential"], _ARCO_VARS)
         assert direct == ["temperature", "geopotential"]
         assert derived_vars == []
+        assert static_vars == []
 
     def test_derived_only(self):
-        direct, derived_vars = derived.classify_variables(["wind_speed"], _ARCO_VARS)
+        direct, derived_vars, static_vars = derived.classify_variables(["wind_speed"], _ARCO_VARS)
         assert direct == []
         assert derived_vars == ["wind_speed"]
+        assert static_vars == []
+
+    def test_static_only(self):
+        direct, derived_vars, static_vars = derived.classify_variables(["geopotential_at_surface"], _ARCO_VARS)
+        assert direct == []
+        assert derived_vars == []
+        assert static_vars == ["geopotential_at_surface"]
 
     def test_mixed(self):
-        direct, derived_vars = derived.classify_variables(
-            ["temperature", "wind_speed", "potential_temperature"], _ARCO_VARS
+        direct, derived_vars, static_vars = derived.classify_variables(
+            ["temperature", "wind_speed", "potential_temperature", "geopotential_at_surface"], _ARCO_VARS
         )
         assert direct == ["temperature"]
         assert set(derived_vars) == {"wind_speed", "potential_temperature"}
+        assert static_vars == ["geopotential_at_surface"]
 
     def test_unknown_raises(self):
-        with pytest.raises(ValueError, match="no derivation function"):
+        with pytest.raises(ValueError, match="no derivation or static function"):
             derived.classify_variables(["nonexistent_variable"], _ARCO_VARS)
 
     def test_unknown_lists_registry_in_error(self):
         with pytest.raises(ValueError, match="wind_speed"):
             derived.classify_variables(["completely_unknown"], _ARCO_VARS)
 
+    def test_unknown_lists_static_registry_in_error(self):
+        with pytest.raises(ValueError, match="geopotential_at_surface"):
+            derived.classify_variables(["completely_unknown"], _ARCO_VARS)
+
     def test_order_preserved_for_direct(self):
         requested = ["geopotential", "temperature", "specific_humidity"]
-        direct, _ = derived.classify_variables(requested, _ARCO_VARS)
+        direct, _, _ = derived.classify_variables(requested, _ARCO_VARS)
         assert direct == requested
+
+
+class TestResolveStaticVariables:
+    @pytest.fixture
+    def static_source_zarr(self, tmp_path: pathlib.Path) -> pathlib.Path:
+        rng = np.random.default_rng(21)
+        time = pd.date_range("2019-01-01", periods=2, freq="6h")
+        values = np.broadcast_to(rng.standard_normal((len(_LAT), len(_LON))).astype(np.float32), (len(time), 4, 4))
+        ds = xr.Dataset(
+            {
+                "geopotential_at_surface": xr.DataArray(
+                    values,
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": time, "latitude": _LAT, "longitude": _LON},
+                )
+            }
+        )
+        path = tmp_path / "static_source.zarr"
+        ds.to_zarr(path)
+        return path
+
+    def test_returns_requested_variable(self, static_source_zarr, monkeypatch):
+        monkeypatch.setitem(derived.sources.STATIC_VARIABLE_SOURCES, "geopotential_at_surface", str(static_source_zarr))
+        result = derived.resolve_static_variables(["geopotential_at_surface"])
+        assert set(result.data_vars) == {"geopotential_at_surface"}
+        assert "time" not in result["geopotential_at_surface"].dims
+
+    def test_empty_request_returns_empty_dataset(self):
+        result = derived.resolve_static_variables([])
+        assert len(result.data_vars) == 0
 
 
 class TestResolveDownloadVariables:
@@ -406,7 +449,7 @@ class TestGenerateEra5DataWithDerived:
             zarr_async_concurrency=10,
             chunks={"time": 1},
         )
-        with pytest.raises(ValueError, match="no derivation function"):
+        with pytest.raises(ValueError, match="no derivation or static function"):
             generate.generate_era5_data(cfg)
 
     def test_explicit_input_also_stored(self, arco_zarr: pathlib.Path):

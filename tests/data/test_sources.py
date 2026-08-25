@@ -1,3 +1,5 @@
+import pathlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -117,3 +119,48 @@ class TestOpenArraylakeEra5Validation:
     def test_unknown_variable_raises(self):
         with pytest.raises(ValueError, match="no known Arraylake mapping"):
             sources.open_arraylake_era5("arraylake://earthmover-public/era5", ["not_a_variable"])
+
+
+class TestStaticVariableSources:
+    def test_geopotential_at_surface_registered(self):
+        assert "geopotential_at_surface" in sources.STATIC_VARIABLE_SOURCES
+
+    def test_unregistered_variable_raises(self):
+        with pytest.raises(ValueError, match="No static source registered"):
+            sources.open_static_era5_variable("not_a_variable")
+
+    def test_unregistered_variable_error_lists_registry(self):
+        with pytest.raises(ValueError, match="geopotential_at_surface"):
+            sources.open_static_era5_variable("not_a_variable")
+
+
+class TestOpenStaticEra5Variable:
+    @pytest.fixture
+    def static_source_zarr(self, tmp_path) -> pathlib.Path:
+        rng = np.random.default_rng(5)
+        time = pd.date_range("2019-01-01", periods=3, freq="6h")
+        values = np.broadcast_to(rng.standard_normal((len(_LAT), len(_LON))).astype(np.float32), (len(time), 4, 4))
+        ds = xr.Dataset(
+            {
+                "geopotential_at_surface": xr.DataArray(
+                    values,
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": time, "latitude": _LAT, "longitude": _LON},
+                )
+            }
+        )
+        path = tmp_path / "static_source.zarr"
+        ds.to_zarr(path)
+        return path
+
+    def test_drops_time_dimension(self, static_source_zarr, monkeypatch):
+        monkeypatch.setitem(sources.STATIC_VARIABLE_SOURCES, "geopotential_at_surface", str(static_source_zarr))
+        result = sources.open_static_era5_variable("geopotential_at_surface")
+        assert "time" not in result.dims
+        assert result.dims == ("latitude", "longitude")
+
+    def test_values_match_first_timestep(self, static_source_zarr, monkeypatch):
+        monkeypatch.setitem(sources.STATIC_VARIABLE_SOURCES, "geopotential_at_surface", str(static_source_zarr))
+        result = sources.open_static_era5_variable("geopotential_at_surface")
+        expected = xr.open_zarr(static_source_zarr, chunks=None)["geopotential_at_surface"].isel(time=0)
+        np.testing.assert_array_equal(result.values, expected.values)

@@ -37,6 +37,16 @@ ARRAYLAKE_TO_GOOGLE_COORDS = {
     "pressure_level": "level",
 }
 
+ARCO_ERA5_PUBLIC_URI = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+
+# Time-invariant fields not carried by the Arraylake mirror, sourced instead from the
+# public Google ARCO ERA5 archive (no credentials required). Every timestep in that
+# archive holds identical values for these fields; open_static_era5_variable collapses
+# the time dimension away.
+STATIC_VARIABLE_SOURCES: dict[str, str] = {
+    "geopotential_at_surface": ARCO_ERA5_PUBLIC_URI,
+}
+
 
 def parse_arraylake_repo(era5_uri: str) -> str:
     """Return the ``org/repo`` part of an ``arraylake://org/repo`` URI.
@@ -60,6 +70,32 @@ def _rename_to_google(ds: xr.Dataset, variable_mapping: dict[str, str]) -> xr.Da
     short_to_google = {short: google for google, short in variable_mapping.items() if short in ds}
     coord_renames = {src: dst for src, dst in ARRAYLAKE_TO_GOOGLE_COORDS.items() if src in ds.coords or src in ds.dims}
     return ds.rename({**short_to_google, **coord_renames})
+
+
+def open_static_era5_variable(variable: str) -> xr.DataArray:
+    """Open one time-invariant field from its registered source in STATIC_VARIABLE_SOURCES.
+
+    Args:
+        variable: Google ARCO variable name; must be a key of STATIC_VARIABLE_SOURCES.
+
+    Returns:
+        A lazy (latitude, longitude) DataArray with the time dimension dropped —
+        every timestep in the source archive holds identical values for these fields.
+
+    Raises:
+        ValueError: If ``variable`` has no registered static source.
+    """
+    if variable not in STATIC_VARIABLE_SOURCES:
+        raise ValueError(
+            f"No static source registered for variable {variable!r}. "
+            f"Registered static variables: {sorted(STATIC_VARIABLE_SOURCES)}"
+        )
+    uri = STATIC_VARIABLE_SOURCES[variable]
+    open_kwargs: dict = {"chunks": None}
+    if uri.startswith("gs://"):
+        open_kwargs["storage_options"] = {"token": "anon"}
+    ds = xr.open_zarr(uri, **open_kwargs)
+    return ds[variable].isel(time=0, drop=True)
 
 
 def available_arraylake_variables() -> set[str]:
