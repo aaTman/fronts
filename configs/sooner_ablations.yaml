@@ -1,4 +1,4 @@
-run_name: ablation_pressure_levels_full
+run_name: ablation_pressure_levels_surface_vars_full
 
 train_config:
   epochs: 5000
