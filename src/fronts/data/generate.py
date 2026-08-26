@@ -139,9 +139,9 @@ class WriteStrategy:
                 )
                 ds_download = generate_era5_download_data(narrow_config)
 
-            _, derived_vars, _ = derived.classify_variables(
+            derived_vars = derived.classify_variables(
                 era5_config.variables, {str(k) for k in ds_download.data_vars}
-            )
+            ).derived
             stored_derived = (
                 [v for v in derived_vars if v in store_contents.variables] if store_contents is not None else []
             )
@@ -196,7 +196,7 @@ def _available_variables(era5_config: ERA5DataLoaderConfig, ds: xr.Dataset | Non
 
 def _classify_missing(
     era5_config: ERA5DataLoaderConfig, missing_variables: list[str]
-) -> tuple[list[str], list[str], list[str]]:
+) -> derived.VariableClassification:
     """Split missing variables into directly downloadable (any level type), derived, and static."""
     return derived.classify_variables(missing_variables, _available_variables(era5_config))
 
@@ -299,7 +299,7 @@ def generate_era5_data(era5_config: ERA5DataLoaderConfig) -> xr.Dataset:
         single-level variables.
     """
     ds_download = generate_era5_download_data(era5_config)
-    _, derived_vars, _ = derived.classify_variables(era5_config.variables, {str(k) for k in ds_download.data_vars})
+    derived_vars = derived.classify_variables(era5_config.variables, {str(k) for k in ds_download.data_vars}).derived
     ds_derived = generate_era5_derived_data(derived_vars, ds_download)
     ds = ds_download.assign({str(name): ds_derived[name] for name in ds_derived.data_vars})
     requested = set(era5_config.variables)

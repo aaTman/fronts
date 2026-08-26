@@ -138,22 +138,8 @@ class TestClassifyVariables:
 
 class TestResolveStaticVariables:
     @pytest.fixture
-    def static_source_zarr(self, tmp_path: pathlib.Path) -> pathlib.Path:
-        rng = np.random.default_rng(21)
-        time = pd.date_range("2019-01-01", periods=2, freq="6h")
-        values = np.broadcast_to(rng.standard_normal((len(_LAT), len(_LON))).astype(np.float32), (len(time), 4, 4))
-        ds = xr.Dataset(
-            {
-                "geopotential_at_surface": xr.DataArray(
-                    values,
-                    dims=["time", "latitude", "longitude"],
-                    coords={"time": time, "latitude": _LAT, "longitude": _LON},
-                )
-            }
-        )
-        path = tmp_path / "static_source.zarr"
-        ds.to_zarr(path)
-        return path
+    def static_source_zarr(self, make_static_source_zarr) -> pathlib.Path:
+        return make_static_source_zarr("geopotential_at_surface", _LAT, _LON, seed=21)
 
     def test_returns_requested_variable(self, static_source_zarr, monkeypatch):
         monkeypatch.setitem(derived.sources.STATIC_VARIABLE_SOURCES, "geopotential_at_surface", str(static_source_zarr))

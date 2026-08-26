@@ -1,5 +1,6 @@
 import dataclasses
 from collections.abc import Callable
+from typing import NamedTuple
 
 import xarray as xr
 import xarray.ufuncs as xu
@@ -148,10 +149,24 @@ DERIVED_VARIABLE_REGISTRY: dict[str, DerivedVariableSpec] = {
 }
 
 
+class VariableClassification(NamedTuple):
+    """Requested variable names split by how each must be obtained.
+
+    Attributes:
+        direct: Available directly in the configured ARCO ERA5 source.
+        derived: Must be computed via ``DERIVED_VARIABLE_REGISTRY``.
+        static: Must be fetched via ``sources.open_static_era5_variables``.
+    """
+
+    direct: list[str]
+    derived: list[str]
+    static: list[str]
+
+
 def classify_variables(
     requested: list[str],
     arco_available: set[str],
-) -> tuple[list[str], list[str], list[str]]:
+) -> VariableClassification:
     """Split requested variable names into direct (in ARCO), derived, and static.
 
     Args:
@@ -159,10 +174,7 @@ def classify_variables(
         arco_available: Variable names present in the ARCO ERA5 Zarr store.
 
     Returns:
-        Tuple of (direct_vars, derived_vars, static_vars): direct_vars are
-        available in ARCO, derived_vars must be computed via
-        ``DERIVED_VARIABLE_REGISTRY``, and static_vars must be fetched via
-        ``sources.open_static_era5_variable``.
+        VariableClassification for ``requested``.
 
     Raises:
         ValueError: If any variable is in none of ``arco_available``,
@@ -190,11 +202,11 @@ def classify_variables(
             f"Registered static variables: {sorted(sources.STATIC_VARIABLE_SOURCES)}"
         )
 
-    return direct_vars, derived_vars, static_vars
+    return VariableClassification(direct_vars, derived_vars, static_vars)
 
 
 def resolve_static_variables(static_vars: list[str]) -> xr.Dataset:
-    """Fetch each requested static variable from its registered external source.
+    """Fetch the requested static variables from their registered external sources.
 
     Args:
         static_vars: Variable names, each a key of ``sources.STATIC_VARIABLE_SOURCES``.
@@ -202,7 +214,7 @@ def resolve_static_variables(static_vars: list[str]) -> xr.Dataset:
     Returns:
         Dataset of lazy (latitude, longitude) DataArrays, one per requested variable.
     """
-    return xr.Dataset({var: sources.open_static_era5_variable(var) for var in static_vars})
+    return sources.open_static_era5_variables(static_vars)
 
 
 def resolve_download_variables(

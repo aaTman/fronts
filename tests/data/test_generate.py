@@ -1044,24 +1044,8 @@ class TestExternalStaticVariables:
     """Static variables sourced from sources.STATIC_VARIABLE_SOURCES (e.g. geopotential_at_surface)."""
 
     @pytest.fixture
-    def geopotential_source_zarr(self, tmp_path: pathlib.Path, time_range: pd.DatetimeIndex) -> pathlib.Path:
-        rng = np.random.default_rng(17)
-        values = np.broadcast_to(
-            rng.standard_normal((len(LAT), len(LON))).astype(np.float32),
-            (len(time_range), len(LAT), len(LON)),
-        )
-        ds = xr.Dataset(
-            {
-                "geopotential_at_surface": xr.DataArray(
-                    values,
-                    dims=["time", "latitude", "longitude"],
-                    coords={"time": time_range, "latitude": LAT, "longitude": LON},
-                )
-            }
-        )
-        path = tmp_path / "geopotential_source.zarr"
-        ds.to_zarr(path)
-        return path
+    def geopotential_source_zarr(self, make_static_source_zarr, time_range: pd.DatetimeIndex) -> pathlib.Path:
+        return make_static_source_zarr("geopotential_at_surface", LAT, LON, time=time_range, seed=17)
 
     @pytest.fixture
     def registered_geopotential_source(self, geopotential_source_zarr: pathlib.Path, monkeypatch) -> pathlib.Path:
