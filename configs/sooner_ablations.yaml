@@ -1,4 +1,4 @@
-run_name: ablation_pressure_levels_surface_vars_full
+run_name: ablation_terrain_pressure_levels_surface_vars_full
 
 train_config:
   epochs: 5000
@@ -35,6 +35,7 @@ data_config:
       "10m_u_component_of_wind",
       "10m_v_component_of_wind",
       "2m_dewpoint_temperature",
+      "geopotential_at_surface"
     ]
   pressure_levels: [1000, 925, 850, 700]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
