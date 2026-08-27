@@ -162,7 +162,9 @@ class WriteStrategy:
         if self.missing_variables and store_contents is not None:
             still_missing = [v for v in self.missing_variables if v not in store_contents.variables]
             if still_missing:
-                direct_vars, derived_vars, static_vars = _classify_missing(era5_config, still_missing)
+                direct_vars, derived_vars, static_vars = derived.classify_variables(
+                    still_missing, _available_variables(era5_config)
+                )
 
                 if direct_vars:
                     logger.info(f"Downloading missing variables {direct_vars}...")
@@ -192,13 +194,6 @@ def _available_variables(era5_config: ERA5DataLoaderConfig, ds: xr.Dataset | Non
     if ds is None:
         ds = _open_source_dataset(era5_config)
     return {str(k) for k in ds.data_vars}
-
-
-def _classify_missing(
-    era5_config: ERA5DataLoaderConfig, missing_variables: list[str]
-) -> derived.VariableClassification:
-    """Split missing variables into directly downloadable (any level type), derived, and static."""
-    return derived.classify_variables(missing_variables, _available_variables(era5_config))
 
 
 def _open_source_dataset(era5_config: ERA5DataLoaderConfig) -> xr.Dataset:
