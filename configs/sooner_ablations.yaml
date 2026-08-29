@@ -1,4 +1,4 @@
-run_name: ablation_terrain_full
+run_name: ablation_terrain_4_levels_surface_vars_full
 
 train_config:
   epochs: 5000
@@ -32,9 +32,12 @@ data_config:
       "u_component_of_wind",
       "v_component_of_wind",
       "specific_humidity",
+      "10m_u_component_of_wind",
+      "10m_v_component_of_wind",
+      "2m_dewpoint_temperature",
       "geopotential_at_surface"
     ]
-  pressure_levels: [1000, 925, 850, 700, 500, 300]
+  pressure_levels: [1000, 925, 850, 700]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax
   num_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
