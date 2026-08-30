@@ -482,7 +482,10 @@ def run(eval_cfg: EvalConfig, data_cfg: datasets.DatasetConfig) -> None:
         compile=False,
         custom_objects={"SharedTargetModel": SharedTargetModel, "TemperatureScaledModel": TemperatureScaledModel},
     )
-    log.info("Model loaded. Output count: %d.", len(keras_model.outputs))
+    # TemperatureScaledModel is a subclassed (not functional) tf.keras.Model, so it has no
+    # .outputs attribute of its own — only its wrapped functional logit_model does.
+    output_bearing_model = getattr(keras_model, "logit_model", keras_model)
+    log.info("Model loaded. Output count: %d.", len(output_bearing_model.outputs))
 
     era5_ds, fronts_raw, lats, lons, spatial_mask, effective_data_cfg = load_eval_arrays(eval_cfg, data_cfg)
 
