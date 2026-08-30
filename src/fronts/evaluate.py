@@ -31,7 +31,7 @@ from tqdm import tqdm
 from fronts import utils
 from fronts.data import datasets
 from fronts.layers import losses, metrics
-from fronts.model import SharedTargetModel
+from fronts.model import SharedTargetModel, TemperatureScaledModel
 
 log = logging.getLogger(__name__)
 
@@ -478,7 +478,9 @@ def run(eval_cfg: EvalConfig, data_cfg: datasets.DatasetConfig) -> None:
     utils.configure_gpu(eval_cfg.gpu_device)
     log.info("Loading model from %s …", eval_cfg.model_path)
     keras_model = tf.keras.models.load_model(
-        eval_cfg.model_path, compile=False, custom_objects={"SharedTargetModel": SharedTargetModel}
+        eval_cfg.model_path,
+        compile=False,
+        custom_objects={"SharedTargetModel": SharedTargetModel, "TemperatureScaledModel": TemperatureScaledModel},
     )
     log.info("Model loaded. Output count: %d.", len(keras_model.outputs))
 
@@ -525,6 +527,7 @@ def main() -> None:
         help="Restrict stats to land or ocean grid points.",
     )
     parser.add_argument("--outdir", type=str, default=None, help="Override output directory from eval_config.")
+    parser.add_argument("--model_path", type=str, default=None, help="Override model path from eval_config.")
     args = parser.parse_args()
 
     yaml_data = utils.load_yaml(args.config_path)
@@ -534,6 +537,7 @@ def main() -> None:
         eval_cfg,
         mask=args.mask if args.mask is not None else eval_cfg.mask,
         outdir=args.outdir if args.outdir is not None else eval_cfg.outdir,
+        model_path=args.model_path if args.model_path is not None else eval_cfg.model_path,
     )
     run(eval_cfg, data_cfg)
 
