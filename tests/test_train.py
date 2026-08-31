@@ -555,6 +555,69 @@ class TestBuildLoss:
         assert np.isfinite(fss_value)
         assert np.isfinite(nbs_value)
 
+    def test_nbs_include_pixel_defaults_to_off(self):
+        """nbs_include_pixel/nbs_pixel_weight are optional — omitting them must not change the loss."""
+        rng = np.random.default_rng(1)
+        n_classes = 3
+        y_true = tf.one_hot(rng.integers(0, n_classes, size=(2, 8, 8)), n_classes)
+        y_pred = tf.nn.softmax(rng.standard_normal((2, 8, 8, n_classes)).astype(np.float32), axis=-1)
+
+        default_loss = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        explicit_off_loss = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=False,
+        )
+        default_value = float(tf.reduce_mean(default_loss(y_true, y_pred)))
+        explicit_off_value = float(tf.reduce_mean(explicit_off_loss(y_true, y_pred)))
+        assert default_value == pytest.approx(explicit_off_value)
+
+    def test_nbs_include_pixel_true_changes_loss(self):
+        """Turning on nbs_include_pixel must add the un-pooled pixelwise term."""
+        rng = np.random.default_rng(2)
+        n_classes = 3
+        y_true = tf.one_hot(rng.integers(0, n_classes, size=(2, 8, 8)), n_classes)
+        y_pred = tf.nn.softmax(rng.standard_normal((2, 8, 8, n_classes)).astype(np.float32), axis=-1)
+
+        pooled_only_loss = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=False,
+        )
+        with_pixel_loss = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=True,
+            nbs_pixel_weight=0.5,
+        )
+        pooled_only_value = float(tf.reduce_mean(pooled_only_loss(y_true, y_pred)))
+        with_pixel_value = float(tf.reduce_mean(with_pixel_loss(y_true, y_pred)))
+        assert np.isfinite(with_pixel_value)
+        assert with_pixel_value != pytest.approx(pooled_only_value)
+
 
 class TestTrainConfigLossClassWeights:
     @pytest.fixture
@@ -575,6 +638,22 @@ class TestTrainConfigLossClassWeights:
         yaml_data = {"train_config": {"loss_class_weights": weights, "epochs": 1}}
         cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
         assert cfg.loss_class_weights == weights
+
+    def test_nbs_include_pixel_defaults(self, train_config_cls):
+        from fronts import utils
+
+        yaml_data = {"train_config": {"loss_class_weights": None, "epochs": 1}}
+        cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
+        assert cfg.nbs_include_pixel is False
+        assert cfg.nbs_pixel_weight == 0.1
+
+    def test_sooner_ablations_config_parses_nbs_pixel_fields(self, train_config_cls):
+        from fronts import utils
+
+        yaml_data = utils.load_yaml("configs/sooner_ablations.yaml")
+        cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
+        assert cfg.nbs_include_pixel is True
+        assert cfg.nbs_pixel_weight == 0.5
 
     def test_schooner_configs_parse(self, train_config_cls):
         from fronts import utils

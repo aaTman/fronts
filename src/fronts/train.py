@@ -84,6 +84,19 @@ class TrainConfig:
         nbs_lat_dependent_pool: ``lat_dependent_pool`` passed to
             ``losses.neighborhood_brier_score``. Only used when
             ``loss_name == "neighborhood_brier_score"``.
+        nbs_include_pixel: ``include_pixel`` passed to ``losses.neighborhood_brier_score`` — adds
+            an un-pooled, per-pixel Brier term alongside the neighborhood-pooled one. The pooled
+            term alone only constrains the *neighborhood-averaged* forecast fraction, so it gives
+            very little gradient pressure to sharpen any single pixel's probability once it's
+            already moderately high (the marginal squared-error gain of 0.8 -> 0.99 is tiny and
+            further diluted by averaging over the pooling window) — this is why pointwise
+            reliability curves (see ``evaluate.obs_rel_freq_pointwise``) tend to plateau well
+            below 100% forecast probability. The pixelwise term scores each pixel directly,
+            undiluted by pooling, to counteract that. Only used when
+            ``loss_name == "neighborhood_brier_score"``.
+        nbs_pixel_weight: ``pixel_weight`` passed to ``losses.neighborhood_brier_score`` — the
+            pixelwise term's weight relative to the pooled term (which is fixed at 1). Only used
+            when ``nbs_include_pixel`` is True.
     """
 
     loss_class_weights: list[float] | None
@@ -97,6 +110,8 @@ class TrainConfig:
     nbs_tolerance_km: float = 25.0
     nbs_periodic_lon: bool = False
     nbs_lat_dependent_pool: bool = False
+    nbs_include_pixel: bool = False
+    nbs_pixel_weight: float = 0.1
 
 
 def load_data_into_dataloader(
@@ -238,6 +253,8 @@ def _build_loss(
     nbs_tolerance_km: float,
     nbs_periodic_lon: bool,
     nbs_lat_dependent_pool: bool,
+    nbs_include_pixel: bool = False,
+    nbs_pixel_weight: float = 0.1,
 ):
     """Build the configured training loss.
 
@@ -251,6 +268,10 @@ def _build_loss(
         nbs_periodic_lon: Whether longitude wraps. Only used by "neighborhood_brier_score".
         nbs_lat_dependent_pool: Whether to use latitude-dependent pooling. Only used by
             "neighborhood_brier_score".
+        nbs_include_pixel: Whether to add the un-pooled pixelwise Brier term. Only used by
+            "neighborhood_brier_score".
+        nbs_pixel_weight: Relative weight of the pixelwise term when ``nbs_include_pixel`` is
+            True. Only used by "neighborhood_brier_score".
 
     Returns:
         A callable loss function suitable for ``model.compile(loss=...)``.
@@ -267,6 +288,8 @@ def _build_loss(
             class_weights=loss_class_weights,
             periodic_lon=nbs_periodic_lon,
             lat_dependent_pool=nbs_lat_dependent_pool,
+            include_pixel=nbs_include_pixel,
+            pixel_weight=nbs_pixel_weight,
         )
     raise ValueError(
         f"Unrecognized loss_name {loss_name!r}; expected 'fractions_skill_score' or 'neighborhood_brier_score'."
@@ -340,6 +363,8 @@ def _compile(
         nbs_tolerance_km=train_cfg.nbs_tolerance_km,
         nbs_periodic_lon=train_cfg.nbs_periodic_lon,
         nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
+        nbs_include_pixel=train_cfg.nbs_include_pixel,
+        nbs_pixel_weight=train_cfg.nbs_pixel_weight,
     )
     hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
     hss_hard_fn = tf.keras.metrics.MeanMetricWrapper(
