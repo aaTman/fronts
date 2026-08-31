@@ -18,8 +18,10 @@ try:
     from fronts.layers import losses
     from fronts.model import ModelConfig, UNet3Plus
     from fronts.train import (
+        TrainConfig,
         _build_loss,
         _build_monitor_callbacks,
+        _compile,
         _freeze_layers,
         _load_pretrained_weights,
         _pred_buffer_px_from_data_config,
@@ -1112,6 +1114,39 @@ class TestPatchBufferEndToEnd:
         result = loss_fn(y_true, y_pred).numpy()
         assert result.shape == (2,)
         assert np.all(np.isfinite(result))
+
+    def test_compiled_model_trains_on_buffered_patch_batch(self):
+        """_compile must thread pred_buffer_px into the HSS metric, not just the loss.
+
+        Reproduces the crash from a real patch-buffer training run: model.fit failing
+        inside compute_metrics because the buffered (wider) y_pred and unbuffered y_true
+        reached heidke_skill_score with mismatched shapes.
+        """
+        core = 16
+        buffer_px = 4
+        buffered = core + 2 * buffer_px
+        model = _build_small_unet(levels=3, deep_supervision=False)
+
+        rng = np.random.default_rng(3)
+        x = rng.standard_normal((2, buffered, buffered, 4)).astype(np.float32)
+        y_true = tf.one_hot(rng.integers(0, 6, size=(2, core, core)), 6).numpy().astype(np.float32)
+
+        train_cfg = TrainConfig(
+            loss_class_weights=None,
+            loss_name="neighborhood_brier_score",
+            nbs_tolerance_km=25.0,
+        )
+        _compile(
+            model=model,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=np.linspace(25.0, 30.0, core),
+            pred_buffer_px=buffer_px,
+        )
+
+        result = model.train_on_batch(x, y_true, return_dict=True)
+        assert np.isfinite(result["hss"])
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

@@ -426,9 +426,11 @@ def _compile(
         nbs_pixel_weight=train_cfg.nbs_pixel_weight,
         nbs_pred_buffer_px=pred_buffer_px,
     )
-    hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
+    hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights, pred_buffer_px=pred_buffer_px)
     hss_hard_fn = tf.keras.metrics.MeanMetricWrapper(
-        fn=metrics.heidke_skill_score(class_weights=metric_class_weights, threshold=0.5),
+        fn=metrics.heidke_skill_score(
+            class_weights=metric_class_weights, threshold=0.5, pred_buffer_px=pred_buffer_px
+        ),
         name="hss_hard",
     )
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=gradient_clip_norm)

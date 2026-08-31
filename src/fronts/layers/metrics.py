@@ -168,10 +168,18 @@ def fractions_skill_score(
     return fss
 
 
+def _crop_pred_buffer(field: tf.Tensor, buffer_px: int) -> tf.Tensor:
+    """Crops ``buffer_px`` pixels off every side of the latitude/longitude axes."""
+    if buffer_px == 0:
+        return field
+    return field[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :]
+
+
 def heidke_skill_score(
     threshold: float | None = None,
     window_size: tuple[int, ...] | list[int] | None = None,
     class_weights: list[int | float] | None = None,
+    pred_buffer_px: int = 0,
 ) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """Heidke Skill Score (HSS).
 
@@ -181,6 +189,11 @@ def heidke_skill_score(
         window_size: Pool/kernel size of the max-pooling window for neighborhood statistics. Experimental; may return
             unexpected results.
         class_weights: Weights to apply to each class. Length must equal the number of classes in y_pred and y_true.
+        pred_buffer_px: If > 0, y_pred is expected to carry this many extra pixels of context on
+            every spatial side beyond y_true's shape (e.g. from a patch trained with an input-only
+            buffer — see fronts.data.datasets.PatchConfig). y_pred is cropped by pred_buffer_px on
+            every side (after ``window_size`` pooling, if any) before scoring against y_true. 0
+            (default) requires y_pred and y_true to share the same shape, matching prior behavior.
     """
 
     @tf.function
@@ -189,7 +202,8 @@ def heidke_skill_score(
 
         Args:
             y_true: One-hot encoded tensor containing labels.
-            y_pred: Tensor containing model predictions.
+            y_pred: Tensor containing model predictions. When pred_buffer_px > 0, this is
+                pred_buffer_px pixels wider than y_true on every spatial side.
         """
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
@@ -197,6 +211,8 @@ def heidke_skill_score(
         if window_size is not None:
             y_pred = tf.nn.max_pool(y_pred, ksize=window_size, strides=1, padding="VALID")
             y_true = tf.nn.max_pool(y_true, ksize=window_size, strides=1, padding="VALID")
+
+        y_pred = _crop_pred_buffer(y_pred, pred_buffer_px)
 
         if threshold is not None:
             y_pred = tf.where(y_pred >= threshold, 1.0, 0.0)

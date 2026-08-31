@@ -158,6 +158,29 @@ class TestHeidkeSkillScoreClassWeights:
         assert score_no_weights == pytest.approx(score_equal_weights, abs=1e-5)
 
 
+class TestHeidkeSkillScorePredBufferPx:
+    def test_buffered_pred_cropped_to_match_unbuffered_target(self):
+        """y_pred wider than y_true (patch-buffer training) must be cropped before scoring."""
+        buffer_px = 2
+        rng = np.random.default_rng(1)
+        labels = rng.integers(0, N_CLASSES, size=(N_BATCH, N_H, N_W))
+        core = (labels[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
+
+        y_pred = np.pad(core, ((0, 0), (buffer_px, buffer_px), (buffer_px, buffer_px), (0, 0)), mode="edge")
+        # Buffer region disagrees with what the crop should discard, so a wrong crop changes the score.
+        y_pred[:, :buffer_px, :, :] = 0.0
+        y_pred[:, -buffer_px:, :, :] = 0.0
+
+        result = heidke_skill_score(threshold=0.5, pred_buffer_px=buffer_px)(core, y_pred).numpy()
+        assert result == pytest.approx(1.0, abs=1e-5)
+
+    def test_default_pred_buffer_px_requires_matching_shapes(self, perfect_pred):
+        """pred_buffer_px=0 (default) must reproduce prior no-crop behavior."""
+        y_true, y_pred = perfect_pred
+        result = heidke_skill_score(threshold=0.5, pred_buffer_px=0)(y_true, y_pred).numpy()
+        assert result == pytest.approx(1.0, abs=1e-5)
+
+
 class TestFSSMetricPerfectPrediction:
     def test_perfect_prediction_is_one(self):
         y = np.zeros((1, N_H, N_W, N_CLASSES), dtype=np.float32)
