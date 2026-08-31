@@ -176,6 +176,26 @@ def select_spatial_domain(data: _XArray, bb: BoundingBox) -> _XArray:
     return data.sel(latitude=lat_slice, longitude=slice(bb.lon_min, bb.lon_max))
 
 
+def expand_bounding_box(bb: BoundingBox, buffer_px: int, resolution_deg: float) -> BoundingBox:
+    """Widen a BoundingBox by ``buffer_px`` grid cells on every side.
+
+    Args:
+        bb: Core bounding box.
+        buffer_px: Number of grid cells to add on each side (lat and lon).
+        resolution_deg: Grid spacing in degrees, used to convert pixels to degrees.
+
+    Returns:
+        A new BoundingBox widened by ``buffer_px * resolution_deg`` degrees on every side.
+    """
+    margin = buffer_px * resolution_deg
+    return BoundingBox(
+        lat_min=bb.lat_min - margin,
+        lat_max=bb.lat_max + margin,
+        lon_min=bb.lon_min - margin,
+        lon_max=bb.lon_max + margin,
+    )
+
+
 def select_pressure_levels(data: _XArray, levels: list[int] | None) -> _XArray:
     """Select a subset of pressure levels from a Dataset or DataArray.
 

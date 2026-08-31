@@ -122,6 +122,17 @@ class TestSelectSpatialDomain:
         assert result["longitude"].values.max() <= self._BB.lon_max
 
 
+class TestExpandBoundingBox:
+    def test_widens_all_four_sides_by_buffer_times_resolution(self):
+        bb = utils.BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0)
+        expanded = utils.expand_bounding_box(bb, buffer_px=2, resolution_deg=10.0)
+        assert expanded == utils.BoundingBox(lat_min=0.0, lat_max=60.0, lon_min=100.0, lon_max=170.0)
+
+    def test_zero_buffer_is_a_no_op(self):
+        bb = utils.BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0)
+        assert utils.expand_bounding_box(bb, buffer_px=0, resolution_deg=10.0) == bb
+
+
 def _make_level_da(levels: list[int]) -> xr.DataArray:
     return xr.DataArray(
         np.zeros((len(levels),), dtype=np.float32),

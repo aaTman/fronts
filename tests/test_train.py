@@ -11,15 +11,20 @@ from fronts.utils import IcechunkStorageConfig, apply_time_resolution
 try:
     import tensorflow as tf
 
-    from fronts.data.datasets import DatasetConfig, FrontsPyDataset
+    from fronts.callbacks import CallbacksConfig
+    from fronts.data.datasets import DatasetConfig, FrontsPyDataset, PatchConfig, compute_patch_lon_starts
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
+    from fronts.layers import losses
     from fronts.model import ModelConfig, UNet3Plus
     from fronts.train import (
         _build_loss,
         _build_monitor_callbacks,
         _freeze_layers,
         _load_pretrained_weights,
+        _pred_buffer_px_from_data_config,
+        _should_build_test_visualization,
+        _target_latitudes,
         load_data_into_dataloader,
     )
 
@@ -331,6 +336,98 @@ class TestFrontsPyDataset:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestFrontsPyDatasetPatchMode:
+    """PatchConfig support: sliding longitude windows with an optional input-only buffer."""
+
+    _N_TIME = 2
+    _N_LAT_CORE = 6
+    _N_LON_CORE = 12
+    _BUFFER = 2
+    _PATCH_WIDTH = 4
+    _N_PATCHES = 3  # starts = [0, 4, 8] for a 12-wide core and a 4-wide patch
+
+    def _make_ds(self, flip_probability=0.0, augment=False):
+        n_lat_buf = self._N_LAT_CORE + 2 * self._BUFFER
+        n_lon_buf = self._N_LON_CORE + 2 * self._BUFFER
+        # Every pixel gets a unique value (lat_idx * 1000 + lon_idx) so mis-slicing is caught.
+        buffered_vals = (np.arange(n_lat_buf)[:, None] * 1000 + np.arange(n_lon_buf)[None, :]).astype(np.float32)
+        input_ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    np.broadcast_to(buffered_vals, (self._N_TIME, n_lat_buf, n_lon_buf)).copy(),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": np.arange(self._N_TIME)},
+                )
+            }
+        )
+        core_vals = (np.arange(self._N_LAT_CORE)[:, None] + np.arange(self._N_LON_CORE)[None, :]) % 2
+        target_da = xr.DataArray(
+            np.broadcast_to(core_vals, (self._N_TIME, self._N_LAT_CORE, self._N_LON_CORE)).astype(np.int32).copy(),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": np.arange(self._N_TIME)},
+        )
+        dummy_store = IcechunkStorageConfig(store_path="unused", branch_name="main")
+        patch_config = PatchConfig(
+            n_patches=self._N_PATCHES,
+            patch_lon_width_px=self._PATCH_WIDTH,
+            buffer_px=self._BUFFER,
+            flip_probability=flip_probability,
+        )
+        data_config = DatasetConfig(
+            inputs_icechunk_config=dummy_store,
+            targets_icechunk_config=dummy_store,
+            variables=["temperature"],
+            test_years=[],
+            val_years=[],
+            patch_config=patch_config,
+        )
+        return FrontsPyDataset(input_ds, target_da, data_config, batch_size=1, augment=augment, seed=0)
+
+    def test_total_samples_equals_time_times_patches(self):
+        ds = self._make_ds()
+        assert ds.n_samples == self._N_TIME * self._N_PATCHES
+
+    def test_input_patch_width_includes_buffer_on_both_sides(self):
+        ds = self._make_ds()
+        x, _ = ds.get_at_indices(np.array([0]))
+        assert x.shape == (1, self._N_LAT_CORE + 2 * self._BUFFER, self._PATCH_WIDTH + 2 * self._BUFFER, 1)
+
+    def test_target_patch_has_no_buffer(self):
+        ds = self._make_ds()
+        _, y = ds.get_at_indices(np.array([0]))
+        assert y.shape[1:3] == (self._N_LAT_CORE, self._PATCH_WIDTH)
+
+    def test_input_patch_matches_manual_slice_with_buffer(self):
+        ds = self._make_ds()
+        starts = compute_patch_lon_starts(self._N_LON_CORE, self._PATCH_WIDTH, self._N_PATCHES)
+        n_lat_buf = self._N_LAT_CORE + 2 * self._BUFFER
+        for global_idx in range(ds.n_samples):
+            x, _ = ds.get_at_indices(np.array([global_idx]))
+            _, patch_idx = divmod(global_idx, self._N_PATCHES)
+            start = starts[patch_idx]
+            expected_lon = np.arange(start, start + self._PATCH_WIDTH + 2 * self._BUFFER)
+            expected = (np.arange(n_lat_buf)[:, None] * 1000 + expected_lon[None, :]).astype(np.float32)
+            np.testing.assert_allclose(x[0, :, :, 0], expected)
+
+    def test_flip_probability_one_always_flips_both_axes_when_augmenting(self):
+        ds_flip = self._make_ds(flip_probability=1.0, augment=True)
+        ds_noflip = self._make_ds(flip_probability=0.0, augment=True)
+        x_flip, y_flip = ds_flip.get_at_indices(np.array([0]))
+        x_noflip, y_noflip = ds_noflip.get_at_indices(np.array([0]))
+        np.testing.assert_allclose(x_flip[0], x_noflip[0][::-1, ::-1, :])
+        np.testing.assert_allclose(y_flip[0], y_noflip[0][::-1, ::-1, :])
+
+    def test_augment_false_ignores_flip_probability(self):
+        ds = self._make_ds(flip_probability=1.0, augment=False)
+        x, _ = ds.get_at_indices(np.array([0]))
+        starts = compute_patch_lon_starts(self._N_LON_CORE, self._PATCH_WIDTH, self._N_PATCHES)
+        n_lat_buf = self._N_LAT_CORE + 2 * self._BUFFER
+        expected_lon = np.arange(starts[0], starts[0] + self._PATCH_WIDTH + 2 * self._BUFFER)
+        expected = (np.arange(n_lat_buf)[:, None] * 1000 + expected_lon[None, :]).astype(np.float32)
+        np.testing.assert_allclose(x[0, :, :, 0], expected)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestLoadDataIntoDataloaderLongitude:
     """A wrap-crossing bounding box (lon_max > 360, e.g. configs/generate_icechunk.yaml's.
 
@@ -487,6 +584,95 @@ class TestLoadDataIntoDataloaderPressureLevels:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestLoadDataIntoDataloaderPatchBuffer:
+    """patch_config.buffer_px must widen only inputs_ds's loaded domain, never targets_da's."""
+
+    _TIMES = pd.date_range("2020-01-01", periods=4, freq="6h")
+    _LAT = np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0])
+    _LON = np.array([100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0, 190.0])
+
+    def _write_store(self, tmp_path, name: str, var_name: str) -> IcechunkStorageConfig:
+        storage_config = IcechunkStorageConfig(store_path=str(tmp_path / name), branch_name="main")
+        ds = xr.Dataset(
+            {
+                var_name: xr.DataArray(
+                    np.zeros((len(self._TIMES), len(self._LAT), len(self._LON)), dtype=np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": self._TIMES, "latitude": self._LAT, "longitude": self._LON},
+                )
+            }
+        )
+        write_or_append_icechunk_store(storage_config, ds)
+        return storage_config
+
+    def _data_config(self, tmp_path, coordinates, buffer_px):
+        return DatasetConfig(
+            inputs_icechunk_config=self._write_store(tmp_path, "inputs", "temperature"),
+            targets_icechunk_config=self._write_store(tmp_path, "targets", "identifier"),
+            variables=["temperature"],
+            test_years=[2020],
+            val_years=[],
+            coordinates=coordinates,
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=2, buffer_px=buffer_px)
+            if buffer_px is not None
+            else None,
+        )
+
+    def test_inputs_widened_by_buffer_targets_stay_core(self, tmp_path):
+        from fronts.utils import BoundingBox
+
+        data_config = self._data_config(
+            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=1
+        )
+        test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
+        assert test_dataset.input_ds.sizes["latitude"] == 5
+        assert test_dataset.input_ds.sizes["longitude"] == 6
+        assert test_dataset.target_da.sizes["latitude"] == 3
+        assert test_dataset.target_da.sizes["longitude"] == 4
+
+    def test_zero_buffer_matches_unbuffered_domain(self, tmp_path):
+        from fronts.utils import BoundingBox
+
+        data_config = self._data_config(
+            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=0
+        )
+        test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
+        assert test_dataset.input_ds.sizes["latitude"] == 3
+        assert test_dataset.input_ds.sizes["longitude"] == 4
+
+    def test_buffer_past_store_edge_raises(self, tmp_path):
+        from fronts.utils import BoundingBox
+
+        data_config = self._data_config(
+            tmp_path, BoundingBox(lat_min=0.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=1
+        )
+        with pytest.raises(ValueError, match="buffer_px"):
+            load_data_into_dataloader(data_config, split="test", seed=0)
+
+    def test_patch_config_without_coordinates_raises(self, tmp_path):
+        data_config = DatasetConfig(
+            inputs_icechunk_config=self._write_store(tmp_path, "inputs", "temperature"),
+            targets_icechunk_config=self._write_store(tmp_path, "targets", "identifier"),
+            variables=["temperature"],
+            test_years=[2020],
+            val_years=[],
+            coordinates=None,
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=2, buffer_px=0),
+        )
+        with pytest.raises(ValueError, match="coordinates"):
+            load_data_into_dataloader(data_config, split="test", seed=0)
+
+    def test_augment_flag_threaded_to_dataset(self, tmp_path):
+        from fronts.utils import BoundingBox
+
+        data_config = self._data_config(
+            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=0
+        )
+        test_dataset = load_data_into_dataloader(data_config, split="test", seed=0, augment=True)
+        assert test_dataset.augment is True
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestBuildLoss:
     _LATITUDES = np.linspace(25.0, 56.75, 8)
 
@@ -618,6 +804,74 @@ class TestBuildLoss:
         assert np.isfinite(with_pixel_value)
         assert with_pixel_value != pytest.approx(pooled_only_value)
 
+    def test_neighborhood_brier_threads_pred_buffer_px(self):
+        loss_fn = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_pred_buffer_px=2,
+        )
+        y_true = np.zeros((1, 8, 8, 6), dtype=np.float32)
+        y_true[..., 0] = 1.0
+        y_pred = np.zeros((1, 12, 12, 6), dtype=np.float32)  # buffered by 2 on each side
+        y_pred[..., 0] = 1.0
+        result = loss_fn(y_true, y_pred).numpy()
+        assert np.all(np.isfinite(result))
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestPredBufferPxFromDataConfig:
+    def test_no_patch_config_returns_zero(self, data_config):
+        assert _pred_buffer_px_from_data_config(data_config) == 0
+
+    def test_patch_config_returns_its_buffer_px(self, data_config):
+        import dataclasses as dc
+
+        cfg = dc.replace(data_config, patch_config=PatchConfig(n_patches=9, patch_lon_width_px=128, buffer_px=16))
+        assert _pred_buffer_px_from_data_config(cfg) == 16
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestTargetLatitudes:
+    def test_returns_target_da_latitudes_not_input_ds(self, data_config):
+        n_time, n_lat_core, n_lon = 2, 3, 4
+        input_ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    np.zeros((n_time, n_lat_core + 2, n_lon), dtype=np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": np.arange(n_time), "latitude": np.arange(n_lat_core + 2) + 100.0},
+                )
+            }
+        )
+        target_da = xr.DataArray(
+            np.zeros((n_time, n_lat_core, n_lon), dtype=np.int32),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": np.arange(n_time), "latitude": np.arange(n_lat_core) + 5.0},
+        )
+        ds = FrontsPyDataset(input_ds, target_da, data_config, batch_size=1)
+        np.testing.assert_array_equal(_target_latitudes(ds), np.arange(n_lat_core) + 5.0)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestShouldBuildTestVisualization:
+    def test_true_when_wandb_and_cadence_set_and_no_patch_config(self):
+        assert _should_build_test_visualization(None, "fronts", 1) is True
+
+    def test_false_without_wandb_project(self):
+        assert _should_build_test_visualization(None, None, 1) is False
+
+    def test_false_without_cadence(self):
+        assert _should_build_test_visualization(None, "fronts", None) is False
+
+    def test_false_with_patch_config(self):
+        pc = PatchConfig(n_patches=9, patch_lon_width_px=128, buffer_px=0)
+        assert _should_build_test_visualization(pc, "fronts", 1) is False
+
 
 class TestTrainConfigLossClassWeights:
     @pytest.fixture
@@ -693,6 +947,24 @@ class TestTrainConfigLossClassWeights:
         assert callbacks_cfg.min_delta == 0.0
         assert callbacks_cfg.early_stopping_patience == 12
 
+    def test_patch_buffer_ablation_config_parses(self, train_config_cls):
+        from fronts import utils
+
+        yaml_data = utils.load_yaml("configs/patch_buffer_ablation.yaml")
+        data_cfg = utils.parse_config_section(yaml_data, DatasetConfig, "data_config", type_hooks=utils.YAML_TYPE_HOOKS)
+        model_cfg = utils.parse_config_section(yaml_data, ModelConfig, "model_config")
+        train_cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
+        callbacks_cfg = utils.parse_config_section(yaml_data, CallbacksConfig, "callbacks_config")
+
+        assert data_cfg.patch_config == PatchConfig(
+            n_patches=9, patch_lon_width_px=128, buffer_px=16, flip_probability=0.25
+        )
+        assert data_cfg.coordinates == utils.BoundingBox(lat_min=25.0, lat_max=56.75, lon_min=228.0, lon_max=299.75)
+        assert data_cfg.volume_inputs is True
+        assert list(model_cfg.pool_size) == [2, 2, 1]
+        assert callbacks_cfg.test_viz_every_n_epochs is None
+        assert train_cfg.loss_name == "neighborhood_brier_score"
+
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestFrontsPyDatasetVolume:
@@ -750,6 +1022,49 @@ class TestFrontsPyDatasetVolume:
         np.testing.assert_array_equal(x_batch[..., 0, 1], x_batch[..., 1, 1])
 
 
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestPatchConfigValidation:
+    def test_n_patches_must_be_positive(self):
+        with pytest.raises(ValueError, match="n_patches"):
+            PatchConfig(n_patches=0, patch_lon_width_px=4)
+
+    def test_patch_lon_width_px_must_be_positive(self):
+        with pytest.raises(ValueError, match="patch_lon_width_px"):
+            PatchConfig(n_patches=1, patch_lon_width_px=0)
+
+    def test_buffer_px_must_be_non_negative(self):
+        with pytest.raises(ValueError, match="buffer_px"):
+            PatchConfig(n_patches=1, patch_lon_width_px=4, buffer_px=-1)
+
+    def test_flip_probability_must_be_in_unit_interval(self):
+        with pytest.raises(ValueError, match="flip_probability"):
+            PatchConfig(n_patches=1, patch_lon_width_px=4, flip_probability=1.5)
+
+    def test_defaults(self):
+        cfg = PatchConfig(n_patches=9, patch_lon_width_px=128)
+        assert cfg.buffer_px == 0
+        assert cfg.flip_probability == 0.0
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestComputePatchLonStarts:
+    def test_nine_patches_evenly_spaced_across_288(self):
+        starts = compute_patch_lon_starts(n_lon_core=288, patch_width=128, n_patches=9)
+        np.testing.assert_array_equal(starts, [0, 20, 40, 60, 80, 100, 120, 140, 160])
+
+    def test_single_patch_starts_at_zero(self):
+        starts = compute_patch_lon_starts(n_lon_core=20, patch_width=8, n_patches=1)
+        np.testing.assert_array_equal(starts, [0])
+
+    def test_patch_wider_than_core_raises(self):
+        with pytest.raises(ValueError, match="exceeds"):
+            compute_patch_lon_starts(n_lon_core=10, patch_width=12, n_patches=2)
+
+    def test_last_patch_ends_exactly_at_core_width(self):
+        starts = compute_patch_lon_starts(n_lon_core=12, patch_width=4, n_patches=3)
+        assert starts[-1] + 4 == 12
+
+
 def _build_small_unet(
     levels: int = 3,
     deep_supervision: bool = False,
@@ -770,6 +1085,33 @@ def _build_small_unet(
         normalization_stat_a=normalization_stat_a,
         normalization_stat_b=normalization_stat_b,
     ).build()
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestPatchBufferEndToEnd:
+    """Buffered patches must compose through the real model into the buffer-aware loss."""
+
+    def test_buffered_patch_input_scores_against_unbuffered_core_target(self):
+        core = 16
+        buffer_px = 4
+        buffered = core + 2 * buffer_px  # 24; still divisible by the 2-stage (levels=3) stride of 4
+        model = _build_small_unet(levels=3, deep_supervision=False)  # input_shape=(None, None, 4)
+
+        rng = np.random.default_rng(3)
+        x = rng.standard_normal((2, buffered, buffered, 4)).astype(np.float32)
+        y_true = tf.one_hot(rng.integers(0, 6, size=(2, core, core)), 6).numpy().astype(np.float32)
+
+        y_pred = model(x, training=False)
+        if isinstance(y_pred, list | tuple):
+            y_pred = y_pred[0]
+        assert y_pred.shape == (2, buffered, buffered, 6)
+
+        loss_fn = losses.neighborhood_brier_score(
+            latitudes=np.linspace(25.0, 30.0, core), tolerance_km=25.0, pred_buffer_px=buffer_px
+        )
+        result = loss_fn(y_true, y_pred).numpy()
+        assert result.shape == (2,)
+        assert np.all(np.isfinite(result))
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

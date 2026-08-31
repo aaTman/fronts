@@ -13,6 +13,82 @@ from fronts.data import inputs, targets
 logger = logging.getLogger(__name__)
 
 
+def compute_patch_lon_starts(n_lon_core: int, patch_width: int, n_patches: int) -> np.ndarray:
+    """Evenly spaced starting pixel offsets for sliding longitude windows.
+
+    Reproduces "nine pairs of images evenly spaced along the longitude" (Justin et al.
+    2025): ``n_patches`` windows of ``patch_width`` pixels tiled across a core domain of
+    ``n_lon_core`` pixels, first window flush with the west edge, last flush with the east
+    edge, evenly spaced in between.
+
+    Args:
+        n_lon_core: Width of the (unbuffered) core longitude domain, in grid pixels.
+        patch_width: Width of each patch's core region, in grid pixels.
+        n_patches: Number of patch positions.
+
+    Returns:
+        Integer array of shape (n_patches,), each a 0-indexed starting pixel offset into
+        the core domain.
+
+    Raises:
+        ValueError: If patch_width exceeds n_lon_core, or n_patches < 1.
+    """
+    if patch_width > n_lon_core:
+        raise ValueError(f"patch_lon_width_px ({patch_width}) exceeds the core domain width ({n_lon_core}).")
+    if n_patches < 1:
+        raise ValueError(f"n_patches must be >= 1, got {n_patches}")
+    if n_patches == 1:
+        return np.array([0], dtype=int)
+    return np.round(np.linspace(0, n_lon_core - patch_width, n_patches)).astype(int)
+
+
+@dataclasses.dataclass
+class PatchConfig:
+    """Sliding-window longitude patch extraction with an optional input-only context buffer.
+
+    Reproduces Justin et al. (2025)'s original training regime: nine 128x128 patches per
+    timestep, evenly spaced along longitude, each independently flipped along latitude
+    and/or longitude with some probability. Requires ``DatasetConfig.coordinates`` to be
+    set (defines the core domain patches are tiled from); ``load_data_into_dataloader``
+    raises if ``patch_config`` is set without it.
+
+    Attributes:
+        n_patches: Number of evenly-spaced longitude patch positions per timestep.
+        patch_lon_width_px: Width of each patch's core (unbuffered, loss-supervised)
+            region along longitude, in grid pixels. Every patch's latitude extent is the
+            full height of ``DatasetConfig.coordinates`` — no latitude tiling, since
+            CONUS's 128-point latitude range already equals the paper's patch height.
+        buffer_px: Extra context pixels appended on every side (north, south, east, west)
+            of each patch's core region, for the *input* only — never the target. 0
+            disables buffering. ``patch_lon_width_px + 2 * buffer_px`` (and the core
+            latitude height + 2 * buffer_px) must stay divisible by the model's total
+            downsampling stride (product of ``model_config.pool_size`` across
+            ``model_config.levels - 1`` pooling stages) or the model fails to build — see
+            the "What We're NOT Doing" note on stride validation in
+            docs/rse/specs/plan-patch-buffer-training.md.
+        flip_probability: Independent per-axis probability of flipping a training patch
+            along latitude and along longitude. 0.25 reproduces the paper's rate (a
+            1 - (1 - p)^2 = 43.75% chance of at least one flip at p=0.25). Applied only to
+            the train split.
+    """
+
+    n_patches: int
+    patch_lon_width_px: int
+    buffer_px: int = 0
+    flip_probability: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Validate patch geometry and augmentation parameters."""
+        if self.n_patches < 1:
+            raise ValueError(f"n_patches must be >= 1, got {self.n_patches}")
+        if self.patch_lon_width_px < 1:
+            raise ValueError(f"patch_lon_width_px must be >= 1, got {self.patch_lon_width_px}")
+        if self.buffer_px < 0:
+            raise ValueError(f"buffer_px must be >= 0, got {self.buffer_px}")
+        if not 0.0 <= self.flip_probability <= 1.0:
+            raise ValueError(f"flip_probability must be in [0, 1], got {self.flip_probability}")
+
+
 @dataclasses.dataclass
 class DatasetConfig:
     """Configuration for loading and splitting input and fronts data.
@@ -53,6 +129,10 @@ class DatasetConfig:
             ``level`` dimension. None keeps every level already present in the store.
             Must be a subset of the levels the store was generated with (see
             ``fronts.data.generate.ERA5DataLoaderConfig.pressure_levels``).
+        patch_config: Optional sliding-window longitude patch extraction (with optional
+            context buffer and flip augmentation) reproducing Justin et al. (2025)'s
+            original training regime. None trains on the full ``coordinates``-cropped
+            domain per timestep, as today. Requires ``coordinates`` to be set.
     """
 
     inputs_icechunk_config: utils.IcechunkStorageConfig
@@ -71,6 +151,7 @@ class DatasetConfig:
     coordinates: utils.BoundingBox | None = None
     volume_inputs: bool = False
     pressure_levels: list[int] | None = None
+    patch_config: PatchConfig | None = None
 
 
 class FrontsPyDataset(tf.keras.utils.PyDataset):
@@ -112,6 +193,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         workers: int = 1,
         max_queue_size: int = 10,
         drop_remainder: bool = False,
+        augment: bool = False,
     ):
         super().__init__(workers=workers, max_queue_size=max_queue_size)
         if input_ds.sizes["time"] != target_da.sizes["time"]:
@@ -124,17 +206,34 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_remainder = drop_remainder
+        self.augment = augment
+        self._n_patches = data_config.patch_config.n_patches if data_config.patch_config is not None else 1
+        if data_config.patch_config is not None:
+            self._patch_lon_starts = compute_patch_lon_starts(
+                n_lon_core=target_da.sizes["longitude"],
+                patch_width=data_config.patch_config.patch_lon_width_px,
+                n_patches=data_config.patch_config.n_patches,
+            )
         self._rng = np.random.default_rng(seed)
         self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
 
     @property
     def _total(self) -> int:
-        return self.input_ds.sizes["time"]
+        return self.input_ds.sizes["time"] * self._n_patches
 
     @property
     def n_samples(self) -> int:
-        """Number of individual timesteps (samples) in this split."""
+        """Number of individual samples in this split (timesteps, or timesteps x patches in patch mode)."""
         return self._total
+
+    def patch_sample_index(self, time_idx: int, patch_idx: int = 0) -> int:
+        """Map a timestep index to a global sample index, picking one patch within it.
+
+        In patch mode, ``get_at_indices`` expects global sample indices
+        (``time_idx * n_patches + patch_idx``), not raw timestep indices. Non-patch mode
+        returns ``time_idx`` unchanged, since ``n_patches`` is 1.
+        """
+        return time_idx * self._n_patches + patch_idx
 
     def __len__(self) -> int:
         """Returns the number of batches per epoch."""
@@ -148,12 +247,16 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
             self._order = self._rng.permutation(self._total)
 
     def get_at_indices(self, idxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the (input, target) arrays at arbitrary global time indices.
+        """Returns the (input, target) arrays at arbitrary global sample indices.
 
         Unlike ``__getitem__``, ``idxs`` need not be batch-sized or in ``_order``'s
-        epoch sequence — used by callers that need specific timesteps directly (e.g. a
+        epoch sequence — used by callers that need specific samples directly (e.g. a
         test-set visualization callback selecting one active day or a random subsample).
+        In patch mode, ``idxs`` are global sample indices (see ``patch_sample_index``),
+        not raw timestep indices.
         """
+        if self.data_config.patch_config is not None:
+            return self._get_patches_at_indices(idxs)
         x_xarray = self.input_ds.isel(time=idxs)
         y_da = self.target_da.isel(time=idxs)
 
@@ -174,6 +277,61 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         # target across any deep-supervision outputs, not the dataset.
         y = y_da.values
         return x, y
+
+    def _get_patches_at_indices(self, idxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Patch-mode ``get_at_indices``.
+
+        Slices a buffered input window and unbuffered target window per sample, then
+        applies flip augmentation if ``self.augment``.
+        """
+        pc = self.data_config.patch_config
+        time_idxs = idxs // pc.n_patches
+        patch_idxs = idxs % pc.n_patches
+
+        x_xarray = self.input_ds.isel(time=time_idxs)
+        y_da = self.target_da.isel(time=time_idxs)
+
+        if self.data_config.volume_inputs:
+            x_full = inputs.inputs_ds_to_volume_dataarray(x_xarray, self.data_config.variables).values
+        else:
+            x_full = inputs.inputs_ds_to_dataarray(x_xarray, self.data_config.variables).values
+
+        y_da = targets.one_hot_encode_to_dataarray(targets.remap_fronts(y_da))
+        if self.data_config.front_dilation > 0:
+            y_da = targets.dilate_fronts(y_da, self.data_config.front_dilation)
+        y_full = y_da.values
+
+        width = pc.patch_lon_width_px
+        buf = pc.buffer_px
+        starts = self._patch_lon_starts
+        x = np.stack(
+            [x_full[i, :, starts[p] : starts[p] + width + 2 * buf, ...] for i, p in enumerate(patch_idxs)], axis=0
+        )
+        y = np.stack([y_full[i, :, starts[p] : starts[p] + width, :] for i, p in enumerate(patch_idxs)], axis=0)
+
+        if self.augment and pc.flip_probability > 0:
+            x, y = self._apply_flip_augmentation(x, y, pc.flip_probability)
+        return x, y
+
+    def _apply_flip_augmentation(
+        self, x: np.ndarray, y: np.ndarray, flip_probability: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Independently flips each sample along latitude and/or longitude.
+
+        Applies with probability ``flip_probability`` per axis — Justin et al. (2025)'s
+        augmentation.
+        """
+        n = x.shape[0]
+        flip_lat = self._rng.random(n) < flip_probability
+        flip_lon = self._rng.random(n) < flip_probability
+        for i in range(n):
+            if flip_lat[i]:
+                x[i] = x[i, ::-1, ...]
+                y[i] = y[i, ::-1, ...]
+            if flip_lon[i]:
+                x[i] = x[i, :, ::-1, ...]
+                y[i] = y[i, :, ::-1, ...]
+        return x.copy(), y.copy()
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) batch at ``idx``."""

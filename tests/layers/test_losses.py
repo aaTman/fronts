@@ -211,6 +211,51 @@ class TestNeighborhoodBrierScore:
         )
         assert with_pixel(y_true, y_pred).numpy().mean() > base(y_true, y_pred).numpy().mean()
 
+    def test_hedging_within_a_pooling_window_is_penalised_only_by_the_pixel_term(self):
+        """The base (no include_pixel) term is blind to any pixel-level redistribution of
+        probability mass that leaves every pooling window's average unchanged, so a model can
+        "hedge" -- move probability away from where it truly belongs, as long as it stays
+        within the same window -- at zero cost.
+
+        Concretely: a period-3 perturbation that sums to zero over any 3 consecutive columns
+        lands exactly in the null space of the 3-wide pooling window used here (half_x=1 at
+        the equator for a 25km tolerance -- see TestPlanWindows), so it vanishes after pooling
+        regardless of its phase. The truth itself is a genuinely uncertain 50/50 field, not a
+        blurred hard label, so this isolates the loss's own blind spot rather than an artifact
+        of how the target was constructed. include_pixel adds a term computed directly on the
+        raw, un-pooled pixels, closing that loophole.
+        """
+        n_w = 9
+        front_row = 4
+        y_true = _one_hot_background(n_batch=1, n_w=n_w)
+        y_true[:, front_row, :, 0] = 0.5
+        y_true[:, front_row, :, 1] = 0.5
+
+        e = 0.3
+        cols = np.arange(n_w)
+        delta = np.where(cols % 3 == 0, -e, np.where(cols % 3 == 1, e, 0.0))
+        y_hedge = y_true.copy()
+        y_hedge[:, front_row, :, 1] += delta
+        y_hedge[:, front_row, :, 0] -= delta
+        assert y_hedge.min() >= 0.0 and y_hedge.max() <= 1.0, "hedge must stay a valid probability"
+
+        base = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
+        with_pixel = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, include_pixel=True, pixel_weight=1.0
+        )
+
+        truthful_base = base(y_true, y_true).numpy().mean()
+        hedge_base = base(y_true, y_hedge).numpy().mean()
+        truthful_pixel = with_pixel(y_true, y_true).numpy().mean()
+        hedge_pixel = with_pixel(y_true, y_hedge).numpy().mean()
+
+        assert truthful_base == pytest.approx(0.0, abs=1e-7)
+        assert truthful_pixel == pytest.approx(0.0, abs=1e-7)
+        assert hedge_base < 1e-3, f"base term should barely notice the hedge, got {hedge_base:.2e}"
+        assert hedge_pixel > 20 * hedge_base, (
+            f"pixel term must dominate once it sees the hedge: base={hedge_base:.2e}, with_pixel={hedge_pixel:.2e}"
+        )
+
     def test_gradient_flows_to_predictions(self):
         y_true = tf.constant(_with_front_row(_one_hot_background(), row=4))
         y_pred = tf.Variable(np.full((N_BATCH, N_H, N_W, N_CLASSES), 1.0 / N_CLASSES, dtype=np.float32))
@@ -272,6 +317,105 @@ class TestNeighborhoodBrierScore:
         result = traced(tf.constant(y_true), tf.constant(_one_hot_background())).numpy()
         assert result.shape == (N_BATCH,)
         assert np.all(np.isfinite(result))
+
+
+class TestNeighborhoodBrierScorePredBuffer:
+    def test_pred_buffer_px_zero_matches_default_behavior(self):
+        y_true = _with_front_row(_one_hot_background(), row=4)
+        y_pred = _with_front_row(_one_hot_background(), row=5)
+        default = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
+        explicit_zero = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, pred_buffer_px=0
+        )
+        np.testing.assert_allclose(default(y_true, y_pred).numpy(), explicit_zero(y_true, y_pred).numpy())
+
+    def test_pred_buffer_px_accepts_larger_prediction_and_returns_finite_scalar(self):
+        y_true = _one_hot_background()
+        buffer_px = 2
+        y_pred = np.zeros((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES), dtype=np.float32)
+        y_pred[..., 0] = 1.0
+        loss_fn = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, pred_buffer_px=buffer_px
+        )
+        result = loss_fn(y_true, y_pred).numpy()
+        assert result.shape == (N_BATCH,)
+        assert np.all(np.isfinite(result))
+
+    def test_pred_buffer_px_pooling_reads_real_buffer_values_not_zero_padding(self):
+        """Pooling the buffered prediction must use the declared buffer-ring content.
+
+        Cells whose pooling window reaches into the buffer must draw from it -- otherwise
+        pred_buffer_px would be a no-op and defeat the point of supplying buffer context.
+
+        Keras's AveragePooling2D(padding="same") already excludes padding from its divisor
+        (a uniform field pools to itself even at the domain edge), so "zero-padding dilutes
+        the edge" is not the right mental model here; edge cells are always
+        valid-cell-normalized over however many cells the window actually has access to.
+        That's exactly the lever this test uses: with a front pixel at the very edge (row
+        0, col 4) and a core prediction that matches the truth exactly, the *unbuffered*
+        loss is exactly zero (O_n and M_n both valid-cell-average the identical 6
+        in-domain neighbors). Declaring a buffer ring that continues the same front pattern
+        one row further north changes the buffered M_n's neighbor count from 6 to 9 real
+        cells -- a different (and here, nonzero) average -- proving the crop happens after
+        a pooling call that genuinely saw the buffer pixels, not before it.
+        """
+        y_true = _one_hot_background().copy()
+        y_true[:, 0, 4, 0] = 0.0
+        y_true[:, 0, 4, 1] = 1.0  # a single front pixel at the very edge (row 0, col 4)
+        core_pred = y_true.copy()
+        buffer_px = 1
+        buffered_pred = np.zeros((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES), dtype=np.float32)
+        buffered_pred[..., 0] = 1.0
+        buffered_pred[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :] = core_pred
+        # North buffer row: the front continues one row further north, aligned under core
+        # col 4 (buffered col index 4 + buffer_px).
+        buffered_pred[:, 0, :, 0] = 1.0
+        buffered_pred[:, 0, :, 1] = 0.0
+        buffered_pred[:, 0, 4 + buffer_px, 0] = 0.0
+        buffered_pred[:, 0, 4 + buffer_px, 1] = 1.0
+
+        cw = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]  # isolate the front class
+        unbuffered_loss = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, class_weights=cw
+        )
+        buffered_loss = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, class_weights=cw, pred_buffer_px=buffer_px
+        )
+
+        unbuffered_value = unbuffered_loss(y_true, core_pred).numpy().mean()
+        buffered_value = buffered_loss(y_true, buffered_pred).numpy().mean()
+
+        assert unbuffered_value == pytest.approx(0.0, abs=1e-7), (
+            "sanity check: an unbuffered perfect-core prediction must score exactly zero "
+            "since O_n and M_n valid-cell-average the identical 6 in-domain neighbors"
+        )
+        assert buffered_value > 1e-7, (
+            "the buffered prediction differs from the unbuffered one only in its buffer "
+            "ring, so a nonzero loss here proves the pooling step actually read those "
+            "buffer pixels (averaging over 9 cells) rather than stopping at the domain edge "
+            "(averaging over 6)"
+        )
+
+    def test_pred_buffer_px_pixel_term_uses_cropped_raw_prediction(self):
+        """include_pixel's un-pooled term must compare against the cropped raw prediction.
+
+        Not the full buffered one -- otherwise shapes wouldn't broadcast.
+        """
+        y_true = _with_front_row(_one_hot_background(), row=4)
+        buffer_px = 1
+        core_pred = _one_hot_background()  # wrong everywhere in the core (a miss)
+        buffered_pred = np.zeros((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES), dtype=np.float32)
+        buffered_pred[..., 0] = 1.0
+        buffered_pred[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :] = core_pred
+        loss_fn = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES,
+            tolerance_km=25.0,
+            pred_buffer_px=buffer_px,
+            include_pixel=True,
+            pixel_weight=1.0,
+        )
+        result = loss_fn(y_true, buffered_pred).numpy()
+        assert np.all(np.isfinite(result)) and result.mean() > 0.0
 
 
 @pytest.fixture

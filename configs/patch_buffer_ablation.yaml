@@ -1,0 +1,102 @@
+run_name: patch_buffer_ablation_3d
+
+# Reproduces the paper's (Justin et al. 2025) original patch-based training regime: nine
+# 128x128x5x10 (lon x lat x level x variable) patches, evenly spaced along longitude,
+# drawn from the same 128 lat x 288 lon CONUS domain schooner_train_conus_3d.yaml already
+# trains on full-domain -- plus an input-only context buffer around every patch
+# (Ronneberger et al. 2015's overlap-tile strategy: the buffer is fed to the model as
+# input context but cropped from the *pooled* prediction, after the loss's own
+# neighborhood pooling runs, before scoring against the unbuffered target -- see
+# fronts/layers/losses.py's pred_buffer_px) and the paper's per-axis 25% horizontal flip
+# augmentation (0.25 chance each for latitude and longitude, independently, on train
+# patches only -> 43.75% of patches get at least one flip). Ablates the full-domain-
+# single-pass training choice documented in fronts/model_1702/adapter.py against the
+# paper's original patch-tiled regime.
+
+train_config:
+  epochs: 5000
+  seed: 42
+  learning_rate: 0.0001
+  shuffle: true
+  loss_class_weights: null  # null supervises all classes incl. background, matching the AIES FrontFinder model
+  gradient_clip_norm: 1.0
+  loss_name: neighborhood_brier_score
+  nbs_tolerance_km: 25.0
+
+data_config:
+  inputs_icechunk_config:
+    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/"
+    branch_name: "main"
+    group_name: "era5"
+  targets_icechunk_config:
+    store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
+    branch_name: "main"
+    virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  batch_size: 32
+  test_years: [2019]
+  val_years: [2018]
+  max_queue_size: 16
+  class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  front_dilation: 1
+  time_resolution: "3h"  # CONUS fronts are available 3-hourly
+  coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max] -- 128 lat x 288 lon core
+  volume_inputs: true  # batches shaped (batch, lat, lon, level, variable) for Conv3D
+  patch_config:
+    n_patches: 9  # "nine pairs of images evenly spaced along the longitude"
+    patch_lon_width_px: 128  # patch core width; latitude uses the full 128px coordinates height (no lat tiling)
+    buffer_px: 16  # 128 + 2*16 = 160 = 20 * 8, divisible by the model's total downsampling stride below (8)
+    flip_probability: 0.25  # independent per-axis flip probability on train patches only
+  variables: [
+    "geopotential",
+    "temperature",
+    "u_component_of_wind",
+    "v_component_of_wind",
+    "specific_humidity",
+    "vertical_velocity",
+    "potential_vorticity",
+    "equivalent_potential_temperature",
+    "virtual_temperature",
+    "dewpoint_temperature",
+    "relative_humidity",
+    "potential_temperature",
+    "mean_sea_level_pressure",
+    "2m_temperature",
+    "10m_u_component_of_wind",
+    "10m_v_component_of_wind",
+    "2m_dewpoint_temperature",
+    "geopotential_at_surface",
+    ]
+  norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
+  normalization_method: minmax
+  num_pydataset_workers: 16
+
+model_config:
+  n_classes: 6
+  levels: 4
+  filter_num: [16, 32, 64, 128]
+  pool_size: [2, 2, 1]  # horizontal-only downsampling; 3 pooling stages -> total stride 8
+  upsample_size: [2, 2, 1]
+  kernel_size: 5
+  squeeze_axes: 3  # collapse the level axis at each supervision head via a [1,1,n_levels] valid conv
+  first_encoder_connections: true
+  deep_supervision: true
+  batch_normalization: true
+  activation: "gelu"
+  output_activation: "softmax"
+  modules_per_node: 2
+
+callbacks_config:
+  monitor: "val_loss"
+  patience: 3
+  learning_rate_decay_factor: 0.2
+  learning_rate_minimum: 1e-6
+  min_delta: 0.0
+  early_stopping_patience: 12
+  model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/"
+  test_viz_every_n_epochs: null  # periodic visualization isn't supported for patch-mode training yet
+  test_viz_sample_size: 200
+
+wandb_config:
+  project_name: "fronts"
+  run_name: "${run_name}"
+  log_freq: 10

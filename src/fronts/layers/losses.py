@@ -293,12 +293,20 @@ def _lat_dependent_pool(field: tf.Tensor, half_y: int, half_x_per_row: np.ndarra
     return tf.gather(tf.concat(pieces, axis=1), original_row_order, axis=1)
 
 
+def _crop_pred_buffer(field: tf.Tensor, buffer_px: int) -> tf.Tensor:
+    """Crops ``buffer_px`` pixels off every side of the latitude/longitude axes."""
+    if buffer_px == 0:
+        return field
+    return field[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :]
+
+
 def neighborhood_brier_score(
     latitudes: np.ndarray | Sequence[float],
     resolution_deg: float | None = None,
     tolerance_km: float = 25.0,
     include_pixel: bool = False,
     pixel_weight: float = 0.1,
+    pred_buffer_px: int = 0,
     class_weights: list[int | float] | None = None,
     periodic_lon: bool = False,
     max_half_x: int = 128,
@@ -322,6 +330,15 @@ def neighborhood_brier_score(
         tolerance_km: Neighborhood tolerance in kilometers.
         include_pixel: If True, adds a pixelwise (un-pooled) Brier term for sharpness.
         pixel_weight: Relative weight of the pixelwise term when ``include_pixel`` is True.
+        pred_buffer_px: If > 0, y_pred is expected to carry this many extra pixels of
+            context on every spatial side beyond y_true's shape (e.g. from a patch trained
+            with an input-only buffer — see fronts.data.datasets.PatchConfig). The
+            neighborhood pool runs on the full buffered y_pred first; only the *pooled*
+            result is then cropped by pred_buffer_px on every side before scoring against
+            y_true, so boundary cells use real buffer-region context instead of falling
+            back to zero-padding (the overlap-tile strategy from Ronneberger et al. 2015,
+            https://arxiv.org/abs/1505.04597). 0 (default) requires y_pred and y_true to
+            share the same shape, matching prior behavior.
         class_weights: Weights to apply to each class. Length must equal the number of classes
             in y_pred and y_true. Applied post-pooling on the squared error.
         periodic_lon: If True, wraps the zonal window across the longitude edges. Only set for
@@ -364,13 +381,14 @@ def neighborhood_brier_score(
 
         Args:
             y_true: One-hot encoded tensor containing labels.
-            y_pred: Tensor containing model predictions.
+            y_pred: Tensor containing model predictions. When pred_buffer_px > 0, this is
+                pred_buffer_px pixels wider than y_true on every spatial side.
         """
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
 
         # Reduce over spatial + class axes; keep batch dim so Keras can aggregate across replicas.
-        spatial_axes = list(range(1, len(y_pred.shape)))
+        spatial_axes = list(range(1, len(y_true.shape)))
 
         def _brier(obs: tf.Tensor, mod: tf.Tensor) -> tf.Tensor:
             se = tf.math.square(obs - mod)
@@ -384,9 +402,11 @@ def neighborhood_brier_score(
         else:
             O_n = isotropic_pool(y_true)
             M_n = isotropic_pool(y_pred)
+        M_n = _crop_pred_buffer(M_n, pred_buffer_px)
         total = _brier(O_n, M_n)
         if include_pixel:
-            total += float(pixel_weight) * _brier(y_true, y_pred)
+            y_pred_core = _crop_pred_buffer(y_pred, pred_buffer_px)
+            total += float(pixel_weight) * _brier(y_true, y_pred_core)
         return total / weight_sum
 
     return nbs_loss

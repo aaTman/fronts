@@ -120,6 +120,7 @@ def load_data_into_dataloader(
     seed: int = 0,
     shuffle: bool = False,
     drop_remainder: bool = False,
+    augment: bool = False,
 ) -> datasets.FrontsPyDataset:
     """Load, align, and encode ERA5 input and fronts data for training.
 
@@ -141,6 +142,9 @@ def load_data_into_dataloader(
         drop_remainder: If True, drop the final under-sized batch each epoch so every
             batch has exactly ``data_config.batch_size`` samples — see
             ``datasets.FrontsPyDataset`` for why this matters under multi-GPU training.
+        augment: If True, applies patch-mode flip augmentation (see
+            ``datasets.PatchConfig.flip_probability``) — pass True only for the train
+            split.
         workers: Number of ``PyDataset`` prefetch threads. 1 (the ``PyDataset``
             default) fetches each batch synchronously on the main thread, serializing
             every batch's icechunk read with the GPU training step.
@@ -172,9 +176,28 @@ def load_data_into_dataloader(
     logger.info("Loading %s targets...", split)
     targets_da = _open(data_config.targets_icechunk_config)["identifier"]
 
+    if data_config.patch_config is not None and data_config.coordinates is None:
+        raise ValueError("data_config.patch_config requires data_config.coordinates to be set.")
+
     if data_config.coordinates is not None:
         logger.info("Restricting to spatial domain: %s", data_config.coordinates)
-        inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
+        if data_config.patch_config is not None and data_config.patch_config.buffer_px > 0:
+            core_inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
+            resolution_deg = float(np.median(np.abs(np.diff(core_inputs_ds["latitude"].values))))
+            buffer_px = data_config.patch_config.buffer_px
+            buffered_bbox = utils.expand_bounding_box(data_config.coordinates, buffer_px, resolution_deg)
+            inputs_ds = utils.select_spatial_domain(inputs_ds, buffered_bbox)
+            expected_lat = core_inputs_ds.sizes["latitude"] + 2 * buffer_px
+            expected_lon = core_inputs_ds.sizes["longitude"] + 2 * buffer_px
+            if inputs_ds.sizes["latitude"] != expected_lat or inputs_ds.sizes["longitude"] != expected_lon:
+                raise ValueError(
+                    f"patch_config.buffer_px={buffer_px} extends past the input store's available "
+                    f"domain: expected buffered shape (lat={expected_lat}, lon={expected_lon}), got "
+                    f"(lat={inputs_ds.sizes['latitude']}, lon={inputs_ds.sizes['longitude']}). Widen "
+                    "the icechunk store's coverage or reduce buffer_px."
+                )
+        else:
+            inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
         targets_da = utils.select_spatial_domain(targets_da, data_config.coordinates)
 
     # The time indexes aren't identical between the two datasets
@@ -224,6 +247,7 @@ def load_data_into_dataloader(
         workers=data_workers,
         max_queue_size=data_config.max_queue_size,
         drop_remainder=drop_remainder,
+        augment=augment,
     )
 
 
@@ -255,6 +279,7 @@ def _build_loss(
     nbs_lat_dependent_pool: bool,
     nbs_include_pixel: bool = False,
     nbs_pixel_weight: float = 0.1,
+    nbs_pred_buffer_px: int = 0,
 ):
     """Build the configured training loss.
 
@@ -272,6 +297,9 @@ def _build_loss(
             "neighborhood_brier_score".
         nbs_pixel_weight: Relative weight of the pixelwise term when ``nbs_include_pixel`` is
             True. Only used by "neighborhood_brier_score".
+        nbs_pred_buffer_px: Prediction context margin (pixels) to crop after pooling — see
+            ``losses.neighborhood_brier_score``'s ``pred_buffer_px``. Only used by
+            "neighborhood_brier_score".
 
     Returns:
         A callable loss function suitable for ``model.compile(loss=...)``.
@@ -290,10 +318,40 @@ def _build_loss(
             lat_dependent_pool=nbs_lat_dependent_pool,
             include_pixel=nbs_include_pixel,
             pixel_weight=nbs_pixel_weight,
+            pred_buffer_px=nbs_pred_buffer_px,
         )
     raise ValueError(
         f"Unrecognized loss_name {loss_name!r}; expected 'fractions_skill_score' or 'neighborhood_brier_score'."
     )
+
+
+def _pred_buffer_px_from_data_config(data_cfg: datasets.DatasetConfig) -> int:
+    """Return the loss's prediction context margin: patch_config.buffer_px, or 0 without patch mode."""
+    return data_cfg.patch_config.buffer_px if data_cfg.patch_config is not None else 0
+
+
+def _target_latitudes(dataset: datasets.FrontsPyDataset) -> np.ndarray:
+    """Return the *target* grid's latitudes, for sizing loss/metric pooling windows.
+
+    Must come from target_da, not input_ds: in patch mode input_ds carries the buffered
+    (wider) domain, while every loss/metric window must be sized to the unbuffered core
+    the model is actually scored against.
+    """
+    return dataset.target_da["latitude"].values
+
+
+def _should_build_test_visualization(
+    patch_config: datasets.PatchConfig | None,
+    wandb_project: str | None,
+    test_viz_every_n_epochs: int | None,
+) -> bool:
+    """Whether train() should build the periodic test-set visualization callback.
+
+    Patch-mode training isn't supported yet: the callback's active-day map and
+    per-office-region performance diagrams assume one input/target pair per whole-domain
+    timestep, not per-longitude-patch tiling with a buffered input shape.
+    """
+    return bool(wandb_project) and test_viz_every_n_epochs is not None and patch_config is None
 
 
 def _load_pretrained_weights(
@@ -353,6 +411,7 @@ def _compile(
     train_cfg: "TrainConfig",
     latitudes: np.ndarray,
     gradient_clip_norm: float | None = None,
+    pred_buffer_px: int = 0,
 ) -> int:
     n_out = len(model.outputs)
     loss_fn = _build_loss(
@@ -365,6 +424,7 @@ def _compile(
         nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
         nbs_include_pixel=train_cfg.nbs_include_pixel,
         nbs_pixel_weight=train_cfg.nbs_pixel_weight,
+        nbs_pred_buffer_px=pred_buffer_px,
     )
     hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights)
     hss_hard_fn = tf.keras.metrics.MeanMetricWrapper(
@@ -626,7 +686,7 @@ def train(
         logger.info("run_meta %s=%s", key, value)
 
     train_dataset = load_data_into_dataloader(
-        data_cfg, split="train", seed=train_cfg.seed, shuffle=train_cfg.shuffle, drop_remainder=True
+        data_cfg, split="train", seed=train_cfg.seed, shuffle=train_cfg.shuffle, drop_remainder=True, augment=True
     )
     val_dataset = load_data_into_dataloader(data_cfg, split="val", seed=train_cfg.seed)
 
@@ -715,8 +775,9 @@ def train(
             train_cfg.learning_rate,
             metric_class_weights=data_cfg.class_weights,
             train_cfg=train_cfg,
-            latitudes=train_dataset.input_ds["latitude"].values,
+            latitudes=_target_latitudes(train_dataset),
             gradient_clip_norm=train_cfg.gradient_clip_norm,
+            pred_buffer_px=_pred_buffer_px_from_data_config(data_cfg),
         )
     logger.info("Model built and compiled.")
 
@@ -766,7 +827,7 @@ def train(
     run_name = wandb_cfg.run_name if wandb_cfg is not None else None
 
     extra_callbacks = []
-    if wandb_project and callbacks_cfg.test_viz_every_n_epochs:
+    if _should_build_test_visualization(data_cfg.patch_config, wandb_project, callbacks_cfg.test_viz_every_n_epochs):
         try:
             extra_callbacks.append(_build_test_visualization_callback(data_cfg, callbacks_cfg, train_cfg.seed))
         except ValueError:
@@ -775,6 +836,8 @@ def train(
                 "(see preceding error). Training will continue without it.",
                 exc_info=True,
             )
+    elif wandb_project and callbacks_cfg.test_viz_every_n_epochs and data_cfg.patch_config is not None:
+        logger.info("Skipping periodic test-set visualization: not yet supported for patch-mode training.")
 
     logger.info(
         "Starting training: %d epochs, %d train steps/epoch, %d val steps/epoch "
