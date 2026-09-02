@@ -341,17 +341,16 @@ def _target_latitudes(dataset: datasets.FrontsPyDataset) -> np.ndarray:
 
 
 def _should_build_test_visualization(
-    patch_config: datasets.PatchConfig | None,
     wandb_project: str | None,
     test_viz_every_n_epochs: int | None,
 ) -> bool:
     """Whether train() should build the periodic test-set visualization callback.
 
-    Patch-mode training isn't supported yet: the callback's active-day map and
-    per-office-region performance diagrams assume one input/target pair per whole-domain
-    timestep, not per-longitude-patch tiling with a buffered input shape.
+    Independent of ``data_config.patch_config``: ``_build_test_visualization_callback``
+    always loads its own test split in whole-domain mode (see its docstring), so
+    patch-mode training doesn't block the callback.
     """
-    return bool(wandb_project) and test_viz_every_n_epochs is not None and patch_config is None
+    return bool(wandb_project) and test_viz_every_n_epochs is not None
 
 
 def _load_pretrained_weights(
@@ -596,6 +595,15 @@ def _build_test_visualization_callback(
     (front-containing) day for the prediction map, plus a bounded random subsample for
     the periodic performance diagram. Neither is used for fitting or model selection.
 
+    Always loads in whole-domain mode, ignoring ``data_config.patch_config``: the
+    active-day map and per-office-region performance diagrams assume one input/target
+    pair per whole-domain timestep and whole-domain ``lats``/``lons``, not
+    per-longitude-patch tiling with a buffered input shape. This is safe even when the
+    model was trained in patch mode — ``model.UNet3Plus`` builds with a fully dynamic
+    spatial input shape (``Input(shape=(None, None, ...))``), so it accepts a
+    whole-domain input at inference regardless of the (smaller, buffered) patch shape
+    it saw during training.
+
     Args:
         data_config: DatasetConfig specifying store paths and the test_years split.
         callbacks_config: Provides test_viz_sample_size and every_n_epochs.
@@ -606,7 +614,8 @@ def _build_test_visualization_callback(
     """
     assert callbacks_config.test_viz_every_n_epochs is not None
     logger.info("Loading test split for periodic visualization...")
-    test_dataset = load_data_into_dataloader(data_config, split="test", seed=seed)
+    viz_data_config = dataclasses.replace(data_config, patch_config=None)
+    test_dataset = load_data_into_dataloader(viz_data_config, split="test", seed=seed)
     logger.info("Test split loaded: %d timesteps available for visualization.", test_dataset.n_samples)
 
     active_idx = fronts_callbacks.select_active_test_timestep(test_dataset.target_da)
@@ -829,7 +838,7 @@ def train(
     run_name = wandb_cfg.run_name if wandb_cfg is not None else None
 
     extra_callbacks = []
-    if _should_build_test_visualization(data_cfg.patch_config, wandb_project, callbacks_cfg.test_viz_every_n_epochs):
+    if _should_build_test_visualization(wandb_project, callbacks_cfg.test_viz_every_n_epochs):
         try:
             extra_callbacks.append(_build_test_visualization_callback(data_cfg, callbacks_cfg, train_cfg.seed))
         except ValueError:
@@ -838,8 +847,6 @@ def train(
                 "(see preceding error). Training will continue without it.",
                 exc_info=True,
             )
-    elif wandb_project and callbacks_cfg.test_viz_every_n_epochs and data_cfg.patch_config is not None:
-        logger.info("Skipping periodic test-set visualization: not yet supported for patch-mode training.")
 
     logger.info(
         "Starting training: %d epochs, %d train steps/epoch, %d val steps/epoch "

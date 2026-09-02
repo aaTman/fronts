@@ -21,6 +21,7 @@ try:
         TrainConfig,
         _build_loss,
         _build_monitor_callbacks,
+        _build_test_visualization_callback,
         _compile,
         _freeze_layers,
         _load_pretrained_weights,
@@ -861,18 +862,117 @@ class TestTargetLatitudes:
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestShouldBuildTestVisualization:
-    def test_true_when_wandb_and_cadence_set_and_no_patch_config(self):
-        assert _should_build_test_visualization(None, "fronts", 1) is True
+    def test_true_when_wandb_and_cadence_set(self):
+        assert _should_build_test_visualization("fronts", 1) is True
 
     def test_false_without_wandb_project(self):
-        assert _should_build_test_visualization(None, None, 1) is False
+        assert _should_build_test_visualization(None, 1) is False
 
     def test_false_without_cadence(self):
-        assert _should_build_test_visualization(None, "fronts", None) is False
+        assert _should_build_test_visualization("fronts", None) is False
 
-    def test_false_with_patch_config(self):
-        pc = PatchConfig(n_patches=9, patch_lon_width_px=128, buffer_px=0)
-        assert _should_build_test_visualization(pc, "fronts", 1) is False
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildTestVisualizationCallback:
+    """_build_test_visualization_callback must ignore data_config.patch_config.
+
+    The callback's active-day map and per-office-region performance diagrams assume
+    one whole-domain input/target pair per sample. Patch-mode training only changes how
+    *training* samples are drawn; the model's input shape stays fully dynamic
+    (Input(shape=(None, None, ...))), so whole-domain inference works regardless of
+    patch_config, and the visualization dataset should always be loaded that way.
+    """
+
+    _TIMES = pd.date_range("2020-01-01", periods=3, freq="6h")
+    _LAT_CORE = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+    _LON_CORE = np.array([100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0])
+    _LAT_BUFFERED = np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0])
+    _LON_BUFFERED = np.array([90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0])
+
+    def _write_inputs(self, tmp_path) -> IcechunkStorageConfig:
+        storage_config = IcechunkStorageConfig(store_path=str(tmp_path / "inputs"), branch_name="main")
+        ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    np.zeros((len(self._TIMES), len(self._LAT_BUFFERED), len(self._LON_BUFFERED)), dtype=np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": self._TIMES, "latitude": self._LAT_BUFFERED, "longitude": self._LON_BUFFERED},
+                )
+            }
+        )
+        write_or_append_icechunk_store(storage_config, ds)
+        return storage_config
+
+    def _write_targets(self, tmp_path) -> IcechunkStorageConfig:
+        storage_config = IcechunkStorageConfig(store_path=str(tmp_path / "targets"), branch_name="main")
+        data = np.zeros((len(self._TIMES), len(self._LAT_CORE), len(self._LON_CORE)), dtype=np.int32)
+        data[0, 0, 0] = _ALL_CODES[0]
+        ds = xr.Dataset(
+            {
+                "identifier": xr.DataArray(
+                    data,
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": self._TIMES, "latitude": self._LAT_CORE, "longitude": self._LON_CORE},
+                )
+            }
+        )
+        write_or_append_icechunk_store(storage_config, ds)
+        return storage_config
+
+    def _data_config(
+        self,
+        inputs_store: IcechunkStorageConfig,
+        targets_store: IcechunkStorageConfig,
+        patch_config: PatchConfig | None,
+    ) -> DatasetConfig:
+        from fronts.utils import BoundingBox
+
+        return DatasetConfig(
+            inputs_icechunk_config=inputs_store,
+            targets_icechunk_config=targets_store,
+            variables=["temperature"],
+            test_years=[2020],
+            val_years=[],
+            coordinates=BoundingBox(lat_min=10.0, lat_max=60.0, lon_min=100.0, lon_max=170.0),
+            patch_config=patch_config,
+        )
+
+    def _callbacks_config(self) -> CallbacksConfig:
+        return CallbacksConfig(test_viz_every_n_epochs=1, test_viz_sample_size=2)
+
+    def test_whole_domain_shape_with_patch_config_set(self, tmp_path):
+        data_config = self._data_config(
+            self._write_inputs(tmp_path),
+            self._write_targets(tmp_path),
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=1),
+        )
+
+        callback = _build_test_visualization_callback(data_config, self._callbacks_config(), seed=0)
+
+        assert callback.active_day_x.shape == (len(self._LAT_CORE), len(self._LON_CORE), 1)
+        assert callback.active_day_y.shape[:2] == (len(self._LAT_CORE), len(self._LON_CORE))
+        assert callback.subsample_x.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
+        assert callback.subsample_y.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
+        np.testing.assert_array_equal(callback.lats, self._LAT_CORE)
+        np.testing.assert_array_equal(callback.lons, self._LON_CORE)
+
+    def test_output_identical_with_and_without_patch_config(self, tmp_path):
+        inputs_store = self._write_inputs(tmp_path)
+        targets_store = self._write_targets(tmp_path)
+        callbacks_config = self._callbacks_config()
+
+        no_patch_config = self._data_config(inputs_store, targets_store, patch_config=None)
+        callback_no_patch = _build_test_visualization_callback(no_patch_config, callbacks_config, seed=0)
+
+        with_patch_config = self._data_config(
+            inputs_store, targets_store, patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=1)
+        )
+        callback_with_patch = _build_test_visualization_callback(with_patch_config, callbacks_config, seed=0)
+
+        np.testing.assert_allclose(callback_with_patch.active_day_x, callback_no_patch.active_day_x)
+        np.testing.assert_allclose(callback_with_patch.active_day_y, callback_no_patch.active_day_y)
+        np.testing.assert_allclose(callback_with_patch.subsample_x, callback_no_patch.subsample_x)
+        np.testing.assert_allclose(callback_with_patch.subsample_y, callback_no_patch.subsample_y)
 
 
 class TestTrainConfigLossClassWeights:
@@ -964,7 +1064,7 @@ class TestTrainConfigLossClassWeights:
         assert data_cfg.coordinates == utils.BoundingBox(lat_min=25.0, lat_max=56.75, lon_min=228.0, lon_max=299.75)
         assert data_cfg.volume_inputs is True
         assert list(model_cfg.pool_size) == [2, 2, 1]
-        assert callbacks_cfg.test_viz_every_n_epochs is None
+        assert callbacks_cfg.test_viz_every_n_epochs == 1
         assert train_cfg.loss_name == "neighborhood_brier_score"
 
 
