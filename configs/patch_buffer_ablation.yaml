@@ -2,16 +2,15 @@ run_name: patch_buffer_ablation_3d
 
 # Reproduces the paper's (Justin et al. 2025) original patch-based training regime: nine
 # 128x128x5x10 (lon x lat x level x variable) patches, evenly spaced along longitude,
-# drawn from the same 128 lat x 288 lon CONUS domain schooner_train_conus_3d.yaml already
-# trains on full-domain -- plus an input-only context buffer around every patch
-# (Ronneberger et al. 2015's overlap-tile strategy: the buffer is fed to the model as
-# input context but cropped from the *pooled* prediction, after the loss's own
-# neighborhood pooling runs, before scoring against the unbuffered target -- see
-# fronts/layers/losses.py's pred_buffer_px) and the paper's per-axis 25% horizontal flip
-# augmentation (0.25 chance each for latitude and longitude, independently, on train
-# patches only -> 43.75% of patches get at least one flip). Ablates the full-domain-
-# single-pass training choice documented in fronts/model_1702/adapter.py against the
-# paper's original patch-tiled regime.
+# tiled across the full 320 lat x 960 lon domain -- plus an input-only context buffer
+# around every patch (Ronneberger et al. 2015's overlap-tile strategy: the buffer is fed
+# to the model as input context but cropped from the *pooled* prediction, after the
+# loss's own neighborhood pooling runs, before scoring against the unbuffered target --
+# see fronts/layers/losses.py's pred_buffer_px) and the paper's per-axis 25% horizontal
+# flip augmentation (0.25 chance each for latitude and longitude, independently, on
+# train patches only -> 43.75% of patches get at least one flip). Ablates the
+# full-domain-single-pass training choice documented in fronts/model_1702/adapter.py
+# against the paper's original patch-tiled regime.
 
 train_config:
   epochs: 5000
@@ -38,33 +37,27 @@ data_config:
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
-  time_resolution: "3h"  # CONUS fronts are available 3-hourly
-  coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max] -- 128 lat x 288 lon core
+  time_resolution: "6h"  # full-domain (USAD) fronts are only 6-hourly; CONUS is 3-hourly
+  coordinates: [0.25, 80, 130, 369.75]  # [lat_min, lat_max, lon_min, lon_max] -- full 320 lat x 960 lon domain
   volume_inputs: true  # batches shaped (batch, lat, lon, level, variable) for Conv3D
   patch_config:
-    n_patches: 9  # "nine pairs of images evenly spaced along the longitude"
+    # The paper's original CONUS design used 9 patches over a 288px-wide domain, a
+    # coverage ratio (n_patches * patch_width / domain_width) of 4x. Scaled proportionally
+    # to this 960px-wide full domain to preserve that same coverage ratio: 9 * (960/288).
+    n_patches: 30
     patch_lon_width_px: 128  # patch core width; latitude uses the full 128px coordinates height (no lat tiling)
     buffer_px: 16  # 128 + 2*16 = 160 = 20 * 8, divisible by the model's total downsampling stride below (8)
     flip_probability: 0.25  # independent per-axis flip probability on train patches only
-  variables: [
-    "geopotential",
-    "temperature",
-    "u_component_of_wind",
-    "v_component_of_wind",
-    "specific_humidity",
-    "vertical_velocity",
-    "potential_vorticity",
-    "equivalent_potential_temperature",
-    "virtual_temperature",
-    "dewpoint_temperature",
-    "relative_humidity",
-    "potential_temperature",
-    "mean_sea_level_pressure",
-    "2m_temperature",
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "2m_dewpoint_temperature",
-    "geopotential_at_surface",
+  variables:
+    [
+      "equivalent_potential_temperature",
+      "u_component_of_wind",
+      "v_component_of_wind",
+      "specific_humidity",
+      "10m_u_component_of_wind",
+      "10m_v_component_of_wind",
+      "2m_dewpoint_temperature",
+      "geopotential_at_surface"
     ]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax

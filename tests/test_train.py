@@ -1270,9 +1270,9 @@ class TestTrainConfigLossClassWeights:
         callbacks_cfg = utils.parse_config_section(yaml_data, CallbacksConfig, "callbacks_config")
 
         assert data_cfg.patch_config == PatchConfig(
-            n_patches=9, patch_lon_width_px=128, buffer_px=16, flip_probability=0.25
+            n_patches=30, patch_lon_width_px=128, buffer_px=16, flip_probability=0.25
         )
-        assert data_cfg.coordinates == utils.BoundingBox(lat_min=25.0, lat_max=56.75, lon_min=228.0, lon_max=299.75)
+        assert data_cfg.coordinates == utils.BoundingBox(lat_min=0.25, lat_max=80, lon_min=130, lon_max=369.75)
         assert data_cfg.volume_inputs is True
         assert list(model_cfg.pool_size) == [2, 2, 1]
         assert callbacks_cfg.test_viz_every_n_epochs == 1
