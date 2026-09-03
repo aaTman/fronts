@@ -169,6 +169,18 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
     ``SharedTargetModel`` (see ``fronts.model``) is responsible for broadcasting it
     across any deep-supervision outputs, not the dataset.
 
+    Shuffling is block-aligned at the *timestep* level, not the flat sample-index level:
+    blocks of ``batch_size // gcd(batch_size, n_patches)`` contiguous timesteps (all
+    patches of each timestep included, in time order) are kept together, and only the
+    order in which blocks are visited is randomized per epoch. That block size is the
+    smallest one whose patches divide evenly into whole batches, so every batch's
+    ``.isel(time=...)`` read lands on a single contiguous run of timesteps instead of
+    up to ``batch_size`` scattered ones. In non-patch mode (``n_patches == 1``) this
+    reduces to one block per batch — a straight contiguous ``batch_size``-timestep read.
+    Both icechunk stores backing this dataset chunk at 1 timestep, so a fully random
+    per-sample shuffle measured 10-30x slower than a sequential read of the same size
+    (see ``scripts/diagnose_read_throughput.py``).
+
     Attributes:
         input_ds: This split's input Dataset, shape (time, latitude, longitude) per variable.
         target_da: This split's raw integer front-code DataArray, shape (time, latitude, longitude).
@@ -215,7 +227,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
                 n_patches=data_config.patch_config.n_patches,
             )
         self._rng = np.random.default_rng(seed)
-        self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
+        self._order = self._build_order() if shuffle else np.arange(self._total)
 
     @property
     def _total(self) -> int:
@@ -241,10 +253,44 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
             return self._total // self.batch_size
         return math.ceil(self._total / self.batch_size)
 
+    def _build_order(self) -> np.ndarray:
+        """Builds a shuffled global sample-index order, block-aligned by timestep.
+
+        Groups every patch of each timestep together (in time order) into blocks of
+        ``batch_size // gcd(batch_size, n_patches)`` contiguous timesteps, then shuffles
+        the order in which whole blocks are visited. That block size is the smallest one
+        whose sample count (``block_timesteps * n_patches``) is a multiple of
+        ``batch_size``, so batch boundaries always land on block boundaries — every batch
+        drawn from the resulting order is one contiguous, in-order run of timesteps,
+        never a scattered or straddled one. If the total timestep count isn't an exact
+        multiple of the block size, the leftover timesteps form a final ragged block that
+        is always placed last (never shuffled into the middle), matching
+        ``drop_remainder``'s existing "final batch may be undersized" behavior instead of
+        introducing a new mid-epoch discontinuity. See the class docstring for why
+        contiguity matters for read throughput.
+        """
+        n_time = self.input_ds.sizes["time"]
+        block_timesteps = self.batch_size // math.gcd(self.batch_size, self._n_patches)
+        n_full_blocks = n_time // block_timesteps
+        full_block_starts = np.arange(n_full_blocks) * block_timesteps
+        shuffled_starts = full_block_starts[self._rng.permutation(n_full_blocks)]
+        order = np.concatenate(
+            [
+                np.arange(start * self._n_patches, (start + block_timesteps) * self._n_patches)
+                for start in shuffled_starts
+            ]
+            or [np.array([], dtype=int)]
+        )
+        remainder_start = n_full_blocks * block_timesteps
+        if remainder_start < n_time:
+            remainder = np.arange(remainder_start * self._n_patches, n_time * self._n_patches)
+            order = np.concatenate([order, remainder])
+        return order
+
     def on_epoch_end(self) -> None:
-        """Reshuffles the sample order for the next epoch, if shuffling is enabled."""
+        """Reshuffles the batch visitation order for the next epoch, if shuffling is enabled."""
         if self.shuffle:
-            self._order = self._rng.permutation(self._total)
+            self._order = self._build_order()
 
     def get_at_indices(self, idxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) arrays at arbitrary global sample indices.

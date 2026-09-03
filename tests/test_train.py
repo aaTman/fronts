@@ -382,6 +382,24 @@ class TestFrontsPyDataset:
         ds.on_epoch_end()
         np.testing.assert_array_equal(ds._order, np.arange(N_TIME))
 
+    def test_shuffle_reorders_batches_not_samples_within_a_batch(self, era5_ds, front_da, data_config):
+        """Shuffling must only reorder whole batches, keeping each batch a contiguous read.
+
+        Both icechunk stores backing this dataset chunk at 1 timestep, so a fully random
+        per-sample shuffle turns every batch read into scattered single-chunk fetches,
+        measured at 10-30x slower than a sequential read of the same size (see
+        scripts/diagnose_read_throughput.py). Every batch must therefore still correspond
+        to some contiguous run of the original timesteps, even with shuffling enabled.
+        """
+        batch_size = 2
+        ds = self._make_ds(era5_ds, front_da, data_config, batch_size=batch_size, shuffle=True, seed=0)
+        expected = inputs_ds_to_dataarray(era5_ds, data_config.variables).values
+        for i in range(len(ds)):
+            x_batch, _ = ds[i]
+            n = x_batch.shape[0]
+            matches = [s for s in range(N_TIME - n + 1) if np.allclose(x_batch, expected[s : s + n])]
+            assert matches, f"batch {i} is not a contiguous run of original timesteps"
+
     def test_drop_remainder_drops_undersized_final_batch(self, era5_ds, front_da, data_config):
         """N_TIME=5 with batch_size=2 has a 1-sample remainder batch that must be dropped.
 
@@ -495,6 +513,132 @@ class TestFrontsPyDatasetPatchMode:
         expected_lon = np.arange(starts[0], starts[0] + self._PATCH_WIDTH + 2 * self._BUFFER)
         expected = (np.arange(n_lat_buf)[:, None] * 1000 + expected_lon[None, :]).astype(np.float32)
         np.testing.assert_allclose(x[0, :, :, 0], expected)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestFrontsPyDatasetPatchModeShuffleBlocks:
+    """Block-aligned shuffling must stay contiguous in time even with interleaved patches.
+
+    Global sample indices interleave patches within a timestep
+    (``time_idx * n_patches + patch_idx``), so a naive per-sample shuffle would scatter
+    reads across timesteps just as badly as in non-patch mode. ``_build_order`` must
+    instead group every patch of nearby timesteps together.
+    """
+
+    def _make_ds(self, n_time, n_patches, batch_size, shuffle=True, seed=0, drop_remainder=False):
+        n_lat_core, n_lon_core, patch_width = 4, 12, 4
+        vals = (np.arange(n_lat_core)[:, None] + np.arange(n_lon_core)[None, :]).astype(np.float32) % 2
+        input_ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    np.broadcast_to(vals, (n_time, n_lat_core, n_lon_core)).copy(),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": np.arange(n_time)},
+                )
+            }
+        )
+        target_da = xr.DataArray(
+            np.broadcast_to(vals, (n_time, n_lat_core, n_lon_core)).astype(np.int32).copy(),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": np.arange(n_time)},
+        )
+        dummy_store = IcechunkStorageConfig(store_path="unused", branch_name="main")
+        patch_config = PatchConfig(n_patches=n_patches, patch_lon_width_px=patch_width, buffer_px=0)
+        data_config = DatasetConfig(
+            inputs_icechunk_config=dummy_store,
+            targets_icechunk_config=dummy_store,
+            variables=["temperature"],
+            test_years=[],
+            val_years=[],
+            patch_config=patch_config,
+        )
+        return FrontsPyDataset(
+            input_ds,
+            target_da,
+            data_config,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            seed=seed,
+            drop_remainder=drop_remainder,
+        )
+
+    def test_block_size_is_smallest_multiple_of_batch_size(self):
+        # gcd(6, 3) = 3 -> block_timesteps = 6 // 3 = 2: every 6-sample (= 1 batch) window
+        # of _order must land on exactly 1 or 2 distinct, adjacent timesteps.
+        ds = self._make_ds(n_time=12, n_patches=3, batch_size=6, seed=0)
+        time_idxs = ds._order // ds._n_patches
+        batch_size = 6
+        for start in range(0, len(ds._order), batch_size):
+            block_times = time_idxs[start : start + batch_size]
+            uniq = np.unique(block_times)
+            assert uniq.max() - uniq.min() <= 1
+
+    def test_batches_stay_within_a_contiguous_timestep_run(self):
+        # gcd(5, 3) = 1 -> block_timesteps = 5: batches may span up to 5 contiguous
+        # timesteps, but never a scattered/non-adjacent set.
+        n_time, n_patches, batch_size = 20, 3, 5
+        ds = self._make_ds(n_time=n_time, n_patches=n_patches, batch_size=batch_size, seed=1)
+        for i in range(len(ds)):
+            local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+            time_idxs = local_idxs // n_patches
+            uniq = np.unique(time_idxs)
+            assert uniq.max() - uniq.min() == len(uniq) - 1, f"batch {i} timesteps {uniq} are not contiguous"
+
+    def test_ragged_final_block_never_straddles_mid_epoch(self):
+        """A total timestep count not a multiple of the block size must not straddle a batch.
+
+        The undersized remainder block must never get shuffled into the middle, which
+        would straddle a batch across two unrelated blocks. Checked across many seeds
+        since the failure is seed-dependent (it only manifests when the ragged block
+        lands anywhere but last).
+        """
+        n_time, n_patches, batch_size = 17, 3, 6  # block_timesteps=2, 8 full blocks + 1 ragged timestep
+        for seed in range(20):
+            ds = self._make_ds(n_time=n_time, n_patches=n_patches, batch_size=batch_size, seed=seed)
+            for i in range(len(ds)):
+                local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+                time_idxs = local_idxs // n_patches
+                uniq = np.unique(time_idxs)
+                assert uniq.max() - uniq.min() == len(uniq) - 1, (
+                    f"seed {seed} batch {i} timesteps {uniq} are not contiguous"
+                )
+
+    def test_shuffle_visits_every_sample_exactly_once_per_epoch(self):
+        ds = self._make_ds(n_time=9, n_patches=3, batch_size=9, seed=2)
+        np.testing.assert_array_equal(np.sort(ds._order), np.arange(ds.n_samples))
+
+    def test_on_epoch_end_reshuffles_block_order(self):
+        ds = self._make_ds(n_time=9, n_patches=3, batch_size=9, seed=3)
+        order_before = ds._order.copy()
+        ds.on_epoch_end()
+        assert not np.array_equal(order_before, ds._order)
+
+    def test_no_shuffle_preserves_time_major_order(self):
+        ds = self._make_ds(n_time=6, n_patches=2, batch_size=4, shuffle=False)
+        np.testing.assert_array_equal(ds._order, np.arange(ds.n_samples))
+
+    def test_non_patch_mode_uses_one_block_per_batch(self):
+        """n_patches=1 must reduce to the non-patch case: one contiguous batch-sized block."""
+        n_time, batch_size = 20, 4
+        ds = self._make_ds(n_time=n_time, n_patches=1, batch_size=batch_size, seed=4)
+        for i in range(len(ds)):
+            local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+            np.testing.assert_array_equal(local_idxs, np.arange(local_idxs[0], local_idxs[0] + len(local_idxs)))
+
+    def test_batch_contents_match_a_contiguous_timestep_window(self):
+        """End-to-end: a batch's actual returned values must come from one timestep run."""
+        n_time, n_patches, batch_size = 12, 3, 6
+        ds = self._make_ds(n_time=n_time, n_patches=n_patches, batch_size=batch_size, seed=5)
+        starts = compute_patch_lon_starts(n_lon_core=12, patch_width=4, n_patches=n_patches)
+        for i in range(len(ds)):
+            local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+            time_idxs = local_idxs // n_patches
+            patch_idxs = local_idxs % n_patches
+            x_batch, _ = ds.get_at_indices(local_idxs)
+            for row, t, p in zip(x_batch, time_idxs, patch_idxs, strict=True):
+                start = starts[p]
+                expected = ds.input_ds["temperature"].isel(time=t).values[:, start : start + 4]
+                np.testing.assert_allclose(row[..., 0], expected)
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
