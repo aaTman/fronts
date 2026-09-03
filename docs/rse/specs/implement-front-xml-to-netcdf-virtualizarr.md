@@ -184,7 +184,8 @@ In progress on the HPC system (`sooner1`), by the user, since `/ourdisk/hpc/ai2e
 mounted in this sandbox.
 
 - ⚠️ Run against real 2025 XML files — attempt 1 hit Issue 4 (`ValueError` on `LINE_SOLID`),
-  fixed; attempt 2 hit Issue 5 (multi-document files), fixed; rerun pending.
+  fixed; attempt 2 hit Issue 5 (multi-document files), fixed; attempt 3 hit Issue 6 (incomplete
+  fragments within those multi-document files), fixed; rerun pending.
 - [ ] Confirm store contents update correctly.
 - [ ] Confirm rerun is a no-op.
 - [ ] Visually sanity-check one converted raster.
@@ -192,10 +193,10 @@ mounted in this sandbox.
   now known (see Issue 4); the front-relevant subset was already covered, but this should be
   spot-checked against a few more files/months before a full-year run.
 
-**Manual Testing Notes:** The first two real conversion attempts each surfaced a genuine
-schema surprise (Issues 4 and 5) invisible from the sandbox — this repo's synthetic test XML
-fixtures could not have caught either, since they were authored to match the schema inferred
-from `master`'s code before any real 2025 file had been inspected. Both were root-caused from
+**Manual Testing Notes:** The first three real conversion attempts each surfaced a genuine
+schema surprise (Issues 4, 5, and 6) invisible from the sandbox — this repo's synthetic test
+XML fixtures could not have caught any of them, since they were authored to match the schema
+inferred from `master`'s code before any real 2025 file had been inspected. All were root-caused from
 evidence the user gathered on the HPC system (`grep`/`sed` on the actual failing files) and
 fixed with reproducing unit tests before being handed back for another manual attempt —
 running real data early and iterating is doing exactly what it should here.
@@ -251,9 +252,11 @@ running real data early and iterating is doing exactly what it should here.
   entity: line 7, column 0` on `20250104_1545_12_MPC_final-anal_OPC_SFC_ANAL.xml`. The
   traceback carried no filename, so a per-file `logger.info` line was added first
   (`src/fronts/data/generate_fronts.py`) purely to make the failure attributable; the user then
-  located and inspected the file, which turned out to contain **three** complete
-  `<?xml version="1.0" ...?><Products>...</Products>` documents concatenated back to back
-  (`grep -c '<?xml' file.xml` → 3) — not a single malformed document. This also revealed the
+  located and inspected the file, which turned out to contain three `<?xml
+  version="1.0" ...?><Products>...` chunks concatenated back to back
+  (`grep -c '<?xml' file.xml` → 3) — not a single malformed document (later revised further by
+  Issue 6: two of the three turned out to be incomplete fragments, not complete documents).
+  This also revealed the
   real element schema more fully than the earlier `<Product><Line>...` guess:
   `<Products><Product><Layer><DrawableElement><Line pgenType="..." ...><Point Lat="..."
   Lon="..."/>`, with `Point` attribute order swapped (`Lat` before `Lon`) and occasional
@@ -268,14 +271,31 @@ running real data early and iterating is doing exactly what it should here.
   exactly one chunk and behaves identically to before.
 - **Files Affected:** `src/fronts/data/generate_fronts.py`, `tests/data/test_generate_fronts.py`
 
+### Issue 6: Some concatenated "documents" are incomplete fragments, not complete documents
+- **Impact:** Found on the very next manual-verification rerun, on the *same* file as Issue 5
+  (`20250104_1545_12_MPC_final-anal_OPC_SFC_ANAL.xml`): `xml.etree.ElementTree.ParseError: no
+  element found: line 6, column 25`. Issue 5's fix correctly split the file into 3 chunks, but
+  assumed every chunk is a genuine complete document; re-reading the sample content gathered
+  for Issue 5 shows the first chunk is only 6 lines — a header repeated verbatim, ending
+  mid-`<DrawableElement>` with no `Line` and no closing tags — not a second full document.
+  Only the third chunk is actually complete. This looks like an artifact of an interrupted
+  rewrite by the upstream export tool (write header, crash/retry, write header again, ...,
+  finally write the complete document), rather than a documented multi-product format.
+- **Resolution:** `_iter_line_elements` now wraps each chunk's `ElementTree.fromstring` call in
+  a `try`/`except ElementTree.ParseError`, logging a warning and skipping that chunk instead of
+  letting the exception propagate and abort the whole file. Whichever chunk(s) parse
+  successfully still contribute their `Line` elements normally.
+- **Files Affected:** `src/fronts/data/generate_fronts.py`, `tests/data/test_generate_fronts.py`
+
 ## Testing Summary
 
 **Tests Added:**
-- `tests/data/test_generate_fronts.py` — 23 tests: grid alignment, haversine/reverse-haversine
+- `tests/data/test_generate_fronts.py` — 24 tests: grid alignment, haversine/reverse-haversine
   (known values + round trip), vertex redistribution, filename parsing (all 3 real example
   filenames + 1 negative case), XML→Dataset conversion (normal, mixed front/non-front content,
   dateline-crossing, fronts spread across concatenated documents), multi-document XML splitting
-  (`_iter_line_elements`, single- and multi-document files), config YAML parsing, XML discovery
+  (`_iter_line_elements`: single-document, multi-document, and incomplete-fragment cases),
+  config YAML parsing, XML discovery
   by date range, store-times inspection (empty + populated), virtual-chunk write/append round
   trip, empty-paths error, `main()`'s consistency guard, and a full `main()` end-to-end
   create-then-no-op-rerun test.

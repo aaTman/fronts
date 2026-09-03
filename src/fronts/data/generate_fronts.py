@@ -70,26 +70,37 @@ _XML_DECLARATION_PATTERN = re.compile(r"(?=<\?xml\b)")
 def _iter_line_elements(xml_path: str) -> list[Element]:
     """Return every ``Line`` element in an XML file, across all concatenated documents.
 
-    Some MPC/OPC front XML files concatenate multiple complete XML documents (each with its
-    own ``<?xml ...?>`` declaration and ``Products`` root) into a single file instead of
-    merging them into one document, which a standard XML parser rejects as malformed ("XML or
-    text declaration not at start of entity"). Splits the raw text on each XML declaration and
+    Some MPC/OPC front XML files concatenate multiple XML documents (each with its own
+    ``<?xml ...?>`` declaration and ``Products`` root) into a single file instead of merging
+    them into one document, which a standard XML parser rejects as malformed ("XML or text
+    declaration not at start of entity"). Splits the raw text on each XML declaration and
     parses the resulting documents independently; a normal single-document file yields exactly
     one chunk and behaves as before.
+
+    Some of those concatenated chunks are themselves incomplete fragments (observed: a repeated
+    header ending mid-element, with no closing tags — likely left behind by an interrupted
+    rewrite) rather than a genuine additional document. Such fragments fail to parse and are
+    skipped with a warning rather than treated as a fatal error, since the file's actual front
+    data is expected to live in whichever chunk(s) do parse successfully.
 
     Args:
         xml_path: Path to a front XML file, possibly containing more than one document.
 
     Returns:
-        All ``Line`` elements found across every document in the file, in file order.
+        All ``Line`` elements found across every successfully-parsed document in the file, in
+        file order.
     """
     with open(xml_path, encoding="utf-8") as f:
         content = f.read()
     lines: list[Element] = []
     for raw_document in _XML_DECLARATION_PATTERN.split(content):
         document = raw_document.strip()
-        if document:
+        if not document:
+            continue
+        try:
             lines.extend(ElementTree.fromstring(document).iter("Line"))
+        except ElementTree.ParseError as error:
+            logger.warning(f"Skipping unparseable XML document in {xml_path}: {error}")
     return lines
 
 

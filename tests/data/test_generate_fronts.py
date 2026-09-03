@@ -135,6 +135,23 @@ def test_iter_line_elements_handles_single_document(tmp_path):
     assert len(lines) == 1
 
 
+def test_iter_line_elements_skips_incomplete_fragment(tmp_path):
+    # Observed on a real file: a repeated header ending mid-element with no closing tags,
+    # followed by one genuinely complete document.
+    incomplete_fragment = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  <Products xmlns:ns2="http://www.example.org/productType">
+    <Product name="Default" type="Default">
+      <Layer name="Default">
+        <DrawableElement>
+"""
+    xml = incomplete_fragment + _single_front_document(-100.0, 40.0, -99.0, 40.0)
+    path = tmp_path / "fragment_then_complete.xml"
+    path.write_text(xml)
+    lines = generate_fronts._iter_line_elements(str(path))
+    assert len(lines) == 1
+    assert lines[0].get("pgenType") == "COLD_FRONT"
+
+
 def test_convert_xml_to_dataset_reads_fronts_from_all_concatenated_documents(tmp_path):
     xml = _single_front_document(-100.0, 40.0, -99.0, 40.0) + _single_front_document(-100.0, 60.0, -99.0, 60.0)
     path = tmp_path / "concatenated.xml"
