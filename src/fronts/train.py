@@ -97,6 +97,14 @@ class TrainConfig:
         nbs_pixel_weight: ``pixel_weight`` passed to ``losses.neighborhood_brier_score`` — the
             pixelwise term's weight relative to the pooled term (which is fixed at 1). Only used
             when ``nbs_include_pixel`` is True.
+        use_ema: Whether the optimizer tracks an exponential moving average (Polyak averaging) of
+            the model's trainable weights, swapped into the model for validation, checkpointing,
+            and early-stopping's best-weight snapshot via a ``SwapEMAWeights(swap_on_epoch=True)``
+            callback (see ``_run``). Averaging over recent weight updates trades a small amount of
+            fit-to-the-latest-batch for a flatter, less noise-sensitive optimum — cheap to enable
+            since it adds no extra forward/backward passes.
+        ema_momentum: Decay rate for the weight EMA (Keras default: 0.99, an ~100-step effective
+            averaging window). Only used when ``use_ema`` is True.
     """
 
     loss_class_weights: list[float] | None
@@ -112,6 +120,8 @@ class TrainConfig:
     nbs_lat_dependent_pool: bool = False
     nbs_include_pixel: bool = False
     nbs_pixel_weight: float = 0.1
+    use_ema: bool = False
+    ema_momentum: float = 0.99
 
 
 def load_data_into_dataloader(
@@ -371,7 +381,12 @@ def _compile(
         fn=metrics.heidke_skill_score(class_weights=metric_class_weights, threshold=0.5),
         name="hss_hard",
     )
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=gradient_clip_norm)
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=gradient_clip_norm,
+        use_ema=train_cfg.use_ema,
+        ema_momentum=train_cfg.ema_momentum,
+    )
     if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
     model.compile(
@@ -445,6 +460,93 @@ def _build_monitor_callbacks(
     ]
 
 
+def _optimizer_uses_ema(optimizer: tf.keras.optimizers.Optimizer) -> bool:
+    """Whether optimizer has weight EMA enabled, unwrapping a mixed-precision LossScaleOptimizer.
+
+    Args:
+        optimizer: The model's (possibly LossScaleOptimizer-wrapped) optimizer.
+
+    Returns:
+        True if the underlying optimizer was built with ``use_ema=True``.
+    """
+    inner_optimizer = getattr(optimizer, "inner_optimizer", optimizer)
+    return bool(getattr(inner_optimizer, "use_ema", False))
+
+
+def _build_run_callbacks(
+    uses_ema: bool,
+    monitor: str,
+    patience: int,
+    learning_rate_decay_factor: float | None,
+    learning_rate_minimum: float | None,
+    monitor_min_delta: float,
+    early_stopping_patience: int | None,
+    extra_callbacks: list[tf.keras.callbacks.Callback] | None,
+    wandb_project: str | None,
+    wandb_log_freq: str | int,
+    model_checkpoint_path: str | None,
+) -> list[tf.keras.callbacks.Callback]:
+    """Build the ordered callback list passed to model.fit().
+
+    Ordering is load-bearing when ``uses_ema`` is True: SwapEMAWeights must be listed first so
+    it swaps the EMA-averaged weights into the model at ``on_epoch_end`` before EarlyStopping /
+    ModelCheckpoint (listed after it) capture their epoch's "best" snapshot — otherwise both
+    would checkpoint raw, non-averaged weights even though the val_loss they selected on was
+    already computed against the EMA weights (SwapEMAWeights always swaps EMA in for every
+    internal validation pass, independent of this ordering). See ``TrainConfig.use_ema``.
+
+    Args:
+        uses_ema: Whether the compiled model's optimizer has weight EMA enabled.
+        monitor: Metric name to monitor for LR decay / early stopping.
+        patience: Epochs with no improvement before decaying LR (or stopping, without decay).
+        learning_rate_decay_factor: Passed through to ``_build_monitor_callbacks``.
+        learning_rate_minimum: Passed through to ``_build_monitor_callbacks``.
+        monitor_min_delta: Passed through to ``_build_monitor_callbacks``.
+        early_stopping_patience: Passed through to ``_build_monitor_callbacks``.
+        extra_callbacks: Additional callbacks (e.g. periodic test-set visualization) to append.
+        wandb_project: W&B project name, or None to skip W&B logging/checkpointing.
+        wandb_log_freq: Passed to ``wandb.keras.WandbMetricsLogger``.
+        model_checkpoint_path: Path prefix for the best-loss checkpoint, or None to skip
+            checkpointing.
+
+    Returns:
+        Ordered list of callbacks for ``model.fit()``.
+    """
+    # Use the W&B Keras callback if logging to W&B, otherwise the standard ModelCheckpoint.
+    ckpt_cls = wandb.keras.WandbModelCheckpoint if wandb_project else tf.keras.callbacks.ModelCheckpoint
+    callbacks: list[tf.keras.callbacks.Callback] = []
+    if uses_ema:
+        callbacks.append(tf.keras.callbacks.SwapEMAWeights(swap_on_epoch=True))
+    callbacks.extend(
+        _build_monitor_callbacks(
+            monitor,
+            patience,
+            learning_rate_decay_factor,
+            learning_rate_minimum,
+            min_delta=monitor_min_delta,
+            early_stopping_patience=early_stopping_patience,
+        )
+    )
+    callbacks.append(fronts_callbacks.GcCallback())
+    # Must run before WandbMetricsLogger: it mutates the shared `logs` dict that
+    # WandbMetricsLogger reads, collapsing per-deep-supervision-output keys into
+    # single aggregate hss/val_hss (and stripping the per-output loss keys).
+    callbacks.append(fronts_callbacks.MetricsConsolidationCallback())
+    callbacks.extend(extra_callbacks or [])
+    if wandb_project:
+        callbacks.append(wandb.keras.WandbMetricsLogger(log_freq=wandb_log_freq))
+    if model_checkpoint_path:
+        callbacks.append(
+            ckpt_cls(
+                f"{model_checkpoint_path}_best_loss.keras",
+                monitor="val_loss",
+                save_best_only=True,
+                mode="min",
+            )
+        )
+    return callbacks
+
+
 def _run(
     model: tf.keras.Model,
     train_data: datasets.FrontsPyDataset,
@@ -474,35 +576,19 @@ def _run(
             config=run_config or {},
         )
 
-    # Use the W&B Keras callback if logging to W&B, otherwise the standard ModelCheckpoint.
-    ckpt_cls = wandb.keras.WandbModelCheckpoint if wandb_project else tf.keras.callbacks.ModelCheckpoint
-    callbacks = [
-        *_build_monitor_callbacks(
-            monitor,
-            patience,
-            learning_rate_decay_factor,
-            learning_rate_minimum,
-            min_delta=monitor_min_delta,
-            early_stopping_patience=early_stopping_patience,
-        ),
-        fronts_callbacks.GcCallback(),
-        # Must run before WandbMetricsLogger: it mutates the shared `logs` dict that
-        # WandbMetricsLogger reads, collapsing per-deep-supervision-output keys into
-        # single aggregate hss/val_hss (and stripping the per-output loss keys).
-        fronts_callbacks.MetricsConsolidationCallback(),
-    ]
-    callbacks.extend(extra_callbacks or [])
-    if wandb_project:
-        callbacks.append(wandb.keras.WandbMetricsLogger(log_freq=wandb_log_freq))
-    if model_checkpoint_path:
-        callbacks.append(
-            ckpt_cls(
-                f"{model_checkpoint_path}_best_loss.keras",
-                monitor="val_loss",
-                save_best_only=True,
-                mode="min",
-            )
-        )
+    callbacks = _build_run_callbacks(
+        uses_ema=_optimizer_uses_ema(model.optimizer),
+        monitor=monitor,
+        patience=patience,
+        learning_rate_decay_factor=learning_rate_decay_factor,
+        learning_rate_minimum=learning_rate_minimum,
+        monitor_min_delta=monitor_min_delta,
+        early_stopping_patience=early_stopping_patience,
+        extra_callbacks=extra_callbacks,
+        wandb_project=wandb_project,
+        wandb_log_freq=wandb_log_freq,
+        model_checkpoint_path=model_checkpoint_path,
+    )
     t0 = time.time()
     history = model.fit(
         train_data,
