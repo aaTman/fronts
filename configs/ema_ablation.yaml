@@ -1,4 +1,4 @@
-run_name: ablation_terrain_pressure_levels_surface_vars_full_pixelwise
+run_name: ablation_terrain_pressure_levels_surface_vars_full_pixelwise_ema
 
 train_config:
   epochs: 5000
@@ -8,15 +8,14 @@ train_config:
   loss_class_weights: null # null supervises all classes incl. background in the training loss, matching the AIES FrontFinder model
   loss_name: neighborhood_brier_score
   nbs_tolerance_km: 25.0 # reproduces the old 1-px (0.25 deg) label dilation
-  # The neighborhood-pooled term alone barely rewards sharpening a pixel that's already
-  # moderately confident (0.8 -> 0.99 barely moves the pooled MSE, diluted further by
-  # averaging over the pool window) — pointwise reliability curves plateau well below 100%
-  # forecast probability as a result (see evaluate.py's obs_rel_freq_pointwise). Adding the
-  # un-pooled pixelwise term gives direct, undiluted gradient pressure on individual pixels.
-  # pixel_weight=0.5 is a first guess (pooled:pixel loss contribution ~2:1) — worth sweeping
-  # if the reliability ceiling moves but not enough, or if CSI regresses from the sharpening.
   nbs_include_pixel: true
   nbs_pixel_weight: 0.5
+  # Tracks an exponential moving average of the trained weights (Polyak averaging) and swaps it
+  # into the model for validation, checkpointing, and early stopping (see train._build_run_callbacks).
+  # Adds no extra forward/backward passes, so this isolates the EMA effect against the pixelwise
+  # ablation in sooner_ablations.yaml.
+  use_ema: true
+  ema_momentum: 0.99
 
 data_config:
   inputs_icechunk_config:
@@ -34,7 +33,6 @@ data_config:
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
   time_resolution: "3h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
-  # coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max]
   variables:
     [
       "equivalent_potential_temperature",
@@ -46,7 +44,7 @@ data_config:
       "2m_dewpoint_temperature",
       "geopotential_at_surface"
     ]
-  pressure_levels: [1000, 925, 850, 700, 500, 300]
+  pressure_levels: [1000, 925, 850, 700]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax
   num_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
