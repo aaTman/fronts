@@ -183,8 +183,8 @@ chunks in the fronts icechunk store, in a single commit, without copying array d
 In progress on the HPC system (`sooner1`), by the user, since `/ourdisk/hpc/ai2es/...` is not
 mounted in this sandbox.
 
-- ⚠️ Run against real 2025 XML files — first attempt hit Issue 4 (`ValueError` on
-  `LINE_SOLID`), fixed; rerun pending.
+- ⚠️ Run against real 2025 XML files — attempt 1 hit Issue 4 (`ValueError` on `LINE_SOLID`),
+  fixed; attempt 2 hit Issue 5 (multi-document files), fixed; rerun pending.
 - [ ] Confirm store contents update correctly.
 - [ ] Confirm rerun is a no-op.
 - [ ] Visually sanity-check one converted raster.
@@ -192,10 +192,13 @@ mounted in this sandbox.
   now known (see Issue 4); the front-relevant subset was already covered, but this should be
   spot-checked against a few more files/months before a full-year run.
 
-**Manual Testing Notes:** The first real conversion attempt surfaced a genuine schema
-mismatch (Issue 4) invisible from the sandbox — this repo's synthetic test XML fixtures could
-not have caught it, since they were authored to match the schema inferred from `master`'s code
-before any real 2025 file had been inspected.
+**Manual Testing Notes:** The first two real conversion attempts each surfaced a genuine
+schema surprise (Issues 4 and 5) invisible from the sandbox — this repo's synthetic test XML
+fixtures could not have caught either, since they were authored to match the schema inferred
+from `master`'s code before any real 2025 file had been inspected. Both were root-caused from
+evidence the user gathered on the HPC system (`grep`/`sed` on the actual failing files) and
+fixed with reproducing unit tests before being handed back for another manual attempt —
+running real data early and iterating is doing exactly what it should here.
 
 ## Issues Encountered
 
@@ -242,15 +245,40 @@ before any real 2025 file had been inspected.
 - **Files Affected:** `src/fronts/data/generate_fronts.py`, `tests/data/test_generate_fronts.py`,
   `docs/rse/specs/plan-front-xml-to-netcdf-virtualizarr.md` (Edge Cases section revised)
 
+### Issue 5: Some real XML files concatenate multiple complete XML documents into one file
+- **Impact:** Found via manual verification on the HPC system, on the next file after Issue 4
+  was fixed: `xml.etree.ElementTree.ParseError: XML or text declaration not at start of
+  entity: line 7, column 0` on `20250104_1545_12_MPC_final-anal_OPC_SFC_ANAL.xml`. The
+  traceback carried no filename, so a per-file `logger.info` line was added first
+  (`src/fronts/data/generate_fronts.py`) purely to make the failure attributable; the user then
+  located and inspected the file, which turned out to contain **three** complete
+  `<?xml version="1.0" ...?><Products>...</Products>` documents concatenated back to back
+  (`grep -c '<?xml' file.xml` → 3) — not a single malformed document. This also revealed the
+  real element schema more fully than the earlier `<Product><Line>...` guess:
+  `<Products><Product><Layer><DrawableElement><Line pgenType="..." ...><Point Lat="..."
+  Lon="..."/>`, with `Point` attribute order swapped (`Lat` before `Lon`) and occasional
+  leading whitespace in numeric attribute values (e.g. `Lat=" 10.340000"`) — both already
+  handled correctly by the existing attribute-based (`.get("Lat")`/`.get("Lon")`) parsing and
+  Python's whitespace-tolerant `float()`.
+- **Resolution:** Added `_iter_line_elements(xml_path)`, which reads the raw file text, splits
+  it on each `<?xml` declaration boundary (`_XML_DECLARATION_PATTERN`), parses each resulting
+  chunk as an independent document via `defusedxml.ElementTree.fromstring`, and collects
+  `Line` elements across all of them. `convert_xml_to_dataset` now calls this instead of
+  `ElementTree.parse(xml_path).getroot()` directly. A normal single-document file produces
+  exactly one chunk and behaves identically to before.
+- **Files Affected:** `src/fronts/data/generate_fronts.py`, `tests/data/test_generate_fronts.py`
+
 ## Testing Summary
 
 **Tests Added:**
-- `tests/data/test_generate_fronts.py` — 20 tests: grid alignment, haversine/reverse-haversine
+- `tests/data/test_generate_fronts.py` — 23 tests: grid alignment, haversine/reverse-haversine
   (known values + round trip), vertex redistribution, filename parsing (all 3 real example
   filenames + 1 negative case), XML→Dataset conversion (normal, mixed front/non-front content,
-  dateline-crossing), config YAML parsing, XML discovery by date range, store-times inspection
-  (empty + populated), virtual-chunk write/append round trip, empty-paths error, `main()`'s
-  consistency guard, and a full `main()` end-to-end create-then-no-op-rerun test.
+  dateline-crossing, fronts spread across concatenated documents), multi-document XML splitting
+  (`_iter_line_elements`, single- and multi-document files), config YAML parsing, XML discovery
+  by date range, store-times inspection (empty + populated), virtual-chunk write/append round
+  trip, empty-paths error, `main()`'s consistency guard, and a full `main()` end-to-end
+  create-then-no-op-rerun test.
 - `tests/test_utils.py::TestOpenWritableIcechunkRepo` — 2 tests: store creation + real write
   round trip, and reopening an existing store.
 

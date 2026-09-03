@@ -100,6 +100,52 @@ def test_convert_xml_to_dataset_skips_non_front_line_types(tmp_path):
     assert present_codes == {0.0, float(generate_fronts.PGEN_TYPE_IDENTIFIERS["COLD_FRONT"])}
 
 
+def _single_front_document(lon: float, lat: float, lon2: float, lat2: float) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  <Products xmlns:ns2="http://www.example.org/productType">
+    <Product name="Default" type="Default">
+      <Layer name="Default">
+        <DrawableElement>
+          <Line pgenType="COLD_FRONT">
+            <Point Lat="{lat}" Lon="{lon}"/>
+            <Point Lat="{lat2}" Lon="{lon2}"/>
+          </Line>
+        </DrawableElement>
+      </Layer>
+    </Product>
+  </Products>
+"""
+
+
+def test_iter_line_elements_handles_concatenated_documents(tmp_path):
+    # Some real files concatenate multiple complete XML documents (each with its own <?xml
+    # declaration) into a single file rather than merging them into one document.
+    xml = _single_front_document(-100.0, 40.0, -99.0, 40.0) + _single_front_document(-100.0, 45.0, -99.0, 45.0)
+    path = tmp_path / "concatenated.xml"
+    path.write_text(xml)
+    lines = generate_fronts._iter_line_elements(str(path))
+    assert len(lines) == 2
+    assert all(line.get("pgenType") == "COLD_FRONT" for line in lines)
+
+
+def test_iter_line_elements_handles_single_document(tmp_path):
+    path = tmp_path / "single.xml"
+    path.write_text(_single_front_document(-100.0, 40.0, -99.0, 40.0))
+    lines = generate_fronts._iter_line_elements(str(path))
+    assert len(lines) == 1
+
+
+def test_convert_xml_to_dataset_reads_fronts_from_all_concatenated_documents(tmp_path):
+    xml = _single_front_document(-100.0, 40.0, -99.0, 40.0) + _single_front_document(-100.0, 60.0, -99.0, 60.0)
+    path = tmp_path / "concatenated.xml"
+    path.write_text(xml)
+    ds = generate_fronts.convert_xml_to_dataset(str(path), pd.Timestamp("2025-01-01"), FULL_DOMAIN_BB, distance_km=25.0)
+    front_code = generate_fronts.PGEN_TYPE_IDENTIFIERS["COLD_FRONT"]
+    hit_latitudes = ds["latitude"].values[(ds["identifier"].values[0] == front_code).any(axis=1)]
+    assert np.any(np.isclose(hit_latitudes, 40.0, atol=0.25))
+    assert np.any(np.isclose(hit_latitudes, 60.0, atol=0.25))
+
+
 def test_convert_xml_to_dataset_handles_dateline_crossing_front(tmp_path):
     xml = """<?xml version="1.0" encoding="utf-8"?>
 <Product>

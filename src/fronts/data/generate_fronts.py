@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+from xml.etree.ElementTree import Element
 
 import icechunk as ic
 import numpy as np
@@ -63,6 +64,33 @@ PGEN_TYPE_IDENTIFIERS = {
 _XML_FILENAME_PATTERN = re.compile(
     r"^(?P<date>\d{8})_(?P<time>\d{4})_(?P<cycle_hour>\d{2})_MPC_final-anal_OPC_SFC_ANAL\.xml$"
 )
+_XML_DECLARATION_PATTERN = re.compile(r"(?=<\?xml\b)")
+
+
+def _iter_line_elements(xml_path: str) -> list[Element]:
+    """Return every ``Line`` element in an XML file, across all concatenated documents.
+
+    Some MPC/OPC front XML files concatenate multiple complete XML documents (each with its
+    own ``<?xml ...?>`` declaration and ``Products`` root) into a single file instead of
+    merging them into one document, which a standard XML parser rejects as malformed ("XML or
+    text declaration not at start of entity"). Splits the raw text on each XML declaration and
+    parses the resulting documents independently; a normal single-document file yields exactly
+    one chunk and behaves as before.
+
+    Args:
+        xml_path: Path to a front XML file, possibly containing more than one document.
+
+    Returns:
+        All ``Line`` elements found across every document in the file, in file order.
+    """
+    with open(xml_path, encoding="utf-8") as f:
+        content = f.read()
+    lines: list[Element] = []
+    for raw_document in _XML_DECLARATION_PATTERN.split(content):
+        document = raw_document.strip()
+        if document:
+            lines.extend(ElementTree.fromstring(document).iter("Line"))
+    return lines
 
 
 @dataclasses.dataclass
@@ -211,13 +239,13 @@ def convert_xml_to_dataset(
         pressure centers, contours, text labels — and non-front features (e.g.
         ``LINE_SOLID``, ``DOUBLE_LINE``, ``ZZZ_LINE``) share the same ``<Line pgenType="...">``
         element as real fronts. ``Line`` elements whose ``pgenType`` is not a recognized front
-        type are silently skipped rather than treated as an error.
+        type are silently skipped rather than treated as an error. Some files also concatenate
+        multiple complete XML documents into one; see ``_iter_line_elements``.
     """
     latitude, longitude, longitude_unwrapped = grid_coordinates(coordinates)
     identifier = np.zeros((len(latitude), len(longitude)), dtype=np.float32)
 
-    root = ElementTree.parse(xml_path).getroot()
-    for line in root.iter("Line"):
+    for line in _iter_line_elements(xml_path):
         front_type = line.get("pgenType")
         if front_type not in PGEN_TYPE_IDENTIFIERS:
             continue
