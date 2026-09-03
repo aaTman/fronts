@@ -359,7 +359,9 @@ def main() -> None:
     os.makedirs(front_config.netcdf_outdir, exist_ok=True)
     netcdf_paths = []
     for valid_time in missing_times:
-        ds = convert_xml_to_dataset(available[valid_time], valid_time, front_config.coordinates, front_config.distance)
+        xml_path = available[valid_time]
+        logger.info(f"Converting {xml_path}...")
+        ds = convert_xml_to_dataset(xml_path, valid_time, front_config.coordinates, front_config.distance)
         netcdf_path = os.path.join(
             front_config.netcdf_outdir, f"FrontObjects_{valid_time.strftime('%Y%m%d%H%M')}_full.nc"
         )
