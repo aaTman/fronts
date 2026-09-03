@@ -180,13 +180,22 @@ chunks in the fronts icechunk store, in a single commit, without copying array d
 
 ### Manual Verification
 
-Not performed — requires the HPC-mounted `/ourdisk/hpc/ai2es/...` filesystem, which is not
-available in this sandbox. Deferred to the user; see the plan's Manual Verification section for
-the exact steps (run against real 2025 XML files, confirm store contents, confirm rerun is a
-no-op, visually sanity-check one converted raster, confirm all real `pgenType` values are
-covered by `PGEN_TYPE_IDENTIFIERS`).
+In progress on the HPC system (`sooner1`), by the user, since `/ourdisk/hpc/ai2es/...` is not
+mounted in this sandbox.
 
-**Manual Testing Notes:** None — see above.
+- ⚠️ Run against real 2025 XML files — first attempt hit Issue 4 (`ValueError` on
+  `LINE_SOLID`), fixed; rerun pending.
+- [ ] Confirm store contents update correctly.
+- [ ] Confirm rerun is a no-op.
+- [ ] Visually sanity-check one converted raster.
+- [ ] Confirm all real `pgenType` values are covered — one sample file's full vocabulary is
+  now known (see Issue 4); the front-relevant subset was already covered, but this should be
+  spot-checked against a few more files/months before a full-year run.
+
+**Manual Testing Notes:** The first real conversion attempt surfaced a genuine schema
+mismatch (Issue 4) invisible from the sandbox — this repo's synthetic test XML fixtures could
+not have caught it, since they were authored to match the schema inferred from `master`'s code
+before any real 2025 file had been inspected.
 
 ## Issues Encountered
 
@@ -212,12 +221,33 @@ covered by `PGEN_TYPE_IDENTIFIERS`).
   `Timestamp.to_datetime64()` against a `set` of `Timestamp`s.
 - **Files Affected:** `src/fronts/data/generate_fronts.py`
 
+### Issue 4: Real 2025 XML files mix front and non-front features under `<Line>`
+- **Impact:** Found only via manual verification on the HPC system (this repo's XML fixtures
+  in the test suite, and the sample filenames given during planning, did not reveal this):
+  `main()` crashed on the very first real file
+  (`20250101_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml`) with
+  `ValueError: Unrecognized front type 'LINE_SOLID'`. The plan's Phase 2 design (Edge Case 1)
+  assumed every `<Line>` element in these files is a front, based on `master`'s behavior
+  against its own pre-filtered source files. The real "final-anal" product's XML encodes the
+  entire surface analysis — fronts, pressure centers, contours, text labels — and shares the
+  generic `<Line pgenType="...">` element between real fronts (`COLD_FRONT`, `OCCLUDED_FRONT`,
+  `STATIONARY_FRONT[_DISS/_FORM]`, `TROF`, `WARM_FRONT` — all already covered by
+  `PGEN_TYPE_IDENTIFIERS`) and non-front line features (`LINE_SOLID`, `DOUBLE_LINE`,
+  `ZZZ_LINE`, and likely others).
+- **Resolution:** `convert_xml_to_dataset` now silently `continue`s past any `Line` whose
+  `pgenType` is not a recognized front type, instead of raising `ValueError`. The
+  `ValueError`-on-unknown-type test was replaced with
+  `test_convert_xml_to_dataset_skips_non_front_line_types`, which asserts a mixed-content file
+  (one non-front `LINE_SOLID` line, one real `COLD_FRONT` line) rasterizes only the front.
+- **Files Affected:** `src/fronts/data/generate_fronts.py`, `tests/data/test_generate_fronts.py`,
+  `docs/rse/specs/plan-front-xml-to-netcdf-virtualizarr.md` (Edge Cases section revised)
+
 ## Testing Summary
 
 **Tests Added:**
 - `tests/data/test_generate_fronts.py` — 20 tests: grid alignment, haversine/reverse-haversine
   (known values + round trip), vertex redistribution, filename parsing (all 3 real example
-  filenames + 1 negative case), XML→Dataset conversion (normal, unknown-type error,
+  filenames + 1 negative case), XML→Dataset conversion (normal, mixed front/non-front content,
   dateline-crossing), config YAML parsing, XML discovery by date range, store-times inspection
   (empty + populated), virtual-chunk write/append round trip, empty-paths error, `main()`'s
   consistency guard, and a full `main()` end-to-end create-then-no-op-rerun test.

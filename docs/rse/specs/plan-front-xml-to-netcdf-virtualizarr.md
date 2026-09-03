@@ -1362,11 +1362,17 @@ not available in this sandbox.
 ## Edge Cases and Error Handling
 
 **Edge Cases:**
-1. **Case:** An XML file's `Line` has a `pgenType` not in `PGEN_TYPE_IDENTIFIERS` (e.g. a
-   front type used by MPC/OPC analyses but not by the historical GFS-era front dataset
-   `master`'s map was built from).
-   - **Expected Behavior:** `convert_xml_to_dataset` raises `ValueError` naming the file and
-     the unrecognized type, rather than silently dropping or mis-coding the front.
+1. **Case:** An XML file's `Line` has a `pgenType` not in `PGEN_TYPE_IDENTIFIERS`.
+   - **Expected Behavior (revised during manual verification on the HPC system — see
+     [Implementation Summary](implement-front-xml-to-netcdf-virtualizarr.md)):** the real
+     "final-anal" product's XML encodes the *entire* surface analysis — fronts, pressure
+     centers, contours, text labels — and non-front features (`LINE_SOLID`, `DOUBLE_LINE`,
+     `ZZZ_LINE`, ...) share the same `<Line pgenType="...">` element as real fronts. This plan
+     originally assumed (based on `master`'s pre-filtered source files) that every `Line` was a
+     front and specified raising `ValueError` on an unrecognized type; that assumption was
+     wrong for the real 2025 files and raised on the very first real conversion attempt.
+     `convert_xml_to_dataset` now silently skips any `Line` whose `pgenType` is not in
+     `PGEN_TYPE_IDENTIFIERS`, rather than raising.
    - **Implementation:** `src/fronts/data/generate_fronts.py` (`convert_xml_to_dataset`,
      Phase 2).
 2. **Case:** A front line's points straddle the antimeridian (e.g. crossing from 179°E to

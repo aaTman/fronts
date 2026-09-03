@@ -206,9 +206,12 @@ def convert_xml_to_dataset(
         ``(time, latitude, longitude)``, one code per pixel from ``PGEN_TYPE_IDENTIFIERS``
         (0 where no front is present).
 
-    Raises:
-        ValueError: If a ``Line`` element's ``pgenType`` attribute is not a recognized front
-            type.
+    Note:
+        The MPC/OPC "final-anal" product's XML encodes the full surface analysis — fronts,
+        pressure centers, contours, text labels — and non-front features (e.g.
+        ``LINE_SOLID``, ``DOUBLE_LINE``, ``ZZZ_LINE``) share the same ``<Line pgenType="...">``
+        element as real fronts. ``Line`` elements whose ``pgenType`` is not a recognized front
+        type are silently skipped rather than treated as an error.
     """
     latitude, longitude, longitude_unwrapped = grid_coordinates(coordinates)
     identifier = np.zeros((len(latitude), len(longitude)), dtype=np.float32)
@@ -217,7 +220,7 @@ def convert_xml_to_dataset(
     for line in root.iter("Line"):
         front_type = line.get("pgenType")
         if front_type not in PGEN_TYPE_IDENTIFIERS:
-            raise ValueError(f"Unrecognized front type {front_type!r} in {xml_path}")
+            continue
 
         points = [(float(point.get("Lon")), float(point.get("Lat"))) for point in line.iter("Point")]
         lons = np.array([p[0] for p in points])

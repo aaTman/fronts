@@ -78,19 +78,26 @@ def test_convert_xml_to_dataset_places_cold_front_code(cold_front_xml):
     assert ds["identifier"].values.max() == generate_fronts.PGEN_TYPE_IDENTIFIERS["COLD_FRONT"]
 
 
-def test_convert_xml_to_dataset_raises_on_unknown_front_type(tmp_path):
+def test_convert_xml_to_dataset_skips_non_front_line_types(tmp_path):
+    # The real "final-anal" product's XML mixes fronts with non-front map features
+    # (pressure-center symbols, contours, generic lines) under the same <Line> tag.
     xml = """<?xml version="1.0" encoding="utf-8"?>
 <Product>
-  <Line pgenType="NOT_A_REAL_TYPE">
+  <Line pgenType="LINE_SOLID">
     <Point Lon="-100.0" Lat="40.0"/>
     <Point Lon="-99.0" Lat="40.0"/>
   </Line>
+  <Line pgenType="COLD_FRONT">
+    <Point Lon="-100.0" Lat="45.0"/>
+    <Point Lon="-99.0" Lat="45.0"/>
+  </Line>
 </Product>
 """
-    path = tmp_path / "bad.xml"
+    path = tmp_path / "mixed.xml"
     path.write_text(xml)
-    with pytest.raises(ValueError, match="NOT_A_REAL_TYPE"):
-        generate_fronts.convert_xml_to_dataset(str(path), pd.Timestamp("2025-01-01"), FULL_DOMAIN_BB, distance_km=25.0)
+    ds = generate_fronts.convert_xml_to_dataset(str(path), pd.Timestamp("2025-01-01"), FULL_DOMAIN_BB, distance_km=25.0)
+    present_codes = set(np.unique(ds["identifier"].values))
+    assert present_codes == {0.0, float(generate_fronts.PGEN_TYPE_IDENTIFIERS["COLD_FRONT"])}
 
 
 def test_convert_xml_to_dataset_handles_dateline_crossing_front(tmp_path):
