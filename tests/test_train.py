@@ -1,3 +1,4 @@
+import dataclasses
 import math
 
 import numpy as np
@@ -11,15 +12,18 @@ from fronts.utils import IcechunkStorageConfig, apply_time_resolution
 try:
     import tensorflow as tf
 
+    from fronts.callbacks import CallbacksConfig
     from fronts.data.datasets import DatasetConfig, FrontsPyDataset
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
     from fronts.model import ModelConfig, UNet3Plus
     from fronts.train import (
         TrainConfig,
+        WandBConfig,
         _build_loss,
         _build_monitor_callbacks,
         _build_run_callbacks,
+        _build_wandb_config,
         _compile,
         _freeze_layers,
         _load_pretrained_weights,
@@ -969,3 +973,44 @@ class TestCompileEma:
         train_cfg = TrainConfig(loss_class_weights=None, use_ema=False, ema_momentum=0.5)
         _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
         assert unet.optimizer.use_ema is False
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildWandbConfig:
+    def test_nests_every_config_section_under_its_yaml_key(self, data_config):
+        model_cfg = ModelConfig()
+        callbacks_cfg = CallbacksConfig()
+        train_cfg = TrainConfig(loss_class_weights=None)
+        wandb_cfg = WandBConfig(log_freq="epoch")
+
+        result = _build_wandb_config(data_config, model_cfg, callbacks_cfg, train_cfg, wandb_cfg, run_meta={})
+
+        assert result["data_config"] == dataclasses.asdict(data_config)
+        assert result["model_config"] == dataclasses.asdict(model_cfg)
+        assert result["callbacks_config"] == dataclasses.asdict(callbacks_cfg)
+        assert result["train_config"] == dataclasses.asdict(train_cfg)
+        assert result["wandb_config"] == dataclasses.asdict(wandb_cfg)
+
+    def test_flattens_run_meta_alongside_config_sections(self, data_config):
+        model_cfg = ModelConfig()
+        callbacks_cfg = CallbacksConfig()
+        train_cfg = TrainConfig(loss_class_weights=None)
+        wandb_cfg = WandBConfig(log_freq="epoch")
+        run_meta = {"git_commit": "abc123", "era5_snapshot_id": "snap1"}
+
+        result = _build_wandb_config(data_config, model_cfg, callbacks_cfg, train_cfg, wandb_cfg, run_meta)
+
+        assert result["git_commit"] == "abc123"
+        assert result["era5_snapshot_id"] == "snap1"
+
+    def test_nested_dataclass_fields_are_plain_dicts(self, data_config):
+        """Nested dataclasses (e.g. IcechunkStorageConfig) must serialize to dicts, not objects, for W&B."""
+        model_cfg = ModelConfig()
+        callbacks_cfg = CallbacksConfig()
+        train_cfg = TrainConfig(loss_class_weights=None)
+        wandb_cfg = WandBConfig(log_freq="epoch")
+
+        result = _build_wandb_config(data_config, model_cfg, callbacks_cfg, train_cfg, wandb_cfg, run_meta={})
+
+        assert isinstance(result["data_config"]["inputs_icechunk_config"], dict)
+        assert result["data_config"]["inputs_icechunk_config"]["store_path"] == "unused"

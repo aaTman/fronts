@@ -565,7 +565,7 @@ def _run(
     wandb_log_freq: str | int = "epoch",
     steps_per_epoch: int | None = None,
     validation_steps: int | None = None,
-    run_config: dict[str, str] | None = None,
+    run_config: dict | None = None,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
 ) -> tuple[tf.keras.callbacks.History, float]:
     if wandb_project:
@@ -689,6 +689,39 @@ def _collect_run_metadata(data_config: datasets.DatasetConfig) -> dict[str, str]
         if value is not None:
             meta[key.lower()] = value
     return meta
+
+
+def _build_wandb_config(
+    data_cfg: datasets.DatasetConfig,
+    model_cfg: model.ModelConfig,
+    callbacks_cfg: fronts_callbacks.CallbacksConfig,
+    train_cfg: TrainConfig,
+    wandb_cfg: WandBConfig,
+    run_meta: dict[str, str],
+) -> dict:
+    """Assemble the full ``wandb.init(config=...)`` payload from every YAML config section.
+
+    Args:
+        data_cfg: Parsed ``data_config`` YAML section.
+        model_cfg: Parsed ``model_config`` YAML section.
+        callbacks_cfg: Parsed ``callbacks_config`` YAML section.
+        train_cfg: Parsed ``train_config`` YAML section.
+        wandb_cfg: Parsed ``wandb_config`` YAML section.
+        run_meta: Provenance metadata from ``_collect_run_metadata`` (git commit, icechunk
+            snapshot ids, SLURM job info).
+
+    Returns:
+        Dict nesting each config section (as a plain dict, via ``dataclasses.asdict``) under
+        its YAML key, plus the flat ``run_meta`` keys.
+    """
+    return {
+        "data_config": dataclasses.asdict(data_cfg),
+        "model_config": dataclasses.asdict(model_cfg),
+        "callbacks_config": dataclasses.asdict(callbacks_cfg),
+        "train_config": dataclasses.asdict(train_cfg),
+        "wandb_config": dataclasses.asdict(wandb_cfg),
+        **run_meta,
+    }
 
 
 def train(
@@ -850,6 +883,11 @@ def train(
 
     wandb_project = wandb_cfg.project_name if wandb_cfg is not None else None
     run_name = wandb_cfg.run_name if wandb_cfg is not None else None
+    run_config = (
+        _build_wandb_config(data_cfg, model_cfg, callbacks_cfg, train_cfg, wandb_cfg, run_meta)
+        if wandb_cfg is not None
+        else run_meta
+    )
 
     extra_callbacks = []
     if wandb_project and callbacks_cfg.test_viz_every_n_epochs:
@@ -887,7 +925,7 @@ def train(
         wandb_project=wandb_project,
         run_name=run_name,
         wandb_log_freq=wandb_cfg.log_freq if wandb_cfg is not None else "epoch",
-        run_config=run_meta,
+        run_config=run_config,
         extra_callbacks=extra_callbacks,
     )
 
