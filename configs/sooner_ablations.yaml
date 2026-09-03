@@ -1,4 +1,4 @@
-run_name: ablation_terrain_pressure_levels_surface_vars_full_pixelwise
+run_name: ablation_patches_batch_size_36_scratch
 
 train_config:
   epochs: 5000
@@ -20,20 +20,20 @@ train_config:
 
 data_config:
   inputs_icechunk_config:
-    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/"
+    store_path: "/scratch/tman/train/"
     branch_name: "main"
     group_name: "era5"
   targets_icechunk_config:
-    store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
+    store_path: "/scratch/tman/restructured_front_data/icechunk"
     branch_name: "main"
-    virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
-  batch_size: 32
+    virtual_chunk_local_path: "/scratch/tman/restructured_front_data/netcdf/"
+  batch_size: 36
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
-  time_resolution: "3h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
+  time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
   # coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max]
   variables:
     [
@@ -46,7 +46,7 @@ data_config:
       "2m_dewpoint_temperature",
       "geopotential_at_surface"
     ]
-  pressure_levels: [1000, 925, 850, 700]
+  pressure_levels: [1000, 925, 850, 700, 500, 300]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax
   num_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
