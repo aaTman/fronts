@@ -185,7 +185,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         input_ds: This split's input Dataset, shape (time, latitude, longitude) per variable.
         target_da: This split's raw integer front-code DataArray, shape (time, latitude, longitude).
         batch_size: Number of timesteps per batch.
-        shuffle: If True, reshuffles the sample order at the end of every epoch.
+        shuffle: If True, reshuffles the batch visitation order at the end of every epoch.
         drop_remainder: If True, drop the final under-sized batch instead of yielding it,
             so every batch has exactly ``batch_size`` samples. A trailing batch smaller
             than ``batch_size`` splits unevenly across replicas under
@@ -380,10 +380,12 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         return x.copy(), y.copy()
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the (input, target) batch at ``idx``."""
-        local_idxs = self._order[idx * self.batch_size : (idx + 1) * self.batch_size]
+        """Returns the (input, target) batch at ``idx``, as a single contiguous read."""
+        block_idx = self._order[idx]
+        start = block_idx * self.batch_size
+        stop = min(start + self.batch_size, self._total)
         t0 = time.time()
-        result = self.get_at_indices(local_idxs)
+        result = self.get_at_indices(slice(start, stop))
         elapsed = time.time() - t0
         if elapsed > 30:
             logger.warning(f"Slow batch {idx}: {elapsed:.1f}s")

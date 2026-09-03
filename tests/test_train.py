@@ -1,3 +1,4 @@
+import dataclasses
 import math
 
 import numpy as np
@@ -241,6 +242,71 @@ class TestBuildMonitorCallbacks:
         )
         assert len(callbacks) == 1
         assert callbacks[0].patience == 5
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestOptimizerUsesEma:
+    def test_plain_optimizer_without_ema_is_false(self):
+        assert _optimizer_uses_ema(tf.keras.optimizers.Adam(use_ema=False)) is False
+
+    def test_plain_optimizer_with_ema_is_true(self):
+        assert _optimizer_uses_ema(tf.keras.optimizers.Adam(use_ema=True)) is True
+
+    def test_loss_scale_wrapped_optimizer_is_unwrapped(self):
+        """Mixed-precision training wraps Adam in a LossScaleOptimizer; use_ema lives on the inner optimizer."""
+        wrapped = tf.keras.mixed_precision.LossScaleOptimizer(tf.keras.optimizers.Adam(use_ema=True))
+        assert _optimizer_uses_ema(wrapped) is True
+
+    def test_loss_scale_wrapped_optimizer_without_ema_is_false(self):
+        wrapped = tf.keras.mixed_precision.LossScaleOptimizer(tf.keras.optimizers.Adam(use_ema=False))
+        assert _optimizer_uses_ema(wrapped) is False
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildRunCallbacks:
+    """Callback-order test suite.
+
+    `_build_run_callbacks` ordering directly determines whether EMA-swapped weights make it
+    into checkpoints and EarlyStopping's best-weight snapshot — see its docstring.
+    """
+
+    def _build(self, uses_ema: bool, **overrides):
+        kwargs = {
+            "uses_ema": uses_ema,
+            "monitor": "val_loss",
+            "patience": 5,
+            "learning_rate_decay_factor": None,
+            "learning_rate_minimum": None,
+            "monitor_min_delta": 0.0,
+            "early_stopping_patience": None,
+            "extra_callbacks": None,
+            "wandb_project": None,
+            "wandb_log_freq": "epoch",
+            "model_checkpoint_path": None,
+        }
+        kwargs.update(overrides)
+        return _build_run_callbacks(**kwargs)
+
+    def test_no_ema_omits_swap_ema_weights_callback(self):
+        callbacks = self._build(uses_ema=False)
+        assert not any(isinstance(cb, tf.keras.callbacks.SwapEMAWeights) for cb in callbacks)
+
+    def test_ema_adds_swap_ema_weights_first(self):
+        callbacks = self._build(uses_ema=True)
+        assert isinstance(callbacks[0], tf.keras.callbacks.SwapEMAWeights)
+        assert callbacks[0].swap_on_epoch is True
+
+    def test_swap_ema_weights_precedes_early_stopping(self):
+        callbacks = self._build(uses_ema=True)
+        swap_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.SwapEMAWeights))
+        early_stop_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.EarlyStopping))
+        assert swap_idx < early_stop_idx
+
+    def test_swap_ema_weights_precedes_model_checkpoint(self, tmp_path):
+        callbacks = self._build(uses_ema=True, model_checkpoint_path=str(tmp_path / "model"))
+        swap_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.SwapEMAWeights))
+        ckpt_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.ModelCheckpoint))
+        assert swap_idx < ckpt_idx
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -741,9 +807,7 @@ class TestLoadDataIntoDataloaderPressureLevels:
         ds = xr.Dataset(
             {
                 var_name: xr.DataArray(
-                    np.zeros(
-                        (len(self._TIMES), len(self._LEVELS), len(self._LAT), len(self._LON)), dtype=np.float32
-                    ),
+                    np.zeros((len(self._TIMES), len(self._LEVELS), len(self._LAT), len(self._LON)), dtype=np.float32),
                     dims=["time", "level", "latitude", "longitude"],
                     coords={
                         "time": self._TIMES,
@@ -1205,6 +1269,22 @@ class TestTrainConfigLossClassWeights:
         yaml_data = {"train_config": {"loss_class_weights": weights, "epochs": 1}}
         cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
         assert cfg.loss_class_weights == weights
+
+    def test_nbs_include_pixel_defaults(self, train_config_cls):
+        from fronts import utils
+
+        yaml_data = {"train_config": {"loss_class_weights": None, "epochs": 1}}
+        cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
+        assert cfg.nbs_include_pixel is False
+        assert cfg.nbs_pixel_weight == 0.1
+
+    def test_sooner_ablations_config_parses_nbs_pixel_fields(self, train_config_cls):
+        from fronts import utils
+
+        yaml_data = utils.load_yaml("configs/sooner_ablations.yaml")
+        cfg = utils.parse_config_section(yaml_data, train_config_cls, "train_config")
+        assert cfg.nbs_include_pixel is True
+        assert cfg.nbs_pixel_weight == 0.5
 
     def test_nbs_include_pixel_defaults(self, train_config_cls):
         from fronts import utils
