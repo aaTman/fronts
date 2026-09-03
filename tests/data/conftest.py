@@ -3,6 +3,23 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+_COLD_FRONT_XML = """<?xml version="1.0" encoding="utf-8"?>
+<Product>
+  <Line pgenType="COLD_FRONT">
+    <Point Lon="-100.0" Lat="40.0"/>
+    <Point Lon="-99.0" Lat="40.0"/>
+  </Line>
+</Product>
+"""
+
+
+@pytest.fixture
+def cold_front_xml(tmp_path):
+    """A minimal single-cold-front MPC/OPC XML file, matching the real analysis schema."""
+    path = tmp_path / "20250511_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml"
+    path.write_text(_COLD_FRONT_XML)
+    return path
+
 
 @pytest.fixture
 def make_static_source_zarr(tmp_path):

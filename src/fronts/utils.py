@@ -428,6 +428,28 @@ def get_git_commit() -> str:
         return "unknown"
 
 
+def _configure_virtual_chunk_access(repo_config: ic.RepositoryConfig, virtual_chunk_local_path: str | None) -> Any:
+    """Register a VirtualChunkContainer for local netcdf-backed virtual chunks, if configured.
+
+    Mutates ``repo_config`` in place when ``virtual_chunk_local_path`` is given.
+
+    Args:
+        repo_config: Repository config to attach the virtual chunk container to.
+        virtual_chunk_local_path: Local directory containing netcdf files referenced by
+            virtual chunks, or None for stores with no virtual chunks.
+
+    Returns:
+        The value to pass as ``authorize_virtual_chunk_access``, or None.
+    """
+    if virtual_chunk_local_path is None:
+        return None
+    url_prefix = f"file://{virtual_chunk_local_path}"
+    repo_config.set_virtual_chunk_container(
+        ic.VirtualChunkContainer(url_prefix=url_prefix, store=ic.local_filesystem_store(virtual_chunk_local_path))
+    )
+    return ic.containers_credentials({url_prefix: None})
+
+
 def get_icechunk_snapshot_id(
     store_path: str,
     branch: str,
@@ -446,16 +468,7 @@ def get_icechunk_snapshot_id(
     """
     storage = ic.local_filesystem_storage(store_path)
     repo_config = ic.RepositoryConfig.default()
-    authorize_virtual_chunk_access = None
-    if virtual_chunk_local_path is not None:
-        url_prefix = f"file://{virtual_chunk_local_path}"
-        repo_config.set_virtual_chunk_container(
-            ic.VirtualChunkContainer(
-                url_prefix=url_prefix,
-                store=ic.local_filesystem_store(virtual_chunk_local_path),
-            )
-        )
-        authorize_virtual_chunk_access = ic.containers_credentials({url_prefix: None})
+    authorize_virtual_chunk_access = _configure_virtual_chunk_access(repo_config, virtual_chunk_local_path)
     repo = ic.Repository.open(
         storage,
         config=repo_config,
@@ -494,16 +507,7 @@ def open_readonly_icechunk_store(
     """
     storage = ic.local_filesystem_storage(store_path)
     repo_config = ic.RepositoryConfig.default()
-    authorize_virtual_chunk_access = None
-    if virtual_chunk_local_path is not None:
-        url_prefix = f"file://{virtual_chunk_local_path}"
-        repo_config.set_virtual_chunk_container(
-            ic.VirtualChunkContainer(
-                url_prefix=url_prefix,
-                store=ic.local_filesystem_store(virtual_chunk_local_path),
-            )
-        )
-        authorize_virtual_chunk_access = ic.containers_credentials({url_prefix: None})
+    authorize_virtual_chunk_access = _configure_virtual_chunk_access(repo_config, virtual_chunk_local_path)
     repo = ic.Repository.open(
         storage,
         config=repo_config,
@@ -511,6 +515,25 @@ def open_readonly_icechunk_store(
     )
     session = repo.readonly_session(branch)
     return xr.open_zarr(session.store, group=group, zarr_format=zarr_format, consolidated=False, chunks=chunks)
+
+
+def open_writable_icechunk_repo(store_path: str, virtual_chunk_local_path: str | None = None) -> ic.Repository:
+    """Open or create a local icechunk repository, registering virtual chunk access if configured.
+
+    Args:
+        store_path: Path to the icechunk store directory.
+        virtual_chunk_local_path: Local directory containing netcdf files referenced by
+            virtual chunks. Leave None for stores with no virtual chunks.
+
+    Returns:
+        An open (or newly created) icechunk Repository, ready for ``repo.writable_session(...)``.
+    """
+    storage = ic.local_filesystem_storage(store_path)
+    repo_config = ic.RepositoryConfig.default()
+    authorize_virtual_chunk_access = _configure_virtual_chunk_access(repo_config, virtual_chunk_local_path)
+    return ic.Repository.open_or_create(
+        storage, config=repo_config, authorize_virtual_chunk_access=authorize_virtual_chunk_access
+    )
 
 
 def configure_gpu(gpu_device: int | None) -> None:

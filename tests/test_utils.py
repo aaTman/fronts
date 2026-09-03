@@ -1,8 +1,28 @@
+import icechunk.xarray
 import numpy as np
 import pytest
 import xarray as xr
 
 from fronts import utils
+
+
+class TestOpenWritableIcechunkRepo:
+    def test_creates_new_store(self, tmp_path):
+        store_path = str(tmp_path / "store")
+        repo = utils.open_writable_icechunk_repo(store_path)
+        session = repo.writable_session("main")
+        ds = xr.Dataset({"x": (("i",), np.array([1, 2, 3]))})
+        icechunk.xarray.to_icechunk(ds, session, safe_chunks=False)
+        session.commit("init")
+
+        read_back = utils.open_readonly_icechunk_store(store_path, "main", chunks=None)
+        np.testing.assert_array_equal(read_back["x"].values, [1, 2, 3])
+
+    def test_reopens_existing_store(self, tmp_path):
+        store_path = str(tmp_path / "store")
+        utils.open_writable_icechunk_repo(store_path)
+        repo = utils.open_writable_icechunk_repo(store_path)  # second call must not error
+        assert repo is not None
 
 
 def _make_da(lons: list[float]) -> xr.DataArray:

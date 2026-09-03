@@ -1,0 +1,13 @@
+front_conversion_config:
+  xml_indir: "/ourdisk/hpc/ai2es/fronts/raw_front_data/xml_tars/2025/xml"
+  netcdf_outdir: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  date_start: 2025-01-01T00:00:00
+  date_end: 2025-12-31T23:59:00
+  coordinates: [0.25, 80, 130, 369.75]  # [lat_min, lat_max, lon_min, lon_max]
+  distance: 1.0  # km, front-line vertex interpolation spacing
+
+icechunk_storage_config:
+  store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
+  branch_name: "main"
+  commit_message: "Add 2025 front netCDFs from MPC/OPC surface analyses"
+  virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"

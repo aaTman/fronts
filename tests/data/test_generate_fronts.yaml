@@ -1,0 +1,13 @@
+front_conversion_config:
+  xml_indir: "/tmp/test_xml"
+  netcdf_outdir: "/tmp/test_netcdf"
+  date_start: 2025-05-01T00:00:00
+  date_end: 2025-05-31T23:59:00
+  coordinates: [0.25, 80, 130, 369.75]
+  distance: 1.0
+
+icechunk_storage_config:
+  store_path: "/tmp/test_fronts_store"
+  branch_name: "main"
+  commit_message: "test commit"
+  virtual_chunk_local_path: "/tmp/test_netcdf"
