@@ -2,7 +2,11 @@
 
 Run on the machine where the stores are colocated:
 
-    pixi run python scripts/diagnose_read_throughput.py
+    pixi run python scripts/diagnose_read_throughput.py [config_path]
+
+``config_path`` defaults to ``configs/schooner_train.yaml`` (the ``/ourdisk`` stores);
+pass ``configs/schooner_train_scratch.yaml`` to profile the ``/scratch``-staged copy instead,
+so the two runs are directly comparable.
 
 Prints per-variable dtype/chunking/compression, then times reads at the raw
 store level and through ``inputs_ds_to_dataarray`` so the bottleneck (chunk layout,
@@ -13,6 +17,7 @@ timestep read resolves to opening a netcdf file via ``virtual_chunk_local_path``
 scattered reads are where virtual-chunk overhead is expected to show up.
 """
 
+import sys
 import time
 
 import numpy as np
@@ -100,7 +105,9 @@ def _profile_targets(fronts_cfg: utils.IcechunkStorageConfig, sizes: tuple[int, 
 
 def main() -> None:
     """Print store layout and time reads to localize the throughput bottleneck."""
-    yaml_data = utils.load_yaml("configs/schooner_train.yaml")
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/schooner_train.yaml"
+    print(f"Config: {config_path}\n")
+    yaml_data = utils.load_yaml(config_path)
     data_cfg = utils.parse_config_section(yaml_data, datasets.DatasetConfig, "data_config")
     sizes = (1, 10, 50)
 

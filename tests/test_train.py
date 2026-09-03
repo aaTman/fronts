@@ -376,6 +376,29 @@ class TestFrontsPyDataset:
         ds.on_epoch_end()
         np.testing.assert_array_equal(ds._order, np.arange(N_TIME))
 
+    def test_shuffle_reorders_batches_not_samples_within_a_batch(self, era5_ds, front_da, data_config):
+        """Shuffling must only reorder whole batches, keeping each batch a contiguous read.
+
+        Both icechunk stores backing this dataset chunk at 1 timestep, so a fully random
+        per-sample shuffle turns every batch read into scattered single-chunk fetches,
+        measured at 10-30x slower than a sequential read of the same size (see
+        scripts/diagnose_read_throughput.py). Every batch must therefore still correspond
+        to some contiguous run of the original timesteps, even with shuffling enabled.
+        """
+        batch_size = 2
+        ds = self._make_ds(era5_ds, front_da, data_config, batch_size=batch_size, shuffle=True, seed=0)
+        expected = inputs_ds_to_dataarray(era5_ds, data_config.variables).values
+        for i in range(len(ds)):
+            x_batch, _ = ds[i]
+            n = x_batch.shape[0]
+            matches = [s for s in range(N_TIME - n + 1) if np.allclose(x_batch, expected[s : s + n])]
+            assert matches, f"batch {i} is not a contiguous run of original timesteps"
+
+    def test_shuffle_visits_every_batch_exactly_once_per_epoch(self, era5_ds, front_da, data_config):
+        batch_size = 2
+        ds = self._make_ds(era5_ds, front_da, data_config, batch_size=batch_size, shuffle=True, seed=0)
+        np.testing.assert_array_equal(np.sort(ds._order), np.arange(len(ds)))
+
     def test_drop_remainder_drops_undersized_final_batch(self, era5_ds, front_da, data_config):
         """N_TIME=5 with batch_size=2 has a 1-sample remainder batch that must be dropped.
 
