@@ -21,10 +21,12 @@ try:
         TrainConfig,
         _build_loss,
         _build_monitor_callbacks,
+        _build_run_callbacks,
         _build_test_visualization_callback,
         _compile,
         _freeze_layers,
         _load_pretrained_weights,
+        _optimizer_uses_ema,
         _pred_buffer_px_from_data_config,
         _should_build_test_visualization,
         _target_latitudes,
@@ -239,6 +241,71 @@ class TestBuildMonitorCallbacks:
         )
         assert len(callbacks) == 1
         assert callbacks[0].patience == 5
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestOptimizerUsesEma:
+    def test_plain_optimizer_without_ema_is_false(self):
+        assert _optimizer_uses_ema(tf.keras.optimizers.Adam(use_ema=False)) is False
+
+    def test_plain_optimizer_with_ema_is_true(self):
+        assert _optimizer_uses_ema(tf.keras.optimizers.Adam(use_ema=True)) is True
+
+    def test_loss_scale_wrapped_optimizer_is_unwrapped(self):
+        """Mixed-precision training wraps Adam in a LossScaleOptimizer; use_ema lives on the inner optimizer."""
+        wrapped = tf.keras.mixed_precision.LossScaleOptimizer(tf.keras.optimizers.Adam(use_ema=True))
+        assert _optimizer_uses_ema(wrapped) is True
+
+    def test_loss_scale_wrapped_optimizer_without_ema_is_false(self):
+        wrapped = tf.keras.mixed_precision.LossScaleOptimizer(tf.keras.optimizers.Adam(use_ema=False))
+        assert _optimizer_uses_ema(wrapped) is False
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildRunCallbacks:
+    """Callback-order test suite.
+
+    `_build_run_callbacks` ordering directly determines whether EMA-swapped weights make it
+    into checkpoints and EarlyStopping's best-weight snapshot — see its docstring.
+    """
+
+    def _build(self, uses_ema: bool, **overrides):
+        kwargs = {
+            "uses_ema": uses_ema,
+            "monitor": "val_loss",
+            "patience": 5,
+            "learning_rate_decay_factor": None,
+            "learning_rate_minimum": None,
+            "monitor_min_delta": 0.0,
+            "early_stopping_patience": None,
+            "extra_callbacks": None,
+            "wandb_project": None,
+            "wandb_log_freq": "epoch",
+            "model_checkpoint_path": None,
+        }
+        kwargs.update(overrides)
+        return _build_run_callbacks(**kwargs)
+
+    def test_no_ema_omits_swap_ema_weights_callback(self):
+        callbacks = self._build(uses_ema=False)
+        assert not any(isinstance(cb, tf.keras.callbacks.SwapEMAWeights) for cb in callbacks)
+
+    def test_ema_adds_swap_ema_weights_first(self):
+        callbacks = self._build(uses_ema=True)
+        assert isinstance(callbacks[0], tf.keras.callbacks.SwapEMAWeights)
+        assert callbacks[0].swap_on_epoch is True
+
+    def test_swap_ema_weights_precedes_early_stopping(self):
+        callbacks = self._build(uses_ema=True)
+        swap_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.SwapEMAWeights))
+        early_stop_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.EarlyStopping))
+        assert swap_idx < early_stop_idx
+
+    def test_swap_ema_weights_precedes_model_checkpoint(self, tmp_path):
+        callbacks = self._build(uses_ema=True, model_checkpoint_path=str(tmp_path / "model"))
+        swap_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.SwapEMAWeights))
+        ckpt_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.ModelCheckpoint))
+        assert swap_idx < ckpt_idx
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -1329,3 +1396,28 @@ class TestModelConfigFreezeValidation:
     def test_freeze_prefixes_without_pretrained_path_raises(self):
         with pytest.raises(ValueError):
             ModelConfig(freeze_layer_prefixes=["En"], pretrained_weights_path=None)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestCompileEma:
+    _LATITUDES = np.linspace(25.0, 56.75, 8)
+
+    def test_use_ema_defaults_to_false(self):
+        unet = _build_small_unet()
+        train_cfg = TrainConfig(loss_class_weights=None)
+        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        assert unet.optimizer.use_ema is False
+
+    def test_use_ema_true_sets_optimizer_flag_and_momentum(self):
+        unet = _build_small_unet()
+        train_cfg = TrainConfig(loss_class_weights=None, use_ema=True, ema_momentum=0.95)
+        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        assert unet.optimizer.use_ema is True
+        assert unet.optimizer.ema_momentum == pytest.approx(0.95)
+
+    def test_use_ema_false_leaves_default_ema_momentum_inert(self):
+        """ema_momentum must not affect a compiled optimizer when use_ema is False."""
+        unet = _build_small_unet()
+        train_cfg = TrainConfig(loss_class_weights=None, use_ema=False, ema_momentum=0.5)
+        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        assert unet.optimizer.use_ema is False
