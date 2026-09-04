@@ -59,6 +59,45 @@ class TestMetricsConsolidationCallback:
         fc.MetricsConsolidationCallback().on_epoch_end(0, None)
 
 
+class TestMetricsConsolidationCallbackFrontTypeRenaming:
+    """Covers the post-consolidation rename step that groups per-front-type W&B keys."""
+
+    @pytest.mark.parametrize(
+        ("raw_key", "renamed_key"),
+        [
+            ("sup1_softmax_hss_CF", "front/CF/hss"),
+            ("sup1_softmax_hss_hard_CF", "front/CF/hss_hard"),
+            ("sup1_softmax_csi_DL", "front/DL/csi"),
+            ("sup1_softmax_pod_OF", "front/OF/pod"),
+            ("sup1_softmax_loss_CF", "front/CF/loss"),
+            ("sup1_softmax_loss_none", "front/none/loss"),
+            ("val_sup1_softmax_hss_CF", "front/CF/val_hss"),
+            ("val_sup1_softmax_loss_none", "front/none/val_loss"),
+        ],
+    )
+    def test_renames_per_front_type_keys(self, raw_key, renamed_key):
+        logs = {raw_key: 0.42}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {renamed_key: pytest.approx(0.42)}
+
+    @pytest.mark.parametrize("key", ["hss", "hss_hard", "loss", "val_loss", "val_hss"])
+    def test_aggregate_keys_are_left_alone(self, key):
+        logs = {key: 0.5}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {key: pytest.approx(0.5)}
+
+    def test_key_containing_but_not_ending_with_front_type_token_is_untouched(self):
+        """A key containing a front-type token without ending in one must not be renamed."""
+        logs = {"CF_hss": 0.5}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {"CF_hss": pytest.approx(0.5)}
+
+    def test_per_front_type_key_on_only_sup1_survives_with_value_intact(self):
+        logs = {"sup1_softmax_hss_CF": 0.75}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {"front/CF/hss": pytest.approx(0.75)}
+
+
 class TestSelectActiveTestTimestep:
     def test_returns_first_timestep_with_a_front(self):
         data = np.zeros((4, 3, 3), dtype=np.int32)

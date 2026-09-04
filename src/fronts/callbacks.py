@@ -25,9 +25,34 @@ _PER_OUTPUT_LOSS_RE = re.compile(r"^sup\d+_.+_loss$")
 # metric-name-specific regex (see MetricsConsolidationCallback).
 _PER_OUTPUT_METRIC_RE = re.compile(r"^sup\d+_[^_]+_(?P<metric>.+)$")
 
+# Tokens that, as the trailing "_{token}" segment of a consolidated metric key, mark it as
+# per-front-type rather than an aggregate (see _rename_front_type_keys).
+_FRONT_TYPE_TOKENS = frozenset(constants.FRONT_TYPE_CLASS_INDEX) | {constants.BACKGROUND_CLASS_KEY}
+
 
 def _strip_val_prefix(key: str) -> str:
     return key[len("val_") :] if key.startswith("val_") else key
+
+
+def _rename_front_type_keys(logs: dict) -> None:
+    """Rewrites keys ending in "_{front_type}" to "front/{front_type}/{remainder}" in place.
+
+    Leaves aggregate keys (e.g. "hss", "val_loss") untouched, since none of them ends in a
+    front-type token, and preserves any "val_" prefix on the remainder rather than the
+    front-type token (e.g. "val_hss_CF" becomes "front/CF/val_hss", not "front/val_CF/hss").
+
+    Args:
+        logs: Mutable Keras logs dict, already consolidated by ``_consolidate``.
+    """
+    for key in list(logs):
+        remainder, separator, token = key.rpartition("_")
+        if not separator or not remainder or token not in _FRONT_TYPE_TOKENS:
+            continue
+        if remainder.startswith("val_"):
+            new_key = f"front/{token}/val_{remainder[len('val_') :]}"
+        else:
+            new_key = f"front/{token}/{remainder}"
+        logs[new_key] = logs.pop(key)
 
 
 @dataclasses.dataclass
@@ -97,6 +122,13 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
     name=...)`` to give a custom metric a distinct name, or every metric literally named
     ``hss`` collides and Keras silently renames the extras to ``hss_1``, ``hss_2``, etc.
 
+    After that consolidation, keys ending in ``_{front_type}`` (e.g. ``hss_CF``,
+    ``loss_none``) are further rewritten to ``front/{front_type}/{metric_name}`` — see
+    ``_rename_front_type_keys`` — so ``WandbMetricsLogger``'s ``epoch/`` prefix produces
+    ``epoch/front/CF/hss`` and W&B groups per-front-type metrics into one collapsible
+    section per front type. Aggregate keys (``hss``, ``val_loss``, ...) do not end in a
+    front-type token and are left untouched.
+
     Must run before ``wandb.keras.WandbMetricsLogger`` in the callbacks list passed to
     ``model.fit`` — Keras shares one mutable ``logs`` dict across every callback's
     ``on_epoch_end``/``on_train_batch_end`` call in list order, so whichever callback
@@ -121,6 +153,8 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
 
         for key in [k for k in logs if _PER_OUTPUT_LOSS_RE.match(_strip_val_prefix(k))]:
             logs.pop(key)
+
+        _rename_front_type_keys(logs)
 
     def on_train_batch_end(self, batch: int, logs: dict | None = None) -> None:
         """Aggregates per-output hss into hss and strips per-output loss keys in place."""
