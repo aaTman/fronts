@@ -22,7 +22,7 @@ import wandb
 import xarray as xr
 
 from fronts import callbacks as fronts_callbacks
-from fronts import model, utils
+from fronts import constants, model, utils
 from fronts.data import datasets, inputs, targets
 from fronts.layers import losses, metrics
 from fronts.utils import apply_time_resolution
@@ -650,7 +650,7 @@ def _build_test_visualization_callback(
         subsample_y=subsample_y,
         lats=test_dataset.input_ds["latitude"].values,
         lons=test_dataset.input_ds["longitude"].values,
-        front_types=list(fronts_callbacks.FRONT_TYPE_CLASS_INDEX),
+        front_types=list(constants.FRONT_TYPE_CLASS_INDEX),
         predict_batch_size=data_config.batch_size,
         every_n_epochs=callbacks_config.test_viz_every_n_epochs,
     )

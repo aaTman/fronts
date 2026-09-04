@@ -13,27 +13,10 @@ import tensorflow as tf
 import wandb
 import xarray as xr
 
-from fronts import utils
-from fronts.data import targets
+from fronts import constants, utils
 from fronts.plot import plot as plot_module
 
 logger = logging.getLogger(__name__)
-
-FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
-
-# Office-of-responsibility regions for the Unified Surface Analysis (WPC manual, p.25).
-# The 30N split and the 140W HFO/NHC boundary come from the manual; WPC vs OPC is
-# approximated as a longitude band over the continental US since the real WPC area of
-# responsibility is an irregular coastline-following polygon, not a box.
-OFFICE_REGIONS: dict[str, utils.BoundingBox] = {
-    "OPC_west": utils.BoundingBox(lat_min=30.0, lat_max=80.0, lon_min=130.0, lon_max=220.0),
-    "WPC": utils.BoundingBox(lat_min=30.0, lat_max=80.0, lon_min=220.0, lon_max=300.0),
-    "OPC_east": utils.BoundingBox(lat_min=30.0, lat_max=80.0, lon_min=300.0, lon_max=369.75),
-    "HFO": utils.BoundingBox(lat_min=0.25, lat_max=30.0, lon_min=130.0, lon_max=220.0),
-    "NHC": utils.BoundingBox(lat_min=0.25, lat_max=30.0, lon_min=220.0, lon_max=369.75),
-}
-
-LITE_THRESHOLDS = np.linspace(0.05, 1.0, 20, dtype=np.float32)
 
 _PER_OUTPUT_LOSS_RE = re.compile(r"^sup\d+_.+_loss$")
 # Matches any per-output metric key, e.g. "sup1_softmax_hss" or "sup1_softmax_hss_hard" —
@@ -191,7 +174,7 @@ def select_active_test_timestep(target_da: xr.DataArray) -> int:
     Raises:
         ValueError: If no timestep in ``target_da`` contains a front pixel.
     """
-    front_codes = list(targets.FRONT_CLASS_MAP)
+    front_codes = list(constants.FRONT_CLASS_MAP)
     has_front = target_da.isin(front_codes).any(dim=["latitude", "longitude"]).compute().values
     indices = np.flatnonzero(has_front)
     if len(indices) == 0:
@@ -241,7 +224,7 @@ def accumulate_lite_stats(
     pred: np.ndarray,
     truth: np.ndarray,
     weights: np.ndarray,
-    thresholds: np.ndarray = LITE_THRESHOLDS,
+    thresholds: np.ndarray = constants.LITE_THRESHOLDS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Accumulate weighted TP/FP/TN/FN per front class and threshold, no neighborhood expansion.
 
@@ -346,7 +329,7 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
         if (epoch + 1) % self.every_n_epochs != 0:
             return
 
-        class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in self.front_types]
+        class_indices = [constants.FRONT_TYPE_CLASS_INDEX[ft] for ft in self.front_types]
 
         pred_day = self._predict(self.active_day_x[np.newaxis])[0]  # (lat, lon, class)
         probs_ds = xr.Dataset(coords={"latitude": self.lats, "longitude": self.lons})
@@ -375,14 +358,14 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
         truth_subsample = self.subsample_y[:, :, :, class_indices] > 0.5
         lat_weights = np.cos(np.deg2rad(self.lats))[:, np.newaxis] * np.ones((1, len(self.lons)), dtype=np.float32)
 
-        regions: dict[str, utils.BoundingBox | None] = {"whole_domain": None, **OFFICE_REGIONS}
+        regions: dict[str, utils.BoundingBox | None] = {"whole_domain": None, **constants.OFFICE_REGIONS}
         for region_name, region in regions.items():
             weights = lat_weights * region_mask(self.lats, self.lons, region)
             tp, fp, tn, fn = accumulate_lite_stats(pred_subsample, truth_subsample, weights)
             for fi, ft in enumerate(self.front_types):
                 fig = plot_module.plot_performance_diagram_lite(
                     front_type=ft,
-                    thresholds=LITE_THRESHOLDS,
+                    thresholds=constants.LITE_THRESHOLDS,
                     tp=tp[fi],
                     fp=fp[fi],
                     tn=tn[fi],

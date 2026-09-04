@@ -6,7 +6,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from fronts.data.targets import FRONT_CLASS_MAP, filter_timesteps
+from fronts.constants import FRONT_CLASS_MAP
+from fronts.data.targets import filter_timesteps
 from fronts.utils import IcechunkStorageConfig, apply_time_resolution
 
 try:
@@ -35,7 +36,7 @@ try:
 except ImportError:
     _TF_AVAILABLE = False
 
-_ALL_CODES = list(FRONT_CLASS_MAP.keys())  # [1, 2, 3, 4, 15]
+_ALL_CODES = list(FRONT_CLASS_MAP.keys())  # [1, 2, 3, 4, 16]
 
 
 def _make_fronts(time_codes: list[list[int]], lat: int = 4, lon: int = 8) -> xr.DataArray:
