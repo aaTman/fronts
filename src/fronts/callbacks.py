@@ -13,27 +13,10 @@ import tensorflow as tf
 import wandb
 import xarray as xr
 
-from fronts import utils
-from fronts.data import targets
+from fronts import constants, utils
 from fronts.plot import plot as plot_module
 
 logger = logging.getLogger(__name__)
-
-FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "DL": 5}
-
-# Office-of-responsibility regions for the Unified Surface Analysis (WPC manual, p.25).
-# The 30N split and the 140W HFO/NHC boundary come from the manual; WPC vs OPC is
-# approximated as a longitude band over the continental US since the real WPC area of
-# responsibility is an irregular coastline-following polygon, not a box.
-OFFICE_REGIONS: dict[str, utils.BoundingBox] = {
-    "OPC_west": utils.BoundingBox(lat_min=30.0, lat_max=80.0, lon_min=130.0, lon_max=220.0),
-    "WPC": utils.BoundingBox(lat_min=30.0, lat_max=80.0, lon_min=220.0, lon_max=300.0),
-    "OPC_east": utils.BoundingBox(lat_min=30.0, lat_max=80.0, lon_min=300.0, lon_max=369.75),
-    "HFO": utils.BoundingBox(lat_min=0.25, lat_max=30.0, lon_min=130.0, lon_max=220.0),
-    "NHC": utils.BoundingBox(lat_min=0.25, lat_max=30.0, lon_min=220.0, lon_max=369.75),
-}
-
-LITE_THRESHOLDS = np.linspace(0.05, 1.0, 20, dtype=np.float32)
 
 _PER_OUTPUT_LOSS_RE = re.compile(r"^sup\d+_.+_loss$")
 # Matches any per-output metric key, e.g. "sup1_softmax_hss" or "sup1_softmax_hss_hard" —
@@ -42,9 +25,34 @@ _PER_OUTPUT_LOSS_RE = re.compile(r"^sup\d+_.+_loss$")
 # metric-name-specific regex (see MetricsConsolidationCallback).
 _PER_OUTPUT_METRIC_RE = re.compile(r"^sup\d+_[^_]+_(?P<metric>.+)$")
 
+# Tokens that, as the trailing "_{token}" segment of a consolidated metric key, mark it as
+# per-front-type rather than an aggregate (see _rename_front_type_keys).
+_FRONT_TYPE_TOKENS = frozenset(constants.FRONT_TYPE_CLASS_INDEX) | {constants.BACKGROUND_CLASS_KEY}
+
 
 def _strip_val_prefix(key: str) -> str:
     return key[len("val_") :] if key.startswith("val_") else key
+
+
+def _rename_front_type_keys(logs: dict) -> None:
+    """Rewrites keys ending in "_{front_type}" to "front/{front_type}/{remainder}" in place.
+
+    Leaves aggregate keys (e.g. "hss", "val_loss") untouched, since none of them ends in a
+    front-type token, and preserves any "val_" prefix on the remainder rather than the
+    front-type token (e.g. "val_hss_CF" becomes "front/CF/val_hss", not "front/val_CF/hss").
+
+    Args:
+        logs: Mutable Keras logs dict, already consolidated by ``_consolidate``.
+    """
+    for key in list(logs):
+        remainder, separator, token = key.rpartition("_")
+        if not separator or not remainder or token not in _FRONT_TYPE_TOKENS:
+            continue
+        if remainder.startswith("val_"):
+            new_key = f"front/{token}/val_{remainder[len('val_') :]}"
+        else:
+            new_key = f"front/{token}/{remainder}"
+        logs[new_key] = logs.pop(key)
 
 
 @dataclasses.dataclass
@@ -85,6 +93,10 @@ class CallbacksConfig:
             None disables test-set visualization.
         test_viz_sample_size: Maximum number of timesteps to subsample from the test split
             for the performance diagram. Ignored if ``test_viz_every_n_epochs`` is None.
+        metrics_csv_path: Optional path to append every epoch's metrics to as CSV, a durable
+            local record independent of W&B. None derives ``metrics_epoch.csv`` in the same
+            directory as ``model_checkpoint_path``; if that is also None, CSV logging is
+            skipped entirely rather than guessing a location. See ``train._build_run_callbacks``.
     """
 
     monitor: str = "val_loss"
@@ -96,6 +108,9 @@ class CallbacksConfig:
     model_checkpoint_path: str | None = None
     test_viz_every_n_epochs: int | None = 10
     test_viz_sample_size: int = 200
+    # Defaulted (contrary to the usual no-defaults rule for dataclasses) so the 17 existing
+    # YAML configs keep parsing: dacite raises on a missing required field.
+    metrics_csv_path: str | None = None
 
 
 class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
@@ -113,6 +128,13 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
     (not the reassignable ``__name__``) — use ``tf.keras.metrics.MeanMetricWrapper(fn,
     name=...)`` to give a custom metric a distinct name, or every metric literally named
     ``hss`` collides and Keras silently renames the extras to ``hss_1``, ``hss_2``, etc.
+
+    After that consolidation, keys ending in ``_{front_type}`` (e.g. ``hss_CF``,
+    ``loss_none``) are further rewritten to ``front/{front_type}/{metric_name}`` — see
+    ``_rename_front_type_keys`` — so ``WandbMetricsLogger``'s ``epoch/`` prefix produces
+    ``epoch/front/CF/hss`` and W&B groups per-front-type metrics into one collapsible
+    section per front type. Aggregate keys (``hss``, ``val_loss``, ...) do not end in a
+    front-type token and are left untouched.
 
     Must run before ``wandb.keras.WandbMetricsLogger`` in the callbacks list passed to
     ``model.fit`` — Keras shares one mutable ``logs`` dict across every callback's
@@ -138,6 +160,8 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
 
         for key in [k for k in logs if _PER_OUTPUT_LOSS_RE.match(_strip_val_prefix(k))]:
             logs.pop(key)
+
+        _rename_front_type_keys(logs)
 
     def on_train_batch_end(self, batch: int, logs: dict | None = None) -> None:
         """Aggregates per-output hss into hss and strips per-output loss keys in place."""
@@ -283,7 +307,7 @@ def select_active_test_timestep(target_da: xr.DataArray) -> int:
     Raises:
         ValueError: If no timestep in ``target_da`` contains a front pixel.
     """
-    front_codes = list(targets.FRONT_CLASS_MAP)
+    front_codes = list(constants.FRONT_CLASS_MAP)
     has_front = target_da.isin(front_codes).any(dim=["latitude", "longitude"]).compute().values
     indices = np.flatnonzero(has_front)
     if len(indices) == 0:
@@ -333,7 +357,7 @@ def accumulate_lite_stats(
     pred: np.ndarray,
     truth: np.ndarray,
     weights: np.ndarray,
-    thresholds: np.ndarray = LITE_THRESHOLDS,
+    thresholds: np.ndarray = constants.LITE_THRESHOLDS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Accumulate weighted TP/FP/TN/FN per front class and threshold, no neighborhood expansion.
 
@@ -438,7 +462,7 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
         if (epoch + 1) % self.every_n_epochs != 0:
             return
 
-        class_indices = [FRONT_TYPE_CLASS_INDEX[ft] for ft in self.front_types]
+        class_indices = [constants.FRONT_TYPE_CLASS_INDEX[ft] for ft in self.front_types]
 
         pred_day = self._predict(self.active_day_x[np.newaxis])[0]  # (lat, lon, class)
         probs_ds = xr.Dataset(coords={"latitude": self.lats, "longitude": self.lons})
@@ -467,14 +491,14 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
         truth_subsample = self.subsample_y[:, :, :, class_indices] > 0.5
         lat_weights = np.cos(np.deg2rad(self.lats))[:, np.newaxis] * np.ones((1, len(self.lons)), dtype=np.float32)
 
-        regions: dict[str, utils.BoundingBox | None] = {"whole_domain": None, **OFFICE_REGIONS}
+        regions: dict[str, utils.BoundingBox | None] = {"whole_domain": None, **constants.OFFICE_REGIONS}
         for region_name, region in regions.items():
             weights = lat_weights * region_mask(self.lats, self.lons, region)
             tp, fp, tn, fn = accumulate_lite_stats(pred_subsample, truth_subsample, weights)
             for fi, ft in enumerate(self.front_types):
                 fig = plot_module.plot_performance_diagram_lite(
                     front_type=ft,
-                    thresholds=LITE_THRESHOLDS,
+                    thresholds=constants.LITE_THRESHOLDS,
                     tp=tp[fi],
                     fp=fp[fi],
                     tn=tn[fi],

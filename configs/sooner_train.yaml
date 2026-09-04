@@ -1,4 +1,4 @@
-run_name: neighborhood_brier_loss
+run_name: per_front_metrics
 
 train_config:
   epochs: 5000
