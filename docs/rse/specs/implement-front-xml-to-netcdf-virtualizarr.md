@@ -183,10 +183,15 @@ chunks in the fronts icechunk store, in a single commit, without copying array d
 In progress on the HPC system (`sooner1`), by the user, since `/ourdisk/hpc/ai2es/...` is not
 mounted in this sandbox.
 
-- ⚠️ Run against real 2025 XML files — attempt 1 hit Issue 4 (`ValueError` on `LINE_SOLID`),
+- ✅ Run against real 2025 XML files — attempt 1 hit Issue 4 (`ValueError` on `LINE_SOLID`),
   fixed; attempt 2 hit Issue 5 (multi-document files), fixed; attempt 3 hit Issue 6 (incomplete
-  fragments within those multi-document files), fixed; rerun pending.
-- [ ] Confirm store contents update correctly.
+  fragments within those multi-document files), fixed; attempt 4 succeeded: **1060 new front
+  netCDF files converted and committed to the icechunk store in one commit**
+  (`/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk`), confirmed by the user's job log
+  (`Committed 1060 new front netCDF file(s) ... Front XML to netCDF conversion and icechunk
+  store update complete.`).
+- [ ] Confirm store contents update correctly (spot-check a few timesteps read back through
+  `utils.open_readonly_icechunk_store`).
 - [ ] Confirm rerun is a no-op.
 - [ ] Visually sanity-check one converted raster.
 - [ ] Confirm all real `pgenType` values are covered — one sample file's full vocabulary is
@@ -196,10 +201,11 @@ mounted in this sandbox.
 **Manual Testing Notes:** The first three real conversion attempts each surfaced a genuine
 schema surprise (Issues 4, 5, and 6) invisible from the sandbox — this repo's synthetic test
 XML fixtures could not have caught any of them, since they were authored to match the schema
-inferred from `master`'s code before any real 2025 file had been inspected. All were root-caused from
-evidence the user gathered on the HPC system (`grep`/`sed` on the actual failing files) and
-fixed with reproducing unit tests before being handed back for another manual attempt —
-running real data early and iterating is doing exactly what it should here.
+inferred from `master`'s code before any real 2025 file had been inspected. All were
+root-caused from evidence the user gathered on the HPC system (`grep`/`sed` on the actual
+failing files) and fixed with reproducing unit tests before being handed back for another
+manual attempt. The fourth attempt processed the full 2025 XML directory (1060 files)
+successfully end to end.
 
 ## Issues Encountered
 
@@ -329,9 +335,14 @@ explicitly scoped out SLURM/dask parallelism (see "What We're NOT Doing").
 
 ## Remaining Work
 
-All planned work has been completed. No remaining tasks. Manual verification on the HPC system
-(where `/ourdisk` is mounted) is the only outstanding item, and is out of scope for this
-sandbox — see the plan's Manual Verification checklist.
+Code and tests are complete. The full 2025 conversion run has succeeded on the HPC system
+(1060 files, one commit — see Manual Verification above). Remaining before this is fully
+signed off:
+- [ ] Rerun to confirm it's a no-op with nothing new to convert.
+- [ ] Spot-check a few converted timesteps by reading the store back.
+- [ ] Visually sanity-check one converted raster against the source XML.
+- [ ] Confirm `pgenType` coverage across a broader sample than the one file inspected for
+  Issue 4.
 
 ## Next Steps
 
