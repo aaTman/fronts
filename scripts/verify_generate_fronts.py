@@ -5,7 +5,11 @@ to visually confirm ``fronts.data.generate_fronts``'s conversion + virtual-chunk
 worked correctly. Run on the HPC system where the store's netcdf files are mounted:
 
     pixi run -e data python scripts/verify_generate_fronts.py \
-        --config configs/generate_fronts.yaml --n-maps 4 --outdir .
+        --config configs/generate_fronts.yaml --year 2025 --n-maps 4 --outdir .
+
+``--year`` restricts the plotted timesteps to that calendar year (default 2025, the newly
+added data), so the maps actually confirm the new data rather than landing on older years
+already present in the store.
 """
 
 import argparse
@@ -14,6 +18,7 @@ import os
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from fronts import utils
 from fronts.data.generate_fronts import PGEN_TYPE_IDENTIFIERS
@@ -25,6 +30,7 @@ def main() -> None:
     """Print the fronts store's repr and save a handful of front raster maps as PNGs."""
     parser = argparse.ArgumentParser(description="Verify the fronts icechunk store (temporary script)")
     parser.add_argument("--config", default="configs/generate_fronts.yaml", help="Config with icechunk_storage_config")
+    parser.add_argument("--year", type=int, default=2025, help="Only plot timesteps from this calendar year")
     parser.add_argument("--n-maps", type=int, default=4, help="Number of timesteps to plot")
     parser.add_argument("--outdir", default=".", help="Directory to write PNGs into")
     args = parser.parse_args()
@@ -42,8 +48,14 @@ def main() -> None:
     )
     print(ds)
 
-    n_time = ds.sizes["time"]
-    indices = sorted(set(np.linspace(0, n_time - 1, args.n_maps, dtype=int)))
+    times = pd.DatetimeIndex(ds["time"].values)
+    year_positions = np.flatnonzero(times.year == args.year)
+    if year_positions.size == 0:
+        raise ValueError(f"No timesteps found for year {args.year} in this store.")
+    print(f"\n{year_positions.size} timesteps found for {args.year}.")
+
+    sample_positions = np.linspace(0, year_positions.size - 1, min(args.n_maps, year_positions.size), dtype=int)
+    indices = sorted(set(year_positions[sample_positions]))
     plot_ds = utils.unwrap_longitude(ds)  # monotonic longitude for correct pcolormesh rendering
 
     os.makedirs(args.outdir, exist_ok=True)
