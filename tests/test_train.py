@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from fronts import constants
 from fronts.constants import FRONT_CLASS_MAP
 from fronts.data.targets import filter_timesteps
 from fronts.utils import IcechunkStorageConfig, apply_time_resolution
@@ -29,6 +30,7 @@ try:
         _freeze_layers,
         _load_pretrained_weights,
         _optimizer_uses_ema,
+        _per_front_type_loss_metrics,
         load_data_into_dataloader,
     )
 
@@ -974,6 +976,246 @@ class TestCompileEma:
         train_cfg = TrainConfig(loss_class_weights=None, use_ema=False, ema_momentum=0.5)
         _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
         assert unet.optimizer.use_ema is False
+
+
+def _compiled_metric_names(metric_config_entry: list[dict]) -> list[str]:
+    """Extract metric names from one output's slice of ``Model.get_compile_config()["metrics"]``.
+
+    A plain function metric (e.g. ``metrics.heidke_skill_score(...)``) serializes with its
+    ``__name__`` directly under ``"config"``; a ``tf.keras.metrics.Metric`` subclass (e.g.
+    ``MeanMetricWrapper``, ``PerClassContingencyMetric``) serializes its constructor
+    arguments, including ``name``, in a nested ``"config"`` dict.
+    """
+    names = []
+    for entry in metric_config_entry:
+        config = entry["config"]
+        names.append(config if isinstance(config, str) else config["name"])
+    return names
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestCompilePerFrontTypeMetrics:
+    _LATITUDES = np.linspace(25.0, 56.75, 8)
+
+    def test_true_attaches_per_class_metrics_to_output_0_only(self):
+        unet = _build_small_unet(levels=3, deep_supervision=True)
+        train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=True)
+        n_out = _compile(
+            unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES
+        )
+        assert n_out == 3
+        metrics_config = unet.get_compile_config()["metrics"]
+        assert len(metrics_config) == 3
+
+        names0 = _compiled_metric_names(metrics_config[0])
+        assert names0[:2] == ["hss", "hss_hard"]
+        for front_type in constants.FRONT_TYPE_CLASS_INDEX:
+            assert f"hss_{front_type}" in names0
+            assert f"hss_hard_{front_type}" in names0
+            assert f"csi_{front_type}" in names0
+            assert f"pod_{front_type}" in names0
+            assert f"loss_{front_type}" in names0
+        assert f"loss_{constants.BACKGROUND_CLASS_KEY}" in names0
+
+        for other_output in metrics_config[1:]:
+            assert _compiled_metric_names(other_output) == ["hss", "hss_hard"]
+
+    def test_false_reproduces_current_metric_layout(self):
+        unet = _build_small_unet(levels=3, deep_supervision=True)
+        train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=False)
+        n_out = _compile(
+            unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES
+        )
+        metrics_config = unet.get_compile_config()["metrics"]
+        assert len(metrics_config) == n_out
+        for output_metrics in metrics_config:
+            assert _compiled_metric_names(output_metrics) == ["hss", "hss_hard"]
+
+    def test_all_metric_names_unique_per_output(self):
+        unet = _build_small_unet(levels=3, deep_supervision=True)
+        train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=True)
+        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        metrics_config = unet.get_compile_config()["metrics"]
+        for output_metrics in metrics_config:
+            names = _compiled_metric_names(output_metrics)
+            assert len(names) == len(set(names))
+
+    def test_n_out_one_attaches_per_class_metrics_to_the_only_output(self):
+        unet = _build_small_unet(levels=3, deep_supervision=False)
+        train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=True)
+        n_out = _compile(
+            unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES
+        )
+        assert n_out == 1
+        metrics_config = unet.get_compile_config()["metrics"]
+        assert len(metrics_config) == 1
+        names0 = _compiled_metric_names(metrics_config[0])
+        assert names0[:2] == ["hss", "hss_hard"]
+        assert "hss_CF" in names0
+        assert "loss_CF" in names0
+        assert f"loss_{constants.BACKGROUND_CLASS_KEY}" in names0
+
+    def test_loss_value_identical_with_flag_on_and_off(self):
+        """Global Constraint regression test: the flag must never change the compiled loss."""
+        rng = np.random.default_rng(3)
+        x = rng.standard_normal((2, 16, 16, 4)).astype(np.float32)
+        y = tf.one_hot(rng.integers(0, N_CLASSES, size=(2, 16, 16)), N_CLASSES).numpy().astype(np.float32)
+        latitudes = np.linspace(25.0, 56.75, 16)
+
+        unet_on = _build_small_unet(levels=3, deep_supervision=False)
+        unet_off = _build_small_unet(levels=3, deep_supervision=False)
+        unet_off.set_weights(unet_on.get_weights())
+
+        train_cfg_on = TrainConfig(
+            loss_class_weights=None, loss_name="neighborhood_brier_score", per_front_type_metrics=True
+        )
+        train_cfg_off = dataclasses.replace(train_cfg_on, per_front_type_metrics=False)
+
+        _compile(unet_on, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg_on, latitudes=latitudes)
+        _compile(unet_off, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg_off, latitudes=latitudes)
+
+        loss_on = unet_on.evaluate(x, y, verbose=0)[0]
+        loss_off = unet_off.evaluate(x, y, verbose=0)[0]
+        assert loss_on == pytest.approx(loss_off, abs=1e-7)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestPerFrontTypeLossMetrics:
+    _LATITUDES = np.linspace(25.0, 56.75, 8)
+
+    def _fixed_batch(self, seed: int, n_classes: int = 6, batch: int = 2, height: int = 8, width: int = 8):
+        rng = np.random.default_rng(seed)
+        y_true = tf.one_hot(rng.integers(0, n_classes, size=(batch, height, width)), n_classes)
+        y_pred = tf.nn.softmax(rng.standard_normal((batch, height, width, n_classes)).astype(np.float32), axis=-1)
+        return y_true, y_pred
+
+    def _per_class_values(self, loss_name, loss_class_weights, y_true, y_pred) -> list[float]:
+        per_class_metrics = _per_front_type_loss_metrics(
+            loss_name=loss_name,
+            loss_class_weights=loss_class_weights,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=False,
+            nbs_pixel_weight=0.1,
+        )
+        values = []
+        for metric in per_class_metrics:
+            metric.update_state(y_true, y_pred)
+            values.append(float(metric.result()))
+        return values
+
+    def test_returns_six_uniquely_named_metrics(self):
+        per_class_metrics = _per_front_type_loss_metrics(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=False,
+            nbs_pixel_weight=0.1,
+        )
+        names = [metric.name for metric in per_class_metrics]
+        assert len(names) == len(set(names)) == 6
+        assert f"loss_{constants.BACKGROUND_CLASS_KEY}" in names
+        for front_type in constants.FRONT_TYPE_CLASS_INDEX:
+            assert f"loss_{front_type}" in names
+
+    def test_nbs_per_class_losses_sum_to_total_unweighted(self):
+        y_true, y_pred = self._fixed_batch(seed=0)
+        total_loss_fn = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        total = float(tf.reduce_mean(total_loss_fn(y_true, y_pred)))
+        per_class_total = sum(self._per_class_values("neighborhood_brier_score", None, y_true, y_pred))
+        assert per_class_total == pytest.approx(total, abs=1e-6)
+
+    def test_nbs_per_class_losses_sum_to_total_with_zero_weighted_background(self):
+        """Additivity must hold even when a class (background) is weighted to exactly zero."""
+        y_true, y_pred = self._fixed_batch(seed=1)
+        loss_class_weights = [0.0, 1.0, 2.0, 1.0, 1.0, 3.0]
+        total_loss_fn = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=loss_class_weights,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        total = float(tf.reduce_mean(total_loss_fn(y_true, y_pred)))
+        per_class_values = self._per_class_values("neighborhood_brier_score", loss_class_weights, y_true, y_pred)
+        assert per_class_values[0] == pytest.approx(0.0, abs=1e-8)  # background ("none"), weight 0.0
+        assert sum(per_class_values) == pytest.approx(total, abs=1e-6)
+
+    def test_nbs_per_class_losses_sum_to_total_with_include_pixel(self):
+        y_true, y_pred = self._fixed_batch(seed=2)
+        loss_class_weights = [1.0, 2.0, 0.5, 1.0, 1.0, 1.5]
+        total_loss_fn = _build_loss(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=loss_class_weights,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=True,
+            nbs_pixel_weight=0.5,
+        )
+        total = float(tf.reduce_mean(total_loss_fn(y_true, y_pred)))
+        per_class_metrics = _per_front_type_loss_metrics(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=loss_class_weights,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=True,
+            nbs_pixel_weight=0.5,
+        )
+        per_class_total = 0.0
+        for metric in per_class_metrics:
+            metric.update_state(y_true, y_pred)
+            per_class_total += float(metric.result())
+        assert per_class_total == pytest.approx(total, abs=1e-6)
+
+    def test_fss_per_class_losses_bound_total_and_are_not_additive(self):
+        y_true, y_pred = self._fixed_batch(seed=4)
+        loss_class_weights = [0.0, 1.0, 2.0, 1.0, 1.0, 3.0]
+        total_loss_fn = _build_loss(
+            loss_name="fractions_skill_score",
+            loss_class_weights=loss_class_weights,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+        )
+        total = float(tf.reduce_mean(total_loss_fn(y_true, y_pred)))
+        per_class_values = self._per_class_values("fractions_skill_score", loss_class_weights, y_true, y_pred)
+
+        assert min(per_class_values) - 1e-6 <= total <= max(per_class_values) + 1e-6
+        # Documents that FSS is NOT additive (unlike NBS above) — guards against this test
+        # silently passing for the wrong reason if the implementation ever changed.
+        assert sum(per_class_values) != pytest.approx(total, abs=1e-3)
+
+    def test_fss_zero_weighted_class_does_not_produce_nan(self):
+        """A configured zero weight must not NaN out that class's FSS metric (unlike a scaled one-hot would)."""
+        y_true, y_pred = self._fixed_batch(seed=5)
+        loss_class_weights = [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        per_class_values = self._per_class_values("fractions_skill_score", loss_class_weights, y_true, y_pred)
+        assert all(np.isfinite(per_class_values))
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

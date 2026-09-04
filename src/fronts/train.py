@@ -105,6 +105,10 @@ class TrainConfig:
             since it adds no extra forward/backward passes.
         ema_momentum: Decay rate for the weight EMA (Keras default: 0.99, an ~100-step effective
             averaging window). Only used when ``use_ema`` is True.
+        per_front_type_metrics: Whether to attach the per-front-type metric set (soft/hard HSS,
+            CSI, POD from ``metrics.per_front_type_metrics``, plus the per-front-type loss
+            decomposition from ``_per_front_type_loss_metrics``) to the finest model output. See
+            ``_compile``. Reporting only — never affects ``loss=`` or gradients.
     """
 
     loss_class_weights: list[float] | None
@@ -122,6 +126,9 @@ class TrainConfig:
     nbs_pixel_weight: float = 0.1
     use_ema: bool = False
     ema_momentum: float = 0.99
+    # Defaulted (contrary to the usual no-defaults rule for dataclasses) so the 17 existing
+    # YAML configs keep parsing: dacite raises on a missing required field.
+    per_front_type_metrics: bool = True
 
 
 def load_data_into_dataloader(
@@ -306,6 +313,111 @@ def _build_loss(
     )
 
 
+def _per_front_type_loss_metrics(
+    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score"],
+    loss_class_weights: list[float] | None,
+    latitudes: np.ndarray,
+    fss_mask_size: tuple[int, ...],
+    nbs_tolerance_km: float,
+    nbs_periodic_lon: bool,
+    nbs_lat_dependent_pool: bool,
+    nbs_include_pixel: bool,
+    nbs_pixel_weight: float,
+) -> list[tf.keras.metrics.Metric]:
+    """Build one loss-valued metric per front type (plus background) for reporting.
+
+    Each metric rebuilds the configured training loss (the same ``_build_loss`` call used
+    for the compiled ``loss=`` argument) with a one-hot ``loss_class_weights`` vector that
+    isolates a single class, then wraps it in ``tf.keras.metrics.MeanMetricWrapper`` for a
+    stable ``.name`` (``hss_hard`` in ``_compile`` is the existing precedent for this
+    pattern). These metrics are REPORTING ONLY — none of them is the compiled ``loss=``
+    argument, so none contributes a gradient or changes the optimized scalar.
+
+    Whether the six reported values (five front types plus background) sum exactly to the
+    total configured loss depends on how that loss normalizes ``class_weights``, which
+    differs between the two options this project supports:
+
+    ``neighborhood_brier_score`` (``losses.neighborhood_brier_score``) applies
+    ``class_weights`` directly and unnormalized (``se *= cw`` inside its inner ``_brier``
+    helper), and every term of the loss — the pooled Brier term and, when
+    ``include_pixel`` is set, the pixelwise term — is a mean of ``se * cw`` over the
+    spatial+class axes. That mean is linear in ``cw``: for any two weight vectors u, v and
+    scalars p, q, ``loss(p*u + q*v) == p*loss(u) + q*loss(v)``, because ``cw`` only ever
+    enters as a multiplicative factor before a sum. Building each per-class metric's
+    one-hot vector as ``cw[c] * one_hot(c)`` (using 1.0 in place of ``cw[c]`` when
+    ``loss_class_weights`` is None, matching that loss's "supervise all classes equally"
+    behavior) therefore makes ``sum_c loss(cw[c] * one_hot(c)) == loss(sum_c cw[c] *
+    one_hot(c)) == loss(cw)``, i.e. the per-class values sum EXACTLY to the total loss, on
+    every input — including when some ``cw[c]`` is 0 (that class's reported loss is then
+    exactly 0, its true contribution). This is pinned by
+    ``TestPerFrontTypeLossMetrics.test_nbs_per_class_losses_sum_to_total``.
+
+    ``fractions_skill_score`` (``losses.fractions_skill_score``) renormalizes internally
+    (``relative_cw = cw / sum(cw)``, an unguarded division — a zero-sum ``cw`` divides by
+    zero) and returns a RATIO of two weighted sums (``1 - MSE_n / MSE_ref``), not a
+    weighted sum itself. A ratio of sums is not, in general, a sum of ratios: writing
+    ``a_c`` and ``b_c`` for class c's contributions to the numerator and denominator sums,
+    ``sum_c cw[c] * (a_c / b_c) != (sum_c cw[c] * a_c) / (sum_c cw[c] * b_c)`` unless every
+    ``b_c`` happens to be equal. So no choice of one-hot scaling can make per-class FSS
+    losses sum to the total without changing the loss itself, which the reporting-only
+    constraint forbids. Every per-class FSS metric here therefore uses a plain, UNSCALED
+    one-hot vector (weight 1.0, regardless of that class's configured weight): this avoids
+    the zero-sum-``cw`` NaN (a one-hot vector always sums to 1, never 0) and yields each
+    class's own, self-normalized FSS loss ``a_c / b_c``, i.e. the FSS loss computed as if
+    only that class existed. The weaker property that DOES hold: writing the total as
+    ``sum_c lambda_c * (a_c / b_c)`` with ``lambda_c = (relative_cw[c] * b_c) / sum(relative_cw
+    * b)`` (a valid convex combination — ``lambda_c >= 0`` and ``sum_c lambda_c == 1``,
+    since both ``relative_cw`` and each ``b_c`` are non-negative), the total FSS loss is
+    always a data-dependent weighted average of the reported per-class FSS losses, and so
+    always lies between their min and max: ``min_c loss_c <= total_loss <= max_c loss_c``.
+    Pinned by ``TestPerFrontTypeLossMetrics.test_fss_per_class_losses_bound_total``.
+
+    Args:
+        loss_name: Which training loss to rebuild per class — see ``TrainConfig.loss_name``.
+        loss_class_weights: The whole-vector class weights passed to the compiled loss, or
+            None to supervise all classes equally (weight 1.0 each).
+        latitudes: 1-D grid latitudes, forwarded to ``_build_loss``.
+        fss_mask_size: Forwarded to ``_build_loss``. Only used by "fractions_skill_score".
+        nbs_tolerance_km: Forwarded to ``_build_loss``. Only used by "neighborhood_brier_score".
+        nbs_periodic_lon: Forwarded to ``_build_loss``. Only used by "neighborhood_brier_score".
+        nbs_lat_dependent_pool: Forwarded to ``_build_loss``. Only used by
+            "neighborhood_brier_score".
+        nbs_include_pixel: Forwarded to ``_build_loss``. Only used by
+            "neighborhood_brier_score".
+        nbs_pixel_weight: Forwarded to ``_build_loss``. Only used when ``nbs_include_pixel``
+            is True.
+
+    Returns:
+        One ``MeanMetricWrapper`` per front type (``loss_{ft}``, e.g. ``loss_CF``) plus one
+        for the background class (``loss_{BACKGROUND_CLASS_KEY}``, i.e. ``loss_none``).
+    """
+    n_classes = max(constants.FRONT_TYPE_CLASS_INDEX.values()) + 1
+    effective_weights = (
+        np.ones(n_classes, dtype=np.float32)
+        if loss_class_weights is None
+        else np.asarray(loss_class_weights, dtype=np.float32)
+    )
+    class_index_by_key = {constants.BACKGROUND_CLASS_KEY: 0, **constants.FRONT_TYPE_CLASS_INDEX}
+
+    metrics_list: list[tf.keras.metrics.Metric] = []
+    for key, class_index in class_index_by_key.items():
+        one_hot_weights = np.zeros(n_classes, dtype=np.float32)
+        one_hot_weights[class_index] = 1.0 if loss_name == "fractions_skill_score" else effective_weights[class_index]
+        loss_fn = _build_loss(
+            loss_name=loss_name,
+            loss_class_weights=one_hot_weights.tolist(),
+            latitudes=latitudes,
+            fss_mask_size=fss_mask_size,
+            nbs_tolerance_km=nbs_tolerance_km,
+            nbs_periodic_lon=nbs_periodic_lon,
+            nbs_lat_dependent_pool=nbs_lat_dependent_pool,
+            nbs_include_pixel=nbs_include_pixel,
+            nbs_pixel_weight=nbs_pixel_weight,
+        )
+        metrics_list.append(tf.keras.metrics.MeanMetricWrapper(fn=loss_fn, name=f"loss_{key}"))
+    return metrics_list
+
+
 def _load_pretrained_weights(
     unet: tf.keras.Model,
     pretrained_weights_path: str,
@@ -381,6 +493,19 @@ def _compile(
         fn=metrics.heidke_skill_score(class_weights=metric_class_weights, threshold=0.5),
         name="hss_hard",
     )
+    per_class: list[tf.keras.metrics.Metric] = []
+    if train_cfg.per_front_type_metrics:
+        per_class = metrics.per_front_type_metrics(constants.FRONT_TYPE_CLASS_INDEX) + _per_front_type_loss_metrics(
+            loss_name=train_cfg.loss_name,
+            loss_class_weights=train_cfg.loss_class_weights,
+            latitudes=latitudes,
+            fss_mask_size=train_cfg.fss_mask_size,
+            nbs_tolerance_km=train_cfg.nbs_tolerance_km,
+            nbs_periodic_lon=train_cfg.nbs_periodic_lon,
+            nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
+            nbs_include_pixel=train_cfg.nbs_include_pixel,
+            nbs_pixel_weight=train_cfg.nbs_pixel_weight,
+        )
     optimizer = tf.keras.optimizers.Adam(
         learning_rate=learning_rate,
         clipnorm=gradient_clip_norm,
@@ -392,7 +517,7 @@ def _compile(
     model.compile(
         optimizer=optimizer,
         loss=loss_fn,
-        metrics=[[hss_fn, hss_hard_fn]] * n_out,
+        metrics=[[hss_fn, hss_hard_fn, *per_class]] + [[hss_fn, hss_hard_fn]] * (n_out - 1),
     )
     return n_out
 
