@@ -16,30 +16,30 @@ run_name: ablation_patches_batch_size_36_scratch
 train_config:
   epochs: 5000
   seed: 42
-  learning_rate: 0.0001
+  learning_rate: 0.0005
   shuffle: true
   loss_class_weights: null  # null supervises all classes incl. background, matching the AIES FrontFinder model
-  gradient_clip_norm: 1.0
   loss_name: neighborhood_brier_score
   nbs_tolerance_km: 25.0
 
 data_config:
   inputs_icechunk_config:
-    store_path: "/scratch/tman/train/"
+    store_path: "/ourdisk/hpc/ai2es/tman/data/fronts/train/"
     branch_name: "main"
     group_name: "era5"
   targets_icechunk_config:
-    store_path: "/scratch/tman/restructured_front_data/icechunk"
+    store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
     branch_name: "main"
-    virtual_chunk_local_path: "/scratch/tman/restructured_front_data/netcdf/"
-  batch_size: 60
+    virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
+  batch_size: 32
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
   class_weights: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   front_dilation: 1
   time_resolution: "6h" # USAD fronts are only 6-hourly; CONUS is 3-hourly
-  # coordinates: [25.0, 56.75, 228.0, 299.75]  # [lat_min, lat_max, lon_min, lon_max]
+  coordinates: [0.25, 80, 130, 369.75]  # [lat_min, lat_max, lon_min, lon_max] -- full domain (320 lat x 960 lon @ 0.25deg); patch_config requires this to be set
+  volume_inputs: true  # keeps level as a separate axis (batch, lat, lon, level, variable) for the Conv3D-style model below
   variables:
     [
       "equivalent_potential_temperature",
@@ -56,11 +56,12 @@ data_config:
   normalization_method: minmax
   num_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
   patch_config:
-    n_patches: 9  # "nine pairs of images evenly spaced along the longitude"
-    patch_lon_width_px: 128  # patch core width; latitude uses the full 128px coordinates height (no lat tiling)
+    # n_patches scaled from the paper's original 9 (over a 288px CONUS core domain) to
+    # preserve the same patch density over the full 960px-wide domain: 9 * (960/288) = 30.
+    n_patches: 30
+    patch_lon_width_px: 128  # patch core width; latitude uses the full 320px coordinates height (no lat tiling)
     buffer_px: 16  # 128 + 2*16 = 160 = 20 * 8, divisible by the model's total downsampling stride below (8)
     flip_probability: 0.25  # independent per-axis flip probability on train patches only
- 
 
 model_config:
   n_classes: 6
@@ -82,8 +83,6 @@ callbacks_config:
   patience: 3
   learning_rate_decay_factor: 0.2
   learning_rate_minimum: 1e-6
-  min_delta: 0.0
-  early_stopping_patience: 12
   model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/"
   test_viz_every_n_epochs: 1  # log a test-set prediction map + performance diagrams to W&B every N epochs; null disables
   test_viz_sample_size: 200  # number of (seeded, random) test timesteps used for the periodic performance diagram
