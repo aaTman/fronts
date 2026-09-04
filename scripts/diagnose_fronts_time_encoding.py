@@ -13,6 +13,7 @@ Run on the HPC system:
 
 import icechunk as ic
 import xarray as xr
+import zarr.errors
 
 STORE_PATH = "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
 VIRTUAL_CHUNK_LOCAL_PATH = "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
@@ -55,8 +56,11 @@ def main() -> None:
 
     if len(snapshots) > 1:
         prev_snapshot_id = snapshots[1].id
-        ds_prev = _open_raw(repo, snapshot_id=prev_snapshot_id)
-        _print_time_state(ds_prev, f"Previous snapshot ({prev_snapshot_id})")
+        try:
+            ds_prev = _open_raw(repo, snapshot_id=prev_snapshot_id)
+            _print_time_state(ds_prev, f"Previous snapshot ({prev_snapshot_id})")
+        except zarr.errors.GroupNotFoundError:
+            print(f"\nPrevious snapshot ({prev_snapshot_id}) has no group yet (likely the empty repo-init commit).")
 
 
 if __name__ == "__main__":
