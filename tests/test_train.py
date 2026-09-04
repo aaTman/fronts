@@ -14,6 +14,7 @@ from fronts.utils import IcechunkStorageConfig, apply_time_resolution
 try:
     import tensorflow as tf
 
+    from fronts import callbacks as fronts_callbacks
     from fronts.callbacks import CallbacksConfig
     from fronts.data.datasets import DatasetConfig, FrontsPyDataset
     from fronts.data.generate import write_or_append_icechunk_store
@@ -307,6 +308,40 @@ class TestBuildRunCallbacks:
         swap_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.SwapEMAWeights))
         ckpt_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.ModelCheckpoint))
         assert swap_idx < ckpt_idx
+
+    def test_csv_logger_present_after_metrics_consolidation(self, tmp_path):
+        callbacks = self._build(uses_ema=False, metrics_csv_path=str(tmp_path / "metrics_epoch.csv"))
+        consolidation_idx = next(
+            i for i, cb in enumerate(callbacks) if isinstance(cb, fronts_callbacks.MetricsConsolidationCallback)
+        )
+        csv_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.CSVLogger))
+        assert consolidation_idx < csv_idx
+
+    def test_explicit_metrics_csv_path_is_honored(self, tmp_path):
+        csv_path = str(tmp_path / "custom_name.csv")
+        callbacks = self._build(uses_ema=False, metrics_csv_path=csv_path)
+        csv_logger = next(cb for cb in callbacks if isinstance(cb, tf.keras.callbacks.CSVLogger))
+        assert csv_logger.filename == csv_path
+
+    def test_metrics_csv_path_none_derives_path_beside_checkpoint(self, tmp_path):
+        checkpoint_path = str(tmp_path / "model")
+        callbacks = self._build(uses_ema=False, model_checkpoint_path=checkpoint_path, metrics_csv_path=None)
+        csv_logger = next(cb for cb in callbacks if isinstance(cb, tf.keras.callbacks.CSVLogger))
+        assert csv_logger.filename == str(tmp_path / "metrics_epoch.csv")
+
+    def test_both_none_omits_csv_logger(self):
+        callbacks = self._build(uses_ema=False, model_checkpoint_path=None, metrics_csv_path=None)
+        assert not any(isinstance(cb, tf.keras.callbacks.CSVLogger) for cb in callbacks)
+
+    def test_csv_logger_appends(self, tmp_path):
+        callbacks = self._build(uses_ema=False, metrics_csv_path=str(tmp_path / "metrics_epoch.csv"))
+        csv_logger = next(cb for cb in callbacks if isinstance(cb, tf.keras.callbacks.CSVLogger))
+        assert csv_logger.append is True
+
+    def test_derived_csv_path_creates_missing_parent_directory(self, tmp_path):
+        checkpoint_path = str(tmp_path / "nested" / "run1" / "model")
+        self._build(uses_ema=False, model_checkpoint_path=checkpoint_path, metrics_csv_path=None)
+        assert (tmp_path / "nested" / "run1").is_dir()
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

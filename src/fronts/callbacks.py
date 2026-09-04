@@ -93,6 +93,10 @@ class CallbacksConfig:
             None disables test-set visualization.
         test_viz_sample_size: Maximum number of timesteps to subsample from the test split
             for the performance diagram. Ignored if ``test_viz_every_n_epochs`` is None.
+        metrics_csv_path: Optional path to append every epoch's metrics to as CSV, a durable
+            local record independent of W&B. None derives ``metrics_epoch.csv`` in the same
+            directory as ``model_checkpoint_path``; if that is also None, CSV logging is
+            skipped entirely rather than guessing a location. See ``train._build_run_callbacks``.
     """
 
     monitor: str = "val_loss"
@@ -104,6 +108,9 @@ class CallbacksConfig:
     model_checkpoint_path: str | None = None
     test_viz_every_n_epochs: int | None = 10
     test_viz_sample_size: int = 200
+    # Defaulted (contrary to the usual no-defaults rule for dataclasses) so the 17 existing
+    # YAML configs keep parsing: dacite raises on a missing required field.
+    metrics_csv_path: str | None = None
 
 
 class MetricsConsolidationCallback(tf.keras.callbacks.Callback):

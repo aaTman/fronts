@@ -598,6 +598,25 @@ def _optimizer_uses_ema(optimizer: tf.keras.optimizers.Optimizer) -> bool:
     return bool(getattr(inner_optimizer, "use_ema", False))
 
 
+def _resolve_metrics_csv_path(metrics_csv_path: str | None, model_checkpoint_path: str | None) -> str | None:
+    """Resolves the path the per-epoch metrics CSV should be written to.
+
+    Args:
+        metrics_csv_path: Explicit path from ``CallbacksConfig.metrics_csv_path``, or None to
+            derive one from ``model_checkpoint_path``.
+        model_checkpoint_path: Path prefix for the best-loss checkpoint, or None.
+
+    Returns:
+        ``metrics_csv_path`` if given; otherwise ``metrics_epoch.csv`` next to
+        ``model_checkpoint_path``; otherwise None (CSV logging skipped) when both are None.
+    """
+    if metrics_csv_path is not None:
+        return metrics_csv_path
+    if model_checkpoint_path is not None:
+        return os.path.join(os.path.dirname(model_checkpoint_path), "metrics_epoch.csv")
+    return None
+
+
 def _build_run_callbacks(
     uses_ema: bool,
     monitor: str,
@@ -610,6 +629,7 @@ def _build_run_callbacks(
     wandb_project: str | None,
     wandb_log_freq: str | int,
     model_checkpoint_path: str | None,
+    metrics_csv_path: str | None = None,
 ) -> list[tf.keras.callbacks.Callback]:
     """Build the ordered callback list passed to model.fit().
 
@@ -633,6 +653,9 @@ def _build_run_callbacks(
         wandb_log_freq: Passed to ``wandb.keras.WandbMetricsLogger``.
         model_checkpoint_path: Path prefix for the best-loss checkpoint, or None to skip
             checkpointing.
+        metrics_csv_path: Explicit path to append per-epoch metrics to as CSV. None derives
+            ``metrics_epoch.csv`` next to ``model_checkpoint_path``; if that is also None, CSV
+            logging is skipped entirely. See ``_resolve_metrics_csv_path``.
 
     Returns:
         Ordered list of callbacks for ``model.fit()``.
@@ -653,10 +676,16 @@ def _build_run_callbacks(
         )
     )
     callbacks.append(fronts_callbacks.GcCallback())
-    # Must run before WandbMetricsLogger: it mutates the shared `logs` dict that
-    # WandbMetricsLogger reads, collapsing per-deep-supervision-output keys into
-    # single aggregate hss/val_hss (and stripping the per-output loss keys).
+    # Must run before WandbMetricsLogger and CSVLogger: it mutates the shared `logs` dict that
+    # both read, collapsing per-deep-supervision-output keys into single aggregate hss/val_hss
+    # (and stripping the per-output loss keys) and renaming per-front-type keys into
+    # slash-delimited form. CSVLogger is listed immediately after it for the same reason —
+    # writing the consolidated, renamed keys rather than raw sup{N}_{activation}_{metric} ones.
     callbacks.append(fronts_callbacks.MetricsConsolidationCallback())
+    csv_path = _resolve_metrics_csv_path(metrics_csv_path, model_checkpoint_path)
+    if csv_path:
+        os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+        callbacks.append(tf.keras.callbacks.CSVLogger(csv_path, append=True))
     callbacks.extend(extra_callbacks or [])
     if wandb_project:
         callbacks.append(wandb.keras.WandbMetricsLogger(log_freq=wandb_log_freq))
@@ -692,6 +721,7 @@ def _run(
     validation_steps: int | None = None,
     run_config: dict | None = None,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
+    metrics_csv_path: str | None = None,
 ) -> tuple[tf.keras.callbacks.History, float]:
     if wandb_project:
         wandb.init(
@@ -713,6 +743,7 @@ def _run(
         wandb_project=wandb_project,
         wandb_log_freq=wandb_log_freq,
         model_checkpoint_path=model_checkpoint_path,
+        metrics_csv_path=metrics_csv_path,
     )
     t0 = time.time()
     history = model.fit(
@@ -1047,6 +1078,7 @@ def train(
         monitor_min_delta=callbacks_cfg.min_delta,
         early_stopping_patience=effective_stopping_patience,
         model_checkpoint_path=callbacks_cfg.model_checkpoint_path,
+        metrics_csv_path=callbacks_cfg.metrics_csv_path,
         wandb_project=wandb_project,
         run_name=run_name,
         wandb_log_freq=wandb_cfg.log_freq if wandb_cfg is not None else "epoch",
