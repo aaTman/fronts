@@ -1,5 +1,8 @@
+import datetime
+
 import icechunk.xarray
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -23,6 +26,27 @@ class TestOpenWritableIcechunkRepo:
         utils.open_writable_icechunk_repo(store_path)
         repo = utils.open_writable_icechunk_repo(store_path)  # second call must not error
         assert repo is not None
+
+
+class TestOpenReadonlyIcechunkStoreDecodeTimes:
+    def test_decode_times_false_exposes_raw_values_and_units(self, tmp_path):
+        store_path = str(tmp_path / "store")
+        repo = utils.open_writable_icechunk_repo(store_path)
+        session = repo.writable_session("main")
+        ds = xr.Dataset(
+            {"x": (("time",), np.array([1, 2]))},
+            coords={"time": pd.date_range("2000-01-01", periods=2, freq="6h")},
+        )
+        ds["time"].encoding = {"units": "hours since 2000-01-01", "calendar": "proleptic_gregorian", "dtype": "int64"}
+        icechunk.xarray.to_icechunk(ds, session, safe_chunks=False)
+        session.commit("init")
+
+        raw = utils.open_readonly_icechunk_store(store_path, "main", chunks=None, decode_times=False)
+        assert raw["time"].attrs["units"] == "hours since 2000-01-01"
+        np.testing.assert_array_equal(raw["time"].values, [0, 6])
+
+        decoded = utils.open_readonly_icechunk_store(store_path, "main", chunks=None, decode_times=True)
+        assert decoded["time"].values[0] == np.datetime64(datetime.datetime(2000, 1, 1))
 
 
 def _make_da(lons: list[float]) -> xr.DataArray:

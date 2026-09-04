@@ -485,6 +485,7 @@ def open_readonly_icechunk_store(
     zarr_format: int = 3,
     virtual_chunk_local_path: str | None = None,
     chunks: Any = "auto",
+    decode_times: bool = True,
 ) -> xr.Dataset:
     """Open a local icechunk store in read-only mode and return it as an xarray datatype.
 
@@ -501,6 +502,10 @@ def open_readonly_icechunk_store(
             Dataset suitable for chunked reductions (e.g. normalization stats). ``None``
             returns a Dataset backed directly by the zarr store with no dask graph, for
             callers that only ever read small, explicit slices themselves.
+        decode_times: Forwarded to ``xr.open_zarr``. ``False`` returns raw stored integer
+            values with their CF ``units``/``calendar`` left in ``.attrs`` instead of decoding
+            them into datetimes — use this to inspect or reuse a store's existing time encoding
+            without tripping a decode error/warning on out-of-range values.
 
     Returns:
         An xarray Dataset or DataArray containing the data from the icechunk store.
@@ -514,7 +519,14 @@ def open_readonly_icechunk_store(
         authorize_virtual_chunk_access=authorize_virtual_chunk_access,
     )
     session = repo.readonly_session(branch)
-    return xr.open_zarr(session.store, group=group, zarr_format=zarr_format, consolidated=False, chunks=chunks)
+    return xr.open_zarr(
+        session.store,
+        group=group,
+        zarr_format=zarr_format,
+        consolidated=False,
+        chunks=chunks,
+        decode_times=decode_times,
+    )
 
 
 def open_writable_icechunk_repo(store_path: str, virtual_chunk_local_path: str | None = None) -> ic.Repository:

@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import yaml
+from obspec_utils.registry import ObjectStoreRegistry
+from obstore.store import LocalStore
 from shapely.geometry import LineString
 
 from fronts import utils
@@ -56,9 +58,11 @@ def test_redistribute_vertices_shorter_than_distance_returns_endpoints():
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [
-        ("20250511_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml", pd.Timestamp("2025-05-11T03:45")),
-        ("20250815_1545_12_MPC_final-anal_OPC_SFC_ANAL.xml", pd.Timestamp("2025-08-15T15:45")),
-        ("20251021_0945_06_MPC_final-anal_OPC_SFC_ANAL.xml", pd.Timestamp("2025-10-21T09:45")),
+        # The middle HHMM field is when the file was issued, not the valid time; valid time is
+        # the date combined with the trailing synoptic cycle hour (00/06/12/18 UTC).
+        ("20250511_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml", pd.Timestamp("2025-05-11T00:00")),
+        ("20250815_1545_12_MPC_final-anal_OPC_SFC_ANAL.xml", pd.Timestamp("2025-08-15T12:00")),
+        ("20251021_0945_06_MPC_final-anal_OPC_SFC_ANAL.xml", pd.Timestamp("2025-10-21T06:00")),
     ],
 )
 def test_parse_xml_valid_time(filename, expected):
@@ -70,7 +74,7 @@ def test_parse_xml_valid_time_returns_none_for_unrecognized_filename():
 
 
 def test_convert_xml_to_dataset_places_cold_front_code(cold_front_xml):
-    valid_time = pd.Timestamp("2025-05-11T03:45")
+    valid_time = pd.Timestamp("2025-05-11T00:00")
     ds = generate_fronts.convert_xml_to_dataset(str(cold_front_xml), valid_time, FULL_DOMAIN_BB, distance_km=25.0)
     assert ds["identifier"].dims == ("time", "latitude", "longitude")
     assert ds["time"].values[0] == valid_time.to_datetime64()
@@ -205,8 +209,8 @@ def test_discover_xml_files_filters_by_date_range_and_pattern(xml_dir):
     found = generate_fronts.discover_xml_files(
         str(xml_dir), datetime.datetime(2025, 5, 1), datetime.datetime(2025, 5, 31)
     )
-    assert list(found) == [pd.Timestamp("2025-05-11T03:45")]
-    assert found[pd.Timestamp("2025-05-11T03:45")].endswith("20250511_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml")
+    assert list(found) == [pd.Timestamp("2025-05-11T00:00")]
+    assert found[pd.Timestamp("2025-05-11T00:00")].endswith("20250511_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml")
 
 
 @pytest.fixture
@@ -226,9 +230,9 @@ def test_inspect_fronts_store_times_returns_none_for_nonexistent_store(fronts_st
 def test_inspect_fronts_store_times_returns_written_times(fronts_storage_config, cold_front_xml):
     netcdf_dir = pathlib.Path(fronts_storage_config.virtual_chunk_local_path)
     netcdf_dir.mkdir()
-    valid_time = pd.Timestamp("2025-05-11T03:45")
+    valid_time = pd.Timestamp("2025-05-11T00:00")
     ds = generate_fronts.convert_xml_to_dataset(str(cold_front_xml), valid_time, FULL_DOMAIN_BB, distance_km=25.0)
-    netcdf_path = netcdf_dir / "FrontObjects_202505110345_full.nc"
+    netcdf_path = netcdf_dir / "FrontObjects_202505110000_full.nc"
     ds.to_netcdf(netcdf_path, engine="netcdf4", mode="w")
 
     generate_fronts.write_netcdfs_to_icechunk_store(fronts_storage_config, [str(netcdf_path)], append=False)
@@ -242,22 +246,74 @@ def test_write_netcdfs_to_icechunk_store_append_increases_time_steps(fronts_stor
     netcdf_dir = pathlib.Path(fronts_storage_config.virtual_chunk_local_path)
     netcdf_dir.mkdir()
 
-    first_time = pd.Timestamp("2025-05-11T03:45")
+    first_time = pd.Timestamp("2025-05-11T00:00")
     first_ds = generate_fronts.convert_xml_to_dataset(str(cold_front_xml), first_time, FULL_DOMAIN_BB, distance_km=25.0)
-    first_path = netcdf_dir / "FrontObjects_202505110345_full.nc"
+    first_path = netcdf_dir / "FrontObjects_202505110000_full.nc"
     first_ds.to_netcdf(first_path, engine="netcdf4", mode="w")
     generate_fronts.write_netcdfs_to_icechunk_store(fronts_storage_config, [str(first_path)], append=False)
 
-    second_time = pd.Timestamp("2025-05-11T09:45")
+    second_time = pd.Timestamp("2025-05-11T06:00")
     second_ds = generate_fronts.convert_xml_to_dataset(
         str(cold_front_xml), second_time, FULL_DOMAIN_BB, distance_km=25.0
     )
-    second_path = netcdf_dir / "FrontObjects_202505110945_full.nc"
+    second_path = netcdf_dir / "FrontObjects_202505110600_full.nc"
     second_ds.to_netcdf(second_path, engine="netcdf4", mode="w")
     generate_fronts.write_netcdfs_to_icechunk_store(fronts_storage_config, [str(second_path)], append=True)
 
     times = generate_fronts.inspect_fronts_store_times(fronts_storage_config)
     assert list(times) == [first_time, second_time]
+
+
+def test_write_netcdfs_to_icechunk_store_append_reuses_existing_time_encoding(fronts_storage_config, cold_front_xml):
+    # Regression test for a real incident: a store built by an independent process (here,
+    # "hours since 2000-01-01") had its newly-appended times corrupted because
+    # write_netcdfs_to_icechunk_store previously always forced its own fixed encoding
+    # ("minutes since 1970-01-01") regardless of what the store already used, producing a
+    # scale mismatch against the array's actual stored units/calendar attrs. Seeds the store
+    # through the same virtual-chunk (netCDF-backed) write path write_netcdfs_to_icechunk_store
+    # itself uses, so the seeded "identifier" chunk's codec matches what gets appended later
+    # (a real, non-virtual write would use a different codec and fail with an unrelated
+    # "cannot concatenate arrays which were stored using different codecs" error).
+    netcdf_dir = pathlib.Path(fronts_storage_config.virtual_chunk_local_path)
+    netcdf_dir.mkdir()
+
+    pre_existing_time = pd.Timestamp("2019-06-01T00:00")
+    seed_local_ds = generate_fronts.convert_xml_to_dataset(
+        str(cold_front_xml), pre_existing_time, FULL_DOMAIN_BB, distance_km=25.0
+    )
+    seed_path = netcdf_dir / "FrontObjects_201906010000_full.nc"
+    seed_local_ds.to_netcdf(seed_path, engine="netcdf4", mode="w")
+
+    url_prefix = f"file://{fronts_storage_config.virtual_chunk_local_path}"
+    registry = ObjectStoreRegistry({url_prefix: LocalStore()})
+    seed_virtual_ds = generate_fronts.open_virtual_mfdataset(
+        [f"file://{seed_path}"],
+        registry=registry,
+        parser=generate_fronts.HDFParser(),
+        concat_dim="time",
+        coords="minimal",
+        combine="nested",
+    )
+    seed_virtual_ds["time"].encoding = {
+        "units": "hours since 2000-01-01",
+        "calendar": "proleptic_gregorian",
+        "dtype": "int64",
+    }
+    repo = utils.open_writable_icechunk_repo(
+        fronts_storage_config.store_path, fronts_storage_config.virtual_chunk_local_path
+    )
+    session = repo.writable_session(fronts_storage_config.branch_name)
+    seed_virtual_ds.vz.to_icechunk(session.store, group=fronts_storage_config.group_name)
+    session.commit("seed store with an independent time encoding")
+
+    new_time = pd.Timestamp("2025-05-11T00:00")
+    new_ds = generate_fronts.convert_xml_to_dataset(str(cold_front_xml), new_time, FULL_DOMAIN_BB, distance_km=25.0)
+    new_path = netcdf_dir / "FrontObjects_202505110000_full.nc"
+    new_ds.to_netcdf(new_path, engine="netcdf4", mode="w")
+    generate_fronts.write_netcdfs_to_icechunk_store(fronts_storage_config, [str(new_path)], append=True)
+
+    times = generate_fronts.inspect_fronts_store_times(fronts_storage_config)
+    assert list(times) == [pre_existing_time, new_time]
 
 
 def test_write_netcdfs_to_icechunk_store_raises_on_empty_paths(fronts_storage_config):
@@ -322,9 +378,9 @@ icechunk_storage_config:
         store_path=str(tmp_path / "store"), branch_name="main", virtual_chunk_local_path=f"{netcdf_dir}/"
     )
     times = generate_fronts.inspect_fronts_store_times(storage_config)
-    assert list(times) == [pd.Timestamp("2025-05-11T03:45")]
+    assert list(times) == [pd.Timestamp("2025-05-11T00:00")]
 
     # Second run with no new files is a no-op (does not raise, store unchanged).
     generate_fronts.main()
     times_after_rerun = generate_fronts.inspect_fronts_store_times(storage_config)
-    assert list(times_after_rerun) == [pd.Timestamp("2025-05-11T03:45")]
+    assert list(times_after_rerun) == [pd.Timestamp("2025-05-11T00:00")]

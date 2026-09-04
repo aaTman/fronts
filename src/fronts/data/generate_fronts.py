@@ -62,7 +62,7 @@ PGEN_TYPE_IDENTIFIERS = {
 }
 
 _XML_FILENAME_PATTERN = re.compile(
-    r"^(?P<date>\d{8})_(?P<time>\d{4})_(?P<cycle_hour>\d{2})_MPC_final-anal_OPC_SFC_ANAL\.xml$"
+    r"^(?P<date>\d{8})_(?P<issued_time>\d{4})_(?P<cycle_hour>\d{2})_MPC_final-anal_OPC_SFC_ANAL\.xml$"
 )
 _XML_DECLARATION_PATTERN = re.compile(r"(?=<\?xml\b)")
 
@@ -191,9 +191,16 @@ def _redistribute_vertices(linestring: LineString, distance: float) -> LineStrin
 def parse_xml_valid_time(filename: str) -> pd.Timestamp | None:
     """Parse the analysis valid time from an MPC/OPC front XML filename.
 
+    The valid time is the file's date combined with its synoptic cycle hour (``00``/``06``/
+    ``12``/``18`` UTC) — always a whole hour, matching the front dataset's 6-hourly resolution
+    (see ``configs/schooner_train.yaml``'s ``time_resolution``). The filename's middle ``HHMM``
+    field is when the file was *issued*, not the analysis valid time, and is intentionally
+    ignored here.
+
     Args:
         filename: Basename of the XML file, e.g.
-            ``"20250511_0345_00_MPC_final-anal_OPC_SFC_ANAL.xml"``.
+            ``"20251111_1545_12_MPC_final-anal_OPC_SFC_ANAL.xml"`` — issued at 15:45 UTC on
+            2025-11-11, valid for the 12Z cycle, i.e. valid time 2025-11-11T12:00.
 
     Returns:
         The valid time as a ``pandas.Timestamp``, or None if ``filename`` does not match the
@@ -202,7 +209,7 @@ def parse_xml_valid_time(filename: str) -> pd.Timestamp | None:
     match = _XML_FILENAME_PATTERN.match(filename)
     if match is None:
         return None
-    return pd.Timestamp(datetime.datetime.strptime(match["date"] + match["time"], "%Y%m%d%H%M"))
+    return pd.Timestamp(datetime.datetime.strptime(match["date"] + match["cycle_hour"], "%Y%m%d%H"))
 
 
 def discover_xml_files(
@@ -316,6 +323,42 @@ def inspect_fronts_store_times(icechunk_config: utils.IcechunkStorageConfig) -> 
     return pd.DatetimeIndex(ds["time"].values)
 
 
+def _existing_time_encoding(icechunk_config: utils.IcechunkStorageConfig) -> dict[str, str] | None:
+    """Return the target store's existing ``time`` array's stored CF ``units``/``calendar``.
+
+    Reads the raw (undecoded) time array so a value outside pandas' representable range can't
+    raise or emit a decoding warning; only the array's CF attrs are needed.
+
+    Args:
+        icechunk_config: Configuration for the target icechunk store.
+
+    Returns:
+        A dict with ``"units"`` and ``"calendar"``, or None if the store, its configured group,
+        or a ``time`` coordinate with CF attrs doesn't exist yet.
+    """
+    storage = ic.local_filesystem_storage(icechunk_config.store_path)
+    if not ic.Repository.exists(storage):
+        return None
+    try:
+        ds = utils.open_readonly_icechunk_store(
+            icechunk_config.store_path,
+            icechunk_config.branch_name,
+            group=icechunk_config.group_name,
+            zarr_format=icechunk_config.zarr_format,
+            virtual_chunk_local_path=icechunk_config.virtual_chunk_local_path,
+            chunks=None,
+            decode_times=False,
+        )
+    except (FileNotFoundError, KeyError, zarr.errors.GroupNotFoundError):
+        return None
+    if "time" not in ds.coords or "units" not in ds["time"].attrs:
+        return None
+    return {
+        "units": ds["time"].attrs["units"],
+        "calendar": ds["time"].attrs.get("calendar", "proleptic_gregorian"),
+    }
+
+
 def write_netcdfs_to_icechunk_store(
     icechunk_config: utils.IcechunkStorageConfig, netcdf_paths: list[str], append: bool
 ) -> None:
@@ -345,14 +388,14 @@ def write_netcdfs_to_icechunk_store(
     virtual_ds = open_virtual_mfdataset(
         urls, registry=registry, parser=HDFParser(), concat_dim="time", coords="minimal", combine="nested"
     )
-    # Fix the time encoding to a batch-independent reference epoch: the writer otherwise
-    # defaults to "<unit> since <this batch's first time>", which is inconsistent across
-    # separate append calls and corrupts previously-written values on readback.
-    virtual_ds["time"].encoding = {
-        "units": "minutes since 1970-01-01",
-        "calendar": "proleptic_gregorian",
-        "dtype": "int64",
-    }
+    # Fix the time encoding explicitly rather than letting the writer pick its own default
+    # ("<unit> since <this batch's first time>"), which is inconsistent across separate write
+    # calls and corrupts previously-written values on readback. When the store already has
+    # data, reuse its exact existing units/calendar so old and new values stay on the same
+    # scale; a brand-new store picks a fixed default that every future append will then match.
+    existing_encoding = _existing_time_encoding(icechunk_config)
+    time_encoding = existing_encoding or {"units": "minutes since 1970-01-01", "calendar": "proleptic_gregorian"}
+    virtual_ds["time"].encoding = {**time_encoding, "dtype": "int64"}
 
     repo = utils.open_writable_icechunk_repo(icechunk_config.store_path, icechunk_config.virtual_chunk_local_path)
     session = repo.writable_session(icechunk_config.branch_name)
