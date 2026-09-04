@@ -19,11 +19,34 @@ import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import BoundaryNorm, ListedColormap
 
 from fronts import utils
 from fronts.data.generate_fronts import PGEN_TYPE_IDENTIFIERS
 
 _FRONT_NAMES = {code: name for name, code in PGEN_TYPE_IDENTIFIERS.items()}
+
+# Base colors reused from src/fronts/plot/plot.py's FRONT_COLORS (CF/WF/SF/OF/DL); forming and
+# dissipating variants use a lighter tint of their parent front's color, and the remaining codes
+# with no base-5 analogue (troughs, instability) get their own distinct colors.
+_PGEN_COLORS: dict[str, str] = {
+    "COLD_FRONT": "blue",
+    "WARM_FRONT": "red",
+    "STATIONARY_FRONT": "limegreen",
+    "OCCLUDED_FRONT": "darkviolet",
+    "DRY_LINE": "chocolate",
+    "COLD_FRONT_FORM": "lightblue",
+    "COLD_FRONT_DISS": "lightblue",
+    "WARM_FRONT_FORM": "lightcoral",
+    "WARM_FRONT_DISS": "lightcoral",
+    "STATIONARY_FRONT_FORM": "palegreen",
+    "STATIONARY_FRONT_DISS": "palegreen",
+    "OCCLUDED_FRONT_FORM": "plum",
+    "OCCLUDED_FRONT_DISS": "plum",
+    "TROF": "dimgray",
+    "TROPICAL_TROF": "lightgray",
+    "INSTABILITY": "gold",
+}
 
 
 def main() -> None:
@@ -58,6 +81,10 @@ def main() -> None:
     indices = sorted(set(year_positions[sample_positions]))
     plot_ds = utils.unwrap_longitude(ds)  # monotonic longitude for correct pcolormesh rendering
 
+    codes = sorted(_FRONT_NAMES)
+    cmap = ListedColormap([_PGEN_COLORS[_FRONT_NAMES[c]] for c in codes])
+    norm = BoundaryNorm(np.arange(0.5, len(codes) + 1.5), cmap.N)
+
     os.makedirs(args.outdir, exist_ok=True)
     for i in indices:
         snapshot = plot_ds["identifier"].isel(time=i).compute()
@@ -73,11 +100,9 @@ def main() -> None:
             snapshot["latitude"],
             snapshot.where(snapshot > 0),
             transform=ccrs.PlateCarree(),
-            cmap="tab20",
-            vmin=0.5,
-            vmax=16.5,
+            cmap=cmap,
+            norm=norm,
         )
-        codes = sorted(_FRONT_NAMES)
         cbar = fig.colorbar(mesh, ax=ax, ticks=codes, fraction=0.03)
         cbar.ax.set_yticklabels([_FRONT_NAMES[c] for c in codes])
         ax.set_title(f"identifier @ {valid_time}  ({front_pixels} front pixels)")
