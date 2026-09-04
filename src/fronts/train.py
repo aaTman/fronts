@@ -668,14 +668,43 @@ def _run(
     return history, elapsed
 
 
+def _build_dataset_summary(
+    split: str, dataset: datasets.FrontsPyDataset, data_cfg: datasets.DatasetConfig
+) -> fronts_callbacks.DatasetShapeSummary:
+    """Build a DatasetShapeSummary for one already-loaded split, for provenance logging.
+
+    Args:
+        split: Split name ("train", "val", or "test").
+        dataset: The split's already-loaded FrontsPyDataset.
+        data_cfg: Dataset configuration (selects the input-stacking function and variables).
+
+    Returns:
+        A DatasetShapeSummary describing the split's model-input shape, target shape, and
+        date range. Stacking the input Dataset into its model-input array is lazy
+        (metadata-only), so no data is read from disk here.
+
+    Raises:
+        ValueError: If the split has 0 timesteps.
+    """
+    stack_inputs = inputs.inputs_ds_to_volume_dataarray if data_cfg.volume_inputs else inputs.inputs_ds_to_dataarray
+    input_da = stack_inputs(dataset.input_ds, data_cfg.variables)
+    return fronts_callbacks.build_dataset_shape_summary(
+        split=split,
+        input_shape=input_da.shape,
+        target_shape=dataset.target_da.shape,
+        times=dataset.input_ds["time"].values,
+    )
+
+
 def _build_test_visualization_callback(
+    test_dataset: datasets.FrontsPyDataset,
     data_config: datasets.DatasetConfig,
     callbacks_config: fronts_callbacks.CallbacksConfig,
     seed: int,
 ) -> fronts_callbacks.TestVisualizationCallback:
-    """Load the sequestered test split and build the periodic W&B visualization callback.
+    """Build the periodic W&B visualization callback from an already-loaded test split.
 
-    The test split is loaded read-only here purely for visualization: one active
+    The test split is used read-only here purely for visualization: one active
     (front-containing) day for the prediction map, plus a bounded random subsample for
     the periodic performance diagram. Neither is used for fitting or model selection.
 
@@ -689,6 +718,7 @@ def _build_test_visualization_callback(
     it saw during training.
 
     Args:
+        test_dataset: The sequestered test split, already loaded via load_data_into_dataloader.
         data_config: DatasetConfig specifying store paths and the test_years split.
         callbacks_config: Provides test_viz_sample_size and every_n_epochs.
         seed: Seed for the subsample RNG.
@@ -697,11 +727,6 @@ def _build_test_visualization_callback(
         A configured TestVisualizationCallback.
     """
     assert callbacks_config.test_viz_every_n_epochs is not None
-    logger.info("Loading test split for periodic visualization...")
-    viz_data_config = dataclasses.replace(data_config, patch_config=None)
-    test_dataset = load_data_into_dataloader(viz_data_config, split="test", seed=seed)
-    logger.info("Test split loaded: %d timesteps available for visualization.", test_dataset.n_samples)
-
     active_idx = fronts_callbacks.select_active_test_timestep(test_dataset.target_da)
     active_x, active_y = test_dataset.get_at_indices(np.array([active_idx]))
     active_label = str(test_dataset.input_ds.time.values[active_idx])
@@ -959,10 +984,37 @@ def train(
         else run_meta
     )
 
+    dataset_summaries = [
+        _build_dataset_summary("train", train_dataset, data_cfg),
+        _build_dataset_summary("val", val_dataset, data_cfg),
+    ]
+
     extra_callbacks = []
-    if _should_build_test_visualization(wandb_project, callbacks_cfg.test_viz_every_n_epochs):
+    test_dataset = None
+    try:
+        logger.info("Loading test split for shape/date-range logging and periodic visualization...")
+        # Always whole-domain, ignoring data_cfg.patch_config: see
+        # _build_test_visualization_callback's docstring for why patch-mode training still
+        # evaluates/visualizes the test split in whole-domain mode.
+        viz_data_config = dataclasses.replace(data_cfg, patch_config=None)
+        test_dataset = load_data_into_dataloader(viz_data_config, split="test", seed=train_cfg.seed)
+        logger.info("Test split loaded: %d timesteps available.", test_dataset.n_samples)
+        dataset_summaries.append(_build_dataset_summary("test", test_dataset, viz_data_config))
+    except ValueError:
+        logger.warning(
+            "Skipping test-split shape/date-range logging and periodic visualization: could not "
+            "load or summarize the test split (see preceding error).",
+            exc_info=True,
+        )
+
+    extra_callbacks.append(fronts_callbacks.DatasetSummaryCallback(dataset_summaries))
+
+    build_test_viz = _should_build_test_visualization(wandb_project, callbacks_cfg.test_viz_every_n_epochs)
+    if build_test_viz and test_dataset is not None:
         try:
-            extra_callbacks.append(_build_test_visualization_callback(data_cfg, callbacks_cfg, train_cfg.seed))
+            extra_callbacks.append(
+                _build_test_visualization_callback(test_dataset, data_cfg, callbacks_cfg, train_cfg.seed)
+            )
         except ValueError:
             logger.warning(
                 "Skipping periodic test-set visualization: could not build the callback "

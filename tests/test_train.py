@@ -20,10 +20,13 @@ try:
     from fronts.model import ModelConfig, UNet3Plus
     from fronts.train import (
         TrainConfig,
+        WandBConfig,
+        _build_dataset_summary,
         _build_loss,
         _build_monitor_callbacks,
         _build_run_callbacks,
         _build_test_visualization_callback,
+        _build_wandb_config,
         _compile,
         _freeze_layers,
         _load_pretrained_weights,
@@ -708,6 +711,129 @@ class TestFrontsPyDatasetPatchModeShuffleBlocks:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildDatasetSummary:
+    def _make_dated_dataset(self, era5_ds, front_da, data_config, times, batch_size=2):
+        input_ds = era5_ds.assign_coords(time=times)
+        target_da = front_da.assign_coords(time=times)
+        return FrontsPyDataset(input_ds, target_da, data_config, batch_size=batch_size)
+
+    def test_input_and_target_shapes(self, era5_ds, front_da, data_config):
+        times = pd.date_range("2020-01-01", periods=N_TIME, freq="6h")
+        dataset = self._make_dated_dataset(era5_ds, front_da, data_config, times)
+
+        summary = _build_dataset_summary("train", dataset, data_config)
+
+        assert summary.split == "train"
+        assert summary.input_shape == (N_TIME, N_LAT, N_LON, len(data_config.variables))
+        assert summary.target_shape == (N_TIME, N_LAT, N_LON)
+
+    def test_date_range_matches_time_coordinate(self, era5_ds, front_da, data_config):
+        times = pd.date_range("2020-01-01", periods=N_TIME, freq="6h")
+        dataset = self._make_dated_dataset(era5_ds, front_da, data_config, times)
+
+        summary = _build_dataset_summary("val", dataset, data_config)
+
+        assert summary.date_min == str(times.min().date())
+        assert summary.date_max == str(times.max().date())
+
+    def test_out_of_order_times_still_yield_true_min_max(self, era5_ds, front_da, data_config):
+        times = pd.to_datetime(["2020-03-01", "2020-01-05", "2020-02-10", "2020-01-01", "2020-02-20"])
+        dataset = self._make_dated_dataset(era5_ds, front_da, data_config, times)
+
+        summary = _build_dataset_summary("test", dataset, data_config)
+
+        assert summary.date_min == "2020-01-01"
+        assert summary.date_max == "2020-03-01"
+
+    def test_empty_split_raises(self, era5_ds, front_da, data_config):
+        times = pd.date_range("2020-01-01", periods=N_TIME, freq="6h")
+        dataset = self._make_dated_dataset(era5_ds, front_da, data_config, times)
+        empty_dataset = FrontsPyDataset(
+            dataset.input_ds.isel(time=slice(0, 0)),
+            dataset.target_da.isel(time=slice(0, 0)),
+            data_config,
+            batch_size=2,
+        )
+
+        with pytest.raises(ValueError, match="empty"):
+            _build_dataset_summary("test", empty_dataset, data_config)
+
+    def test_volume_inputs_uses_volume_stacking(self):
+        rng = np.random.default_rng(11)
+        n_time, n_lat, n_lon = 4, 6, 8
+        levels = (1000, 950)
+        times = pd.date_range("2021-06-01", periods=n_time, freq="6h")
+        input_ds = xr.Dataset(
+            {
+                "temperature": xr.DataArray(
+                    rng.standard_normal((n_time, len(levels), n_lat, n_lon)).astype(np.float32),
+                    dims=["time", "level", "latitude", "longitude"],
+                    coords={"time": times, "level": list(levels)},
+                ),
+                "mean_sea_level_pressure": xr.DataArray(
+                    rng.standard_normal((n_time, n_lat, n_lon)).astype(np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={"time": times},
+                ),
+            }
+        )
+        target_da = xr.DataArray(
+            rng.integers(0, 2, size=(n_time, n_lat, n_lon)).astype(np.int32),
+            dims=["time", "latitude", "longitude"],
+            coords={"time": times},
+        )
+        dummy_store = IcechunkStorageConfig(store_path="unused", branch_name="main")
+        config = DatasetConfig(
+            inputs_icechunk_config=dummy_store,
+            targets_icechunk_config=dummy_store,
+            variables=["temperature", "mean_sea_level_pressure"],
+            test_years=[],
+            val_years=[],
+            volume_inputs=True,
+        )
+        dataset = FrontsPyDataset(input_ds, target_da, config, batch_size=2)
+
+        summary = _build_dataset_summary("train", dataset, config)
+
+        assert summary.input_shape == (n_time, n_lat, n_lon, len(levels), 2)
+        assert summary.date_min == str(times.min().date())
+        assert summary.date_max == str(times.max().date())
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestBuildTestVisualizationCallback:
+    def test_builds_from_already_loaded_test_dataset(self, data_config):
+        n_time, n_lat, n_lon = 4, 3, 3
+        times = pd.date_range("2022-01-01", periods=n_time, freq="6h")
+        rng = np.random.default_rng(5)
+        input_ds = xr.Dataset(
+            {
+                var: xr.DataArray(
+                    rng.standard_normal((n_time, n_lat, n_lon)).astype(np.float32),
+                    dims=["time", "latitude", "longitude"],
+                    coords={
+                        "time": times,
+                        "latitude": np.arange(n_lat, dtype=np.float32),
+                        "longitude": np.arange(n_lon, dtype=np.float32),
+                    },
+                )
+                for var in data_config.variables
+            }
+        )
+        target_data = np.zeros((n_time, n_lat, n_lon), dtype=np.int32)
+        target_data[1, 0, 0] = 1  # CF code at timestep 1, so it's the "active" day.
+        target_da = xr.DataArray(target_data, dims=["time", "latitude", "longitude"], coords={"time": times})
+        test_dataset = FrontsPyDataset(input_ds, target_da, data_config, batch_size=2)
+        callbacks_config = CallbacksConfig(test_viz_every_n_epochs=5, test_viz_sample_size=2)
+
+        cb = _build_test_visualization_callback(test_dataset, data_config, callbacks_config, seed=0)
+
+        assert cb.every_n_epochs == 5
+        assert cb.active_day_x.shape == (n_lat, n_lon, len(data_config.variables))
+        assert cb.subsample_x.shape[0] <= 2
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestLoadDataIntoDataloaderLongitude:
     """A wrap-crossing bounding box (lon_max > 360, e.g. configs/generate_icechunk.yaml's.
 
@@ -1148,14 +1274,16 @@ class TestShouldBuildTestVisualization:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
-class TestBuildTestVisualizationCallback:
-    """_build_test_visualization_callback must ignore data_config.patch_config.
+class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
+    """train() must load the visualization test split whole-domain, regardless of patch_config.
 
-    The callback's active-day map and per-office-region performance diagrams assume
-    one whole-domain input/target pair per sample. Patch-mode training only changes how
-    *training* samples are drawn; the model's input shape stays fully dynamic
+    _build_test_visualization_callback's active-day map and per-office-region performance
+    diagrams assume one whole-domain input/target pair per sample. Patch-mode training only
+    changes how *training* samples are drawn; the model's input shape stays fully dynamic
     (Input(shape=(None, None, ...))), so whole-domain inference works regardless of
-    patch_config, and the visualization dataset should always be loaded that way.
+    patch_config. train() enforces this by loading the visualization test split via
+    ``dataclasses.replace(data_config, patch_config=None)`` before calling
+    _build_test_visualization_callback — this test exercises that same composition.
     """
 
     _TIMES = pd.date_range("2020-01-01", periods=3, freq="6h")
@@ -1215,14 +1343,19 @@ class TestBuildTestVisualizationCallback:
     def _callbacks_config(self) -> CallbacksConfig:
         return CallbacksConfig(test_viz_every_n_epochs=1, test_viz_sample_size=2)
 
+    def _load_viz_dataset(self, data_config: DatasetConfig) -> FrontsPyDataset:
+        viz_data_config = dataclasses.replace(data_config, patch_config=None)
+        return load_data_into_dataloader(viz_data_config, split="test", seed=0)
+
     def test_whole_domain_shape_with_patch_config_set(self, tmp_path):
         data_config = self._data_config(
             self._write_inputs(tmp_path),
             self._write_targets(tmp_path),
             patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=1),
         )
+        test_dataset = self._load_viz_dataset(data_config)
 
-        callback = _build_test_visualization_callback(data_config, self._callbacks_config(), seed=0)
+        callback = _build_test_visualization_callback(test_dataset, data_config, self._callbacks_config(), seed=0)
 
         assert callback.active_day_x.shape == (len(self._LAT_CORE), len(self._LON_CORE), 1)
         assert callback.active_day_y.shape[:2] == (len(self._LAT_CORE), len(self._LON_CORE))
@@ -1237,12 +1370,18 @@ class TestBuildTestVisualizationCallback:
         callbacks_config = self._callbacks_config()
 
         no_patch_config = self._data_config(inputs_store, targets_store, patch_config=None)
-        callback_no_patch = _build_test_visualization_callback(no_patch_config, callbacks_config, seed=0)
+        test_dataset_no_patch = self._load_viz_dataset(no_patch_config)
+        callback_no_patch = _build_test_visualization_callback(
+            test_dataset_no_patch, no_patch_config, callbacks_config, seed=0
+        )
 
         with_patch_config = self._data_config(
             inputs_store, targets_store, patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=1)
         )
-        callback_with_patch = _build_test_visualization_callback(with_patch_config, callbacks_config, seed=0)
+        test_dataset_with_patch = self._load_viz_dataset(with_patch_config)
+        callback_with_patch = _build_test_visualization_callback(
+            test_dataset_with_patch, with_patch_config, callbacks_config, seed=0
+        )
 
         np.testing.assert_allclose(callback_with_patch.active_day_x, callback_no_patch.active_day_x)
         np.testing.assert_allclose(callback_with_patch.active_day_y, callback_no_patch.active_day_y)
