@@ -1,5 +1,7 @@
 import dataclasses
+import logging
 import math
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -23,6 +25,7 @@ try:
     from fronts.train import (
         TrainConfig,
         WandBConfig,
+        _ResumeSafeCSVLogger,
         _build_loss,
         _build_monitor_callbacks,
         _build_run_callbacks,
@@ -314,34 +317,97 @@ class TestBuildRunCallbacks:
         consolidation_idx = next(
             i for i, cb in enumerate(callbacks) if isinstance(cb, fronts_callbacks.MetricsConsolidationCallback)
         )
-        csv_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, tf.keras.callbacks.CSVLogger))
+        csv_idx = next(i for i, cb in enumerate(callbacks) if isinstance(cb, _ResumeSafeCSVLogger))
         assert consolidation_idx < csv_idx
 
     def test_explicit_metrics_csv_path_is_honored(self, tmp_path):
         csv_path = str(tmp_path / "custom_name.csv")
         callbacks = self._build(uses_ema=False, metrics_csv_path=csv_path)
-        csv_logger = next(cb for cb in callbacks if isinstance(cb, tf.keras.callbacks.CSVLogger))
-        assert csv_logger.filename == csv_path
+        csv_logger = next(cb for cb in callbacks if isinstance(cb, _ResumeSafeCSVLogger))
+        assert csv_logger.path == csv_path
 
     def test_metrics_csv_path_none_derives_path_beside_checkpoint(self, tmp_path):
         checkpoint_path = str(tmp_path / "model")
         callbacks = self._build(uses_ema=False, model_checkpoint_path=checkpoint_path, metrics_csv_path=None)
-        csv_logger = next(cb for cb in callbacks if isinstance(cb, tf.keras.callbacks.CSVLogger))
-        assert csv_logger.filename == str(tmp_path / "metrics_epoch.csv")
+        csv_logger = next(cb for cb in callbacks if isinstance(cb, _ResumeSafeCSVLogger))
+        assert csv_logger.path == str(tmp_path / "metrics_epoch.csv")
 
     def test_both_none_omits_csv_logger(self):
         callbacks = self._build(uses_ema=False, model_checkpoint_path=None, metrics_csv_path=None)
-        assert not any(isinstance(cb, tf.keras.callbacks.CSVLogger) for cb in callbacks)
-
-    def test_csv_logger_appends(self, tmp_path):
-        callbacks = self._build(uses_ema=False, metrics_csv_path=str(tmp_path / "metrics_epoch.csv"))
-        csv_logger = next(cb for cb in callbacks if isinstance(cb, tf.keras.callbacks.CSVLogger))
-        assert csv_logger.append is True
+        assert not any(isinstance(cb, _ResumeSafeCSVLogger) for cb in callbacks)
 
     def test_derived_csv_path_creates_missing_parent_directory(self, tmp_path):
         checkpoint_path = str(tmp_path / "nested" / "run1" / "model")
         self._build(uses_ema=False, model_checkpoint_path=checkpoint_path, metrics_csv_path=None)
         assert (tmp_path / "nested" / "run1").is_dir()
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestResumeSafeCSVLogger:
+    """Covers the resume-safe CSVLogger wrapper added to fix silent header misalignment on resume."""
+
+    _LOGS: ClassVar[dict[str, float]] = {"loss": 0.5, "hss": 0.6, "val_loss": 0.4, "val_hss": 0.55}
+    _HEADER = "epoch,hss,loss,val_hss,val_loss"
+
+    def test_no_existing_file_creates_fresh_csv_with_header(self, tmp_path):
+        csv_path = tmp_path / "metrics_epoch.csv"
+        wrapper = _ResumeSafeCSVLogger(str(csv_path))
+        wrapper.on_epoch_end(0, dict(self._LOGS))
+        wrapper.on_epoch_end(1, dict(self._LOGS))
+        wrapper.on_train_end()
+
+        lines = csv_path.read_text().strip().split("\n")
+        assert lines[0] == self._HEADER
+        assert len(lines) == 3  # header + 2 epochs
+        assert not list(tmp_path.glob("*.stale-*.csv"))
+
+    def test_matching_header_resume_appends(self, tmp_path, caplog):
+        csv_path = tmp_path / "metrics_epoch.csv"
+        csv_path.write_text(f"{self._HEADER}\n0,0.6,0.5,0.55,0.4\n")
+
+        wrapper = _ResumeSafeCSVLogger(str(csv_path))
+        with caplog.at_level(logging.WARNING, logger="fronts.train"):
+            wrapper.on_epoch_end(1, dict(self._LOGS))
+        wrapper.on_train_end()
+
+        lines = csv_path.read_text().strip().split("\n")
+        assert lines[0] == self._HEADER
+        assert len(lines) == 3  # original header + original row + newly-appended row
+        assert not list(tmp_path.glob("*.stale-*.csv"))
+        assert "stale" not in caplog.text.lower()
+
+    def test_mismatched_header_rotates_stale_file_and_warns(self, tmp_path, caplog):
+        csv_path = tmp_path / "metrics_epoch.csv"
+        stale_content = "epoch,loss,hss\n0,0.5,0.6\n"
+        csv_path.write_text(stale_content)
+
+        wrapper = _ResumeSafeCSVLogger(str(csv_path))
+        with caplog.at_level(logging.WARNING, logger="fronts.train"):
+            wrapper.on_epoch_end(0, dict(self._LOGS))
+        wrapper.on_train_end()
+
+        stale_path = tmp_path / "metrics_epoch.stale-1.csv"
+        assert stale_path.read_text() == stale_content
+
+        fresh_lines = csv_path.read_text().strip().split("\n")
+        assert fresh_lines[0] == self._HEADER
+        assert len(fresh_lines) == 2  # fresh header + the epoch just run
+
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelno == logging.WARNING
+        assert str(csv_path) in caplog.text
+        assert str(stale_path) in caplog.text
+
+    def test_second_mismatch_uses_next_free_stale_suffix(self, tmp_path):
+        csv_path = tmp_path / "metrics_epoch.csv"
+        (tmp_path / "metrics_epoch.stale-1.csv").write_text("already,taken\n")
+        csv_path.write_text("epoch,loss,hss\n0,0.5,0.6\n")
+
+        wrapper = _ResumeSafeCSVLogger(str(csv_path))
+        wrapper.on_epoch_end(0, dict(self._LOGS))
+        wrapper.on_train_end()
+
+        assert (tmp_path / "metrics_epoch.stale-2.csv").exists()
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -564,9 +630,7 @@ class TestLoadDataIntoDataloaderPressureLevels:
         ds = xr.Dataset(
             {
                 var_name: xr.DataArray(
-                    np.zeros(
-                        (len(self._TIMES), len(self._LEVELS), len(self._LAT), len(self._LON)), dtype=np.float32
-                    ),
+                    np.zeros((len(self._TIMES), len(self._LEVELS), len(self._LAT), len(self._LON)), dtype=np.float32),
                     dims=["time", "level", "latitude", "longitude"],
                     coords={
                         "time": self._TIMES,
@@ -995,13 +1059,27 @@ class TestCompileEma:
     def test_use_ema_defaults_to_false(self):
         unet = _build_small_unet()
         train_cfg = TrainConfig(loss_class_weights=None)
-        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        _compile(
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
+        )
         assert unet.optimizer.use_ema is False
 
     def test_use_ema_true_sets_optimizer_flag_and_momentum(self):
         unet = _build_small_unet()
         train_cfg = TrainConfig(loss_class_weights=None, use_ema=True, ema_momentum=0.95)
-        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        _compile(
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
+        )
         assert unet.optimizer.use_ema is True
         assert unet.optimizer.ema_momentum == pytest.approx(0.95)
 
@@ -1009,7 +1087,14 @@ class TestCompileEma:
         """ema_momentum must not affect a compiled optimizer when use_ema is False."""
         unet = _build_small_unet()
         train_cfg = TrainConfig(loss_class_weights=None, use_ema=False, ema_momentum=0.5)
-        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        _compile(
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
+        )
         assert unet.optimizer.use_ema is False
 
 
@@ -1036,7 +1121,12 @@ class TestCompilePerFrontTypeMetrics:
         unet = _build_small_unet(levels=3, deep_supervision=True)
         train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=True)
         n_out = _compile(
-            unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
         )
         assert n_out == 3
         metrics_config = unet.get_compile_config()["metrics"]
@@ -1059,7 +1149,12 @@ class TestCompilePerFrontTypeMetrics:
         unet = _build_small_unet(levels=3, deep_supervision=True)
         train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=False)
         n_out = _compile(
-            unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
         )
         metrics_config = unet.get_compile_config()["metrics"]
         assert len(metrics_config) == n_out
@@ -1069,7 +1164,14 @@ class TestCompilePerFrontTypeMetrics:
     def test_all_metric_names_unique_per_output(self):
         unet = _build_small_unet(levels=3, deep_supervision=True)
         train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=True)
-        _compile(unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES)
+        _compile(
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
+        )
         metrics_config = unet.get_compile_config()["metrics"]
         for output_metrics in metrics_config:
             names = _compiled_metric_names(output_metrics)
@@ -1079,7 +1181,12 @@ class TestCompilePerFrontTypeMetrics:
         unet = _build_small_unet(levels=3, deep_supervision=False)
         train_cfg = TrainConfig(loss_class_weights=None, per_front_type_metrics=True)
         n_out = _compile(
-            unet, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg, latitudes=self._LATITUDES
+            unet,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg,
+            latitudes=self._LATITUDES,
+            n_classes=6,
         )
         assert n_out == 1
         metrics_config = unet.get_compile_config()["metrics"]
@@ -1106,8 +1213,22 @@ class TestCompilePerFrontTypeMetrics:
         )
         train_cfg_off = dataclasses.replace(train_cfg_on, per_front_type_metrics=False)
 
-        _compile(unet_on, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg_on, latitudes=latitudes)
-        _compile(unet_off, learning_rate=1e-4, metric_class_weights=None, train_cfg=train_cfg_off, latitudes=latitudes)
+        _compile(
+            unet_on,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg_on,
+            latitudes=latitudes,
+            n_classes=6,
+        )
+        _compile(
+            unet_off,
+            learning_rate=1e-4,
+            metric_class_weights=None,
+            train_cfg=train_cfg_off,
+            latitudes=latitudes,
+            n_classes=6,
+        )
 
         loss_on = unet_on.evaluate(x, y, verbose=0)[0]
         loss_off = unet_off.evaluate(x, y, verbose=0)[0]
@@ -1124,7 +1245,7 @@ class TestPerFrontTypeLossMetrics:
         y_pred = tf.nn.softmax(rng.standard_normal((batch, height, width, n_classes)).astype(np.float32), axis=-1)
         return y_true, y_pred
 
-    def _per_class_values(self, loss_name, loss_class_weights, y_true, y_pred) -> list[float]:
+    def _per_class_values(self, loss_name, loss_class_weights, y_true, y_pred, n_classes: int = 6) -> list[float]:
         per_class_metrics = _per_front_type_loss_metrics(
             loss_name=loss_name,
             loss_class_weights=loss_class_weights,
@@ -1135,6 +1256,7 @@ class TestPerFrontTypeLossMetrics:
             nbs_lat_dependent_pool=False,
             nbs_include_pixel=False,
             nbs_pixel_weight=0.1,
+            n_classes=n_classes,
         )
         values = []
         for metric in per_class_metrics:
@@ -1153,12 +1275,43 @@ class TestPerFrontTypeLossMetrics:
             nbs_lat_dependent_pool=False,
             nbs_include_pixel=False,
             nbs_pixel_weight=0.1,
+            n_classes=6,
         )
         names = [metric.name for metric in per_class_metrics]
         assert len(names) == len(set(names)) == 6
         assert f"loss_{constants.BACKGROUND_CLASS_KEY}" in names
         for front_type in constants.FRONT_TYPE_CLASS_INDEX:
             assert f"loss_{front_type}" in names
+
+    def test_n_classes_mismatch_raises_clear_error(self):
+        with pytest.raises(ValueError, match=r"n_classes=7.*does not match.*6"):
+            _per_front_type_loss_metrics(
+                loss_name="neighborhood_brier_score",
+                loss_class_weights=None,
+                latitudes=self._LATITUDES,
+                fss_mask_size=(3, 3),
+                nbs_tolerance_km=25.0,
+                nbs_periodic_lon=False,
+                nbs_lat_dependent_pool=False,
+                nbs_include_pixel=False,
+                nbs_pixel_weight=0.1,
+                n_classes=7,
+            )
+
+    def test_n_classes_matching_front_type_index_succeeds(self):
+        per_class_metrics = _per_front_type_loss_metrics(
+            loss_name="neighborhood_brier_score",
+            loss_class_weights=None,
+            latitudes=self._LATITUDES,
+            fss_mask_size=(3, 3),
+            nbs_tolerance_km=25.0,
+            nbs_periodic_lon=False,
+            nbs_lat_dependent_pool=False,
+            nbs_include_pixel=False,
+            nbs_pixel_weight=0.1,
+            n_classes=6,
+        )
+        assert len(per_class_metrics) == 6
 
     def test_nbs_per_class_losses_sum_to_total_unweighted(self):
         y_true, y_pred = self._fixed_batch(seed=0)
@@ -1218,6 +1371,7 @@ class TestPerFrontTypeLossMetrics:
             nbs_lat_dependent_pool=False,
             nbs_include_pixel=True,
             nbs_pixel_weight=0.5,
+            n_classes=6,
         )
         per_class_total = 0.0
         for metric in per_class_metrics:

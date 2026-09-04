@@ -323,8 +323,23 @@ def _per_front_type_loss_metrics(
     nbs_lat_dependent_pool: bool,
     nbs_include_pixel: bool,
     nbs_pixel_weight: float,
+    n_classes: int,
 ) -> list[tf.keras.metrics.Metric]:
     """Build one loss-valued metric per front type (plus background) for reporting.
+
+    Cost note: this builds ``n_classes`` independent ``_build_loss`` calls (one per front type
+    plus background), each of which — for both ``"fractions_skill_score"`` and
+    ``"neighborhood_brier_score"`` — pools the *entire* ``(batch, H, W, n_classes)`` tensor at
+    full resolution before zeroing out every class but one (class weights are applied AFTER
+    pooling in both losses; see ``losses.neighborhood_brier_score``'s docstring on pooling
+    dominating backward-pass memory). Combined with the compiled loss's own pass, that's
+    ``n_classes + 1`` full-resolution poolings per batch on the finest (largest) model output.
+    This is forward-only reporting cost — it adds no backward pass and does not touch gradients
+    — but it is real, avoidable compute. Sharing one pooling across these independent
+    ``tf.keras.metrics.Metric`` objects would require threading pooled intermediates through the
+    constraint-sensitive loss path (see the REPORTING ONLY constraint in ``TrainConfig``), so
+    this was deliberately deferred rather than fixed; a future maintainer profiling the training
+    loop should look here first, not rediscover it via a profiler.
 
     Each metric rebuilds the configured training loss (the same ``_build_loss`` call used
     for the compiled ``loss=`` argument) with a one-hot ``loss_class_weights`` vector that
@@ -386,12 +401,29 @@ def _per_front_type_loss_metrics(
             "neighborhood_brier_score".
         nbs_pixel_weight: Forwarded to ``_build_loss``. Only used when ``nbs_include_pixel``
             is True.
+        n_classes: The model's configured class count (``model.ModelConfig.n_classes``). Must
+            equal ``max(constants.FRONT_TYPE_CLASS_INDEX.values()) + 1`` (background plus every
+            mapped front type); a mismatch raises immediately rather than building a mis-shaped
+            weight vector that would fail with a confusing shape error deep inside
+            ``_build_loss``.
 
     Returns:
         One ``MeanMetricWrapper`` per front type (``loss_{ft}``, e.g. ``loss_CF``) plus one
         for the background class (``loss_{BACKGROUND_CLASS_KEY}``, i.e. ``loss_none``).
+
+    Raises:
+        ValueError: If ``n_classes`` does not match the class count implied by
+            ``constants.FRONT_TYPE_CLASS_INDEX``.
     """
-    n_classes = max(constants.FRONT_TYPE_CLASS_INDEX.values()) + 1
+    expected_n_classes = max(constants.FRONT_TYPE_CLASS_INDEX.values()) + 1
+    if n_classes != expected_n_classes:
+        raise ValueError(
+            f"n_classes={n_classes} (from model.ModelConfig.n_classes) does not match the "
+            f"{expected_n_classes} classes implied by constants.FRONT_TYPE_CLASS_INDEX "
+            f"(background plus {sorted(constants.FRONT_TYPE_CLASS_INDEX)}). Per-front-type loss "
+            "metrics require these to agree — update constants.FRONT_TYPE_CLASS_INDEX or the "
+            "model's n_classes so they match."
+        )
     effective_weights = (
         np.ones(n_classes, dtype=np.float32)
         if loss_class_weights is None
@@ -474,8 +506,27 @@ def _compile(
     metric_class_weights: list[float] | None,
     train_cfg: "TrainConfig",
     latitudes: np.ndarray,
+    n_classes: int,
     gradient_clip_norm: float | None = None,
 ) -> int:
+    """Compile ``model`` with the configured loss, HSS metrics, and optional per-front-type metrics.
+
+    Args:
+        model: The (possibly strategy-scoped) model to compile in place.
+        learning_rate: Adam learning rate.
+        metric_class_weights: Class weights for the reported HSS metrics (independent of the
+            training loss's own class weights).
+        train_cfg: Training hyperparameters — see ``TrainConfig``.
+        latitudes: 1-D grid latitudes, forwarded to ``_build_loss``.
+        n_classes: The model's configured class count (``model.ModelConfig.n_classes``),
+            forwarded to ``_per_front_type_loss_metrics`` for validation against
+            ``constants.FRONT_TYPE_CLASS_INDEX``. Only used when
+            ``train_cfg.per_front_type_metrics`` is True.
+        gradient_clip_norm: Per-gradient L2-norm clip, or None to leave gradients unclipped.
+
+    Returns:
+        The number of model outputs (``len(model.outputs)``).
+    """
     n_out = len(model.outputs)
     loss_fn = _build_loss(
         loss_name=train_cfg.loss_name,
@@ -505,6 +556,7 @@ def _compile(
             nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
             nbs_include_pixel=train_cfg.nbs_include_pixel,
             nbs_pixel_weight=train_cfg.nbs_pixel_weight,
+            n_classes=n_classes,
         )
     optimizer = tf.keras.optimizers.Adam(
         learning_rate=learning_rate,
@@ -617,6 +669,100 @@ def _resolve_metrics_csv_path(metrics_csv_path: str | None, model_checkpoint_pat
     return None
 
 
+def _csv_logger_fieldnames(logs: dict) -> list[str]:
+    """Replicates ``tf.keras.callbacks.CSVLogger``'s column-selection logic for one epoch's logs.
+
+    Mirrors ``CSVLogger.on_epoch_end``'s ``self.keys`` computation exactly (sorted log keys, with
+    a ``val_``-prefixed mirror appended when no ``val_`` key is already present), so the header a
+    real ``CSVLogger`` would write for this run can be computed and compared against an existing
+    file's header before deciding whether to append to it. See ``_ResumeSafeCSVLogger``.
+
+    Args:
+        logs: The epoch logs dict, as passed to a callback's ``on_epoch_end``.
+
+    Returns:
+        The full CSV fieldnames list (``["epoch", *keys]``) ``CSVLogger`` would use.
+    """
+    keys = sorted(logs.keys())
+    if keys and not any(key.startswith("val_") for key in keys):
+        keys = keys + [f"val_{key}" for key in keys]
+    return ["epoch", *keys]
+
+
+class _ResumeSafeCSVLogger(tf.keras.callbacks.Callback):
+    """Wraps ``CSVLogger`` to avoid silently appending rows under a mismatched header.
+
+    ``CSVLogger(path, append=True)`` fixes its column set from the FIRST epoch's ``logs`` and
+    skips writing a header whenever the target file already exists and is non-empty. Resuming a
+    run whose metric set changed since that file was last written (e.g.
+    ``TrainConfig.per_front_type_metrics`` toggled, or ``TrainConfig.loss_name`` changed) then
+    silently writes new rows under the OLD header, misaligning ``metrics_epoch.csv`` — a file
+    that exists specifically to be a durable, independently-plottable record, so silent
+    misalignment defeats its entire purpose.
+
+    The exact column set a run will produce is only known once its first epoch's logs are
+    available (``CSVLogger`` itself has no earlier knowledge of it either — it derives ``self.keys``
+    from ``logs.keys()`` on the first ``on_epoch_end`` call), so this wrapper defers building the
+    real ``CSVLogger`` until that first call. At that point, if the target file already exists, is
+    non-empty, and its header row does not match this run's computed fieldnames (see
+    ``_csv_logger_fieldnames``), the old file is rotated aside under a numeric ``.stale-N`` suffix
+    and a warning is logged explaining what happened and where the old file went, before a fresh
+    file (and header) is started. When the header matches — the genuine same-shape resume case —
+    or no file exists yet, behavior is identical to ``CSVLogger(path, append=True)``.
+
+    Attributes:
+        path: The CSV file path passed to the underlying ``CSVLogger``.
+    """
+
+    def __init__(self, path: str):
+        """Initializes the wrapper without touching the filesystem.
+
+        Args:
+            path: Path the per-epoch metrics CSV should be written to.
+        """
+        super().__init__()
+        self.path = path
+        self._inner: tf.keras.callbacks.CSVLogger | None = None
+
+    def _rotate_stale_file(self) -> None:
+        """Moves the existing, mismatched-header file at ``self.path`` aside and logs a warning."""
+        base, ext = os.path.splitext(self.path)
+        suffix = 1
+        stale_path = f"{base}.stale-{suffix}{ext}"
+        while os.path.exists(stale_path):
+            suffix += 1
+            stale_path = f"{base}.stale-{suffix}{ext}"
+        os.rename(self.path, stale_path)
+        logger.warning(
+            "Existing metrics CSV %s has a different column set than this run will produce "
+            "(per_front_type_metrics or loss_name likely changed since it was last written). "
+            "To avoid silently misaligning it, moved the old file to %s and starting a fresh %s.",
+            self.path,
+            stale_path,
+            self.path,
+        )
+
+    def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
+        """Lazily builds (and, if needed, rotates ahead of) the real CSVLogger, then forwards to it."""
+        logs = logs or {}
+        if self._inner is None:
+            if os.path.exists(self.path) and os.path.getsize(self.path) > 0:
+                with open(self.path, encoding="utf-8") as f:
+                    existing_header = f.readline().rstrip("\n").split(",")
+                if existing_header != _csv_logger_fieldnames(logs):
+                    self._rotate_stale_file()
+            self._inner = tf.keras.callbacks.CSVLogger(self.path, append=True)
+            self._inner.set_model(self.model)
+            self._inner.set_params(self.params)
+            self._inner.on_train_begin()
+        self._inner.on_epoch_end(epoch, logs)
+
+    def on_train_end(self, logs: dict | None = None) -> None:
+        """Forwards to the real CSVLogger, if any epoch ever ran and built one."""
+        if self._inner is not None:
+            self._inner.on_train_end(logs)
+
+
 def _build_run_callbacks(
     uses_ema: bool,
     monitor: str,
@@ -676,16 +822,17 @@ def _build_run_callbacks(
         )
     )
     callbacks.append(fronts_callbacks.GcCallback())
-    # Must run before WandbMetricsLogger and CSVLogger: it mutates the shared `logs` dict that
-    # both read, collapsing per-deep-supervision-output keys into single aggregate hss/val_hss
-    # (and stripping the per-output loss keys) and renaming per-front-type keys into
-    # slash-delimited form. CSVLogger is listed immediately after it for the same reason —
-    # writing the consolidated, renamed keys rather than raw sup{N}_{activation}_{metric} ones.
+    # Must run before WandbMetricsLogger and _ResumeSafeCSVLogger: it mutates the shared `logs`
+    # dict that both read, collapsing per-deep-supervision-output keys into single aggregate
+    # hss/val_hss (and stripping the per-output loss keys) and renaming per-front-type keys into
+    # slash-delimited form. _ResumeSafeCSVLogger is listed immediately after it for the same
+    # reason — writing the consolidated, renamed keys rather than raw
+    # sup{N}_{activation}_{metric} ones.
     callbacks.append(fronts_callbacks.MetricsConsolidationCallback())
     csv_path = _resolve_metrics_csv_path(metrics_csv_path, model_checkpoint_path)
     if csv_path:
         os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
-        callbacks.append(tf.keras.callbacks.CSVLogger(csv_path, append=True))
+        callbacks.append(_ResumeSafeCSVLogger(csv_path))
     callbacks.extend(extra_callbacks or [])
     if wandb_project:
         callbacks.append(wandb.keras.WandbMetricsLogger(log_freq=wandb_log_freq))
@@ -991,6 +1138,7 @@ def train(
             metric_class_weights=data_cfg.class_weights,
             train_cfg=train_cfg,
             latitudes=train_dataset.input_ds["latitude"].values,
+            n_classes=model_cfg.n_classes,
             gradient_clip_norm=train_cfg.gradient_clip_norm,
         )
     logger.info("Model built and compiled.")
