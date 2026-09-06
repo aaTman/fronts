@@ -234,6 +234,74 @@ class TestCompactProgressCallback:
         with pytest.raises(ValueError, match="positive"):
             fc.CompactProgressCallback(every_n_batches=-3)
 
+    def test_shorter_inplace_write_pads_to_blot_out_longer_previous_write(self, monkeypatch, capsys):
+        r"""Covers the residue bug: a bare `\r` moves the cursor but does not clear the line.
+
+        A shorter write must be padded to at least the previous write's length, or that write's
+        tail would remain visible, looking like corrupted digits.
+        """
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=1, terminal_width=200, steps=450)
+        hss_values = [0.412, 0.342, 0.272, 0.202, 0.132]
+        long_logs = {"loss": 12.3456}  # loss overflows its reserved width, making this row longer.
+        short_logs = {"loss": 0.0123}
+        for front_type, hss in zip(self._FRONT_TYPES, hss_values, strict=True):
+            long_logs[f"front/{front_type}/hss"] = hss
+            short_logs[f"front/{front_type}/hss"] = hss
+
+        callback.on_train_batch_end(0, long_logs)
+        first_write = capsys.readouterr().out
+        assert first_write.startswith("\r")
+        first_content = first_write[1:]
+
+        callback.on_train_batch_end(1, short_logs)
+        second_write = capsys.readouterr().out
+        assert second_write.startswith("\r")
+        second_content = second_write[1:]
+
+        assert len(second_content) == len(first_content), (
+            "the second (shorter) write was not padded to blot out the first (longer) write"
+        )
+        assert second_content.startswith(fc._batch_label(2, 450))  # batch index 1 -> batch number 2
+        assert ".0123" in second_content
+        assert "12.3456" not in second_content  # no residue from the first write's loss value.
+
+    def test_epoch_end_loss_row_pads_over_longer_batch_row_residue(self, monkeypatch, capsys):
+        """The guaranteed-every-epoch case: the epoch-end loss row is shorter than the batch row.
+
+        The batch row it overwrites has an HSS block the loss row lacks, so the loss row must be
+        padded or the batch row's HSS values would trail behind it on screen.
+        """
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=1, terminal_width=80, steps=450)
+        hss_values = [0.412, 0.342, 0.272, 0.202, 0.132]
+        csi_values = [0.310, 0.250, 0.190, 0.130, 0.062]
+        val_hss_values = [0.400, 0.330, 0.260, 0.190, 0.120]
+        val_csi_values = [0.300, 0.240, 0.180, 0.120, 0.060]
+        batch_logs = {"loss": 0.0123}
+        for front_type, hss in zip(self._FRONT_TYPES, hss_values, strict=True):
+            batch_logs[f"front/{front_type}/hss"] = hss
+
+        callback.on_train_batch_end(309, batch_logs)  # batch_number 310
+        batch_write = capsys.readouterr().out
+        assert batch_write.startswith("\r")
+        batch_content = batch_write[1:]
+        assert ".412" in batch_content  # sanity: the batch row does carry HSS values.
+
+        epoch_logs = self._epoch_end_logs(hss_values, csi_values, val_hss_values, val_csi_values)
+        callback.on_epoch_end(0, epoch_logs)
+        epoch_write = capsys.readouterr().out
+        first_line, _, _rest = epoch_write.partition("\n")
+        assert first_line.startswith("\r")
+        first_line_content = first_line[1:]
+
+        unpadded_loss_row = fc._epoch_summary_row("loss", [0.0123], [0.0141], fc._LOSS_FIELD_WIDTH, fc._LOSS_DECIMALS)
+        assert first_line_content.startswith(unpadded_loss_row)
+        padding = first_line_content[len(unpadded_loss_row) :]
+        assert padding == " " * len(padding), f"non-space residue after the loss row: {padding!r}"
+        assert len(first_line_content) >= len(batch_content), (
+            "epoch-end loss row is shorter than the last batch row and would leave residue"
+        )
+        assert ".412" not in first_line_content  # the batch row's HSS block must not survive.
+
     def test_narrow_terminal_safety_net_still_truncates_when_needed(self, monkeypatch, capsys):
         callback = self._make(monkeypatch, is_tty=True, terminal_width=40)
         logs = self._logs(lambda i: 12345.6789 + i)

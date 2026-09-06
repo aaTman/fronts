@@ -322,9 +322,12 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
     columns by design, even when every value is negative. The rendered row is additionally
     truncated to the actual terminal width before every write as a last-resort safety net (see
     ``_truncate_to_terminal_width``), so ``\r`` always rewinds the whole line even in a narrower
-    terminal. ``hss_hard``, ``pod``, and the per-front-type losses are deliberately omitted here:
-    they remain in W&B and metrics_epoch.csv, since stdout here is a health check, not the
-    record.
+    terminal. Every in-place write is also padded with trailing spaces to at least as long as the
+    longest line written in place since the last real newline (see ``_pad_for_inplace``) — a bare
+    ``\r`` only moves the cursor to column 0, it does not clear the line, so writing a shorter
+    row than its predecessor would otherwise leave that predecessor's tail visible on screen.
+    ``hss_hard``, ``pod``, and the per-front-type losses are deliberately omitted here: they
+    remain in W&B and metrics_epoch.csv, since stdout here is a health check, not the record.
 
     A header line naming the front-type column order is printed once per epoch (real newline).
     On a TTY, one train-only, loss-and-HSS-only row (CSI is dropped from this row only, since it
@@ -357,12 +360,35 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
         self.every_n_batches = every_n_batches
         self._is_tty = sys.stdout.isatty()
         self._front_types = list(constants.FRONT_TYPE_CLASS_INDEX)
+        # Length of the longest line written in place (via `\r`) since the last real newline —
+        # see `_pad_for_inplace`.
+        self._inplace_written_length = 0
 
     def _epochs_total(self) -> int | None:
         return (self.params or {}).get("epochs")
 
     def _steps_total(self) -> int | None:
         return (self.params or {}).get("steps")
+
+    def _pad_for_inplace(self, row: str) -> str:
+        r"""Pads ``row`` so it cannot leave stale characters from a previous in-place write.
+
+        A bare ``\r`` only returns the cursor to column 0 — it does not clear the line — so
+        writing a shorter string than the previous ``\r``-written line leaves that line's
+        trailing characters on screen, looking like corrupted digits (e.g. a short epoch-end
+        row overwriting a longer batch row leaves the batch row's tail visible). Padding with
+        trailing spaces up to the longest line written in place since the last real newline
+        guarantees no such residue survives. Terminal-width truncation must be applied to the
+        *result* of this padding, not before, so a padded row still cannot exceed the width
+        bound.
+
+        Args:
+            row: The not-yet-truncated row about to be written in place.
+
+        Returns:
+            ``row`` padded with trailing spaces to at least ``self._inplace_written_length``.
+        """
+        return row.ljust(self._inplace_written_length)
 
     def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
         """Prints the epoch header line naming the front-type column order."""
@@ -373,6 +399,7 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
         )
         sys.stdout.write(_truncate_to_terminal_width(header) + "\n")
         sys.stdout.flush()
+        self._inplace_written_length = 0  # A real newline was just written; nothing to blot out.
 
     def on_train_batch_end(self, batch: int, logs: dict | None = None) -> None:
         """Rewrites the in-place train-only, loss-and-HSS-only row, throttled per ``every_n_batches``."""
@@ -389,8 +416,10 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
         hss_values = [logs.get(f"front/{ft}/hss") for ft in self._front_types]
         hss_str = " ".join(_format_value(v, _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for v in hss_values)
         row = f"{label} loss {loss_str} HSS {hss_str}"
-        sys.stdout.write("\r" + _truncate_to_terminal_width(row))
+        truncated = _truncate_to_terminal_width(self._pad_for_inplace(row))
+        sys.stdout.write("\r" + truncated)
         sys.stdout.flush()
+        self._inplace_written_length = len(truncated)
 
     def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
         """Prints the epoch's three permanent train/val summary rows (loss, HSS, CSI)."""
@@ -412,8 +441,14 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
             _METRIC_FIELD_WIDTH,
             _METRIC_DECIMALS,
         )
-        prefix = "\r" if self._is_tty else ""
-        sys.stdout.write(prefix + _truncate_to_terminal_width(loss_row) + "\n")
+        if self._is_tty:
+            # This first write overwrites the last in-place batch row (via `\r`), which may be
+            # longer than loss_row — pad it so none of that row's tail survives on screen.
+            truncated_loss_row = _truncate_to_terminal_width(self._pad_for_inplace(loss_row))
+            sys.stdout.write("\r" + truncated_loss_row + "\n")
+        else:
+            sys.stdout.write(_truncate_to_terminal_width(loss_row) + "\n")
+        self._inplace_written_length = 0  # A real newline was just written; nothing to blot out.
         sys.stdout.write(_truncate_to_terminal_width(hss_row) + "\n")
         sys.stdout.write(_truncate_to_terminal_width(csi_row) + "\n")
         sys.stdout.flush()
