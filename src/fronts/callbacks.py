@@ -182,77 +182,122 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
         self._consolidate(logs)
 
 
-_LOSS_FIELD_WIDTH = 7
 _LOSS_DECIMALS = 4
-_METRIC_FIELD_WIDTH = 6
+_LOSS_FIELD_WIDTH = 5  # ".0123" — one dot, four decimal digits, leading zero dropped.
 _METRIC_DECIMALS = 3
+_METRIC_FIELD_WIDTH = 4  # ".412" — one dot, three decimal digits, leading zero dropped.
 _MISSING_VALUE_PLACEHOLDER = "--"
+_VAL_ROW_LABEL = "val"
 
 
-def _format_scalar(value: float | None, width: int, decimals: int) -> str:
-    """Formats one metric value to a fixed width, or a right-justified placeholder if missing."""
+def _format_value(value: float | None, width: int, decimals: int) -> str:
+    """Formats one metric value to a fixed width, dropping a redundant leading zero.
+
+    A value in [-1, 1) — true of every metric this callback renders (HSS, CSI, and the losses
+    in practice) — always has a leading zero before the decimal point (``0.412``, ``-0.412``);
+    dropping it (``.412``, ``-.412``) buys back a column per value without losing any digits,
+    which is what keeps the whole line inside 80 columns. A value outside that range (e.g. an
+    early-training loss above 1.0) simply renders at its natural, wider length instead of being
+    truncated — this only trades away the fixed-width guarantee in that already-unusual case.
+
+    Args:
+        value: The value to format, or None if missing from ``logs``.
+        width: Target field width. Only a placeholder or an in-range value are padded to
+            exactly this width; wider natural-length values are left unpadded.
+        decimals: Number of digits after the decimal point.
+
+    Returns:
+        The right-justified formatted value, or a right-justified placeholder if ``value`` is
+        None.
+    """
     if value is None:
         return f"{_MISSING_VALUE_PLACEHOLDER:>{width}}"
-    return f"{float(value):{width}.{decimals}f}"
+    text = f"{float(value):.{decimals}f}"
+    if text.startswith("0."):
+        text = text[1:]
+    elif text.startswith("-0."):
+        text = "-" + text[2:]
+    return f"{text:>{width}}"
 
 
-def _render_progress_line(
-    batch: int | None,
-    steps: int | None,
-    logs: dict,
-    front_types: list[str],
-    include_validation: bool,
-) -> str:
-    """Renders one compact "loss/HSS/CSI" progress line, optionally with validation metrics.
+def _batch_label(batch: int | None, steps: int | None) -> str:
+    """Renders the "batch/steps" position label, digit-padding ``batch`` to ``steps``'s width.
+
+    Padding ``batch`` (not the whole label) keeps the label's width constant across an epoch's
+    updates regardless of ``batch``'s own digit count, e.g. ``" 10/450"`` and ``"100/450"`` are
+    both 7 characters.
 
     Args:
         batch: Current 1-indexed batch number, or None if unknown.
-        steps: Total batches in the epoch, or None if unknown (omits the "batch/steps" segment
-            unless ``batch`` is also given, in which case only ``batch`` is shown).
-        logs: Keras logs dict, already consolidated by ``MetricsConsolidationCallback`` so
-            per-front-type keys are available as ``front/{front_type}/{metric}``.
-        front_types: Front-type keys in display order, from ``constants.FRONT_TYPE_CLASS_INDEX``.
-        include_validation: Whether to append the ``val_loss``/``val_HSS``/``val_CSI`` segments.
+        steps: Total batches in the epoch, or None if unknown.
 
     Returns:
-        The rendered line, not yet truncated to the terminal width.
+        ``"{batch}/{steps}"`` with ``batch`` padded to ``steps``'s digit count, ``str(batch)``
+        alone if ``steps`` is unknown, or ``""`` if ``batch`` is also unknown.
     """
-    segments = []
     if steps is not None and batch is not None:
-        width = len(str(steps))
-        segments.append(f"{batch:>{width}}/{steps}")
-    elif batch is not None:
-        segments.append(str(batch))
-    segments.append("loss " + _format_scalar(logs.get("loss"), _LOSS_FIELD_WIDTH, _LOSS_DECIMALS))
-    hss = " ".join(
-        _format_scalar(logs.get(f"front/{ft}/hss"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
-    )
-    segments.append(f"HSS {hss}")
-    csi = " ".join(
-        _format_scalar(logs.get(f"front/{ft}/csi"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
-    )
-    segments.append(f"CSI {csi}")
-    if include_validation:
-        segments.append("val_loss " + _format_scalar(logs.get("val_loss"), _LOSS_FIELD_WIDTH, _LOSS_DECIMALS))
-        val_hss = " ".join(
-            _format_scalar(logs.get(f"front/{ft}/val_hss"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
-        )
-        segments.append(f"val_HSS {val_hss}")
-        val_csi = " ".join(
-            _format_scalar(logs.get(f"front/{ft}/val_csi"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
-        )
-        segments.append(f"val_CSI {val_csi}")
-    return "  " + "  ".join(segments)
+        return f"{batch:>{len(str(steps))}}/{steps}"
+    if batch is not None:
+        return str(batch)
+    return ""
+
+
+def _row_label_width(steps: int | None) -> int:
+    """Width shared by every row label in an epoch, so the train and val rows' columns line up.
+
+    Args:
+        steps: Total batches in the epoch, or None if unknown.
+
+    Returns:
+        ``len("{steps}/{steps}")`` if ``steps`` is known, else a fallback wide enough for the
+        placeholder ``"train"`` row label used when it is not.
+    """
+    if steps is None:
+        return max(len("train"), len(_VAL_ROW_LABEL))
+    return max(len(_batch_label(steps, steps)), len(_VAL_ROW_LABEL))
+
+
+def _render_metrics_row(
+    label: str,
+    label_width: int,
+    loss: float | None,
+    hss_values: list[float | None],
+    csi_values: list[float | None],
+) -> str:
+    """Renders one "label loss X HSS ... CSI ..." row, not yet truncated to the terminal width.
+
+    Args:
+        label: Row label (a "batch/steps" position, or the literal "val" for the epoch-end
+            validation row), left-justified to ``label_width``.
+        label_width: Shared label column width — see ``_row_label_width``.
+        loss: Aggregate loss for this row (train or validation), or None if missing.
+        hss_values: Per-front-type soft HSS values, in ``constants.FRONT_TYPE_CLASS_INDEX``
+            order, or None per entry if missing.
+        csi_values: Per-front-type CSI values, in the same order, or None per entry if missing.
+
+    Returns:
+        The rendered row.
+    """
+    loss_str = _format_value(loss, _LOSS_FIELD_WIDTH, _LOSS_DECIMALS)
+    hss = " ".join(_format_value(v, _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for v in hss_values)
+    csi = " ".join(_format_value(v, _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for v in csi_values)
+    return f"  {label:<{label_width}} loss {loss_str} HSS {hss} CSI {csi}"
 
 
 def _truncate_to_terminal_width(line: str) -> str:
-    r"""Truncates ``line`` to one column short of the terminal width, so ``\r`` always rewinds it."""
+    r"""Truncates ``line`` to one column short of the terminal width, so ``\r`` always rewinds it.
+
+    A last-resort safety net, not the normal path: the row format above is deliberately sized
+    (single-space separators, no leading zeros) to fit all five front types' HSS and CSI inside
+    80 columns without ever engaging this — see
+    ``TestCompactProgressCallback.test_default_row_fits_in_80_columns_without_truncation``.
+    """
     width = shutil.get_terminal_size(fallback=(120, 24)).columns - 1
     return line[:width]
 
 
 class CompactProgressCallback(tf.keras.callbacks.Callback):
-    r"""Prints one terminal-width-bounded progress line per epoch instead of Keras's default.
+    r"""Prints a small, terminal-width-bounded progress display per epoch instead of Keras's default.
 
     Keras's default ``ProgbarLogger`` (``verbose=1``) prints every key in ``logs`` on a single
     line. With the ~29 per-front-type metric keys this branch adds, that line is far wider than
@@ -262,22 +307,24 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
 
     This callback instead renders a fixed, deliberately small set of health-check metrics —
     aggregate ``loss``, and per-front-type ``HSS`` (the soft ``front/{front_type}/hss``) and
-    ``CSI`` (``front/{front_type}/csi``), in ``constants.FRONT_TYPE_CLASS_INDEX`` order — and
-    truncates the rendered line to the terminal width before writing it, so ``\r`` always
-    rewinds the whole line and no new lines are ever spawned. ``hss_hard``, ``pod``, and the
-    per-front-type losses are deliberately omitted: they remain in W&B and metrics_epoch.csv,
-    since stdout here is a health check, not the record.
+    ``CSI`` (``front/{front_type}/csi``), in ``constants.FRONT_TYPE_CLASS_INDEX`` order — using a
+    tight fixed-width number format (single-space separators, no redundant leading zero) chosen
+    so the row fits inside 80 columns by design. The rendered row is additionally truncated to
+    the actual terminal width before every write as a last-resort safety net (see
+    ``_truncate_to_terminal_width``), so ``\r`` always rewinds the whole line even in a narrower
+    terminal. ``hss_hard``, ``pod``, and the per-front-type losses are deliberately omitted here:
+    they remain in W&B and metrics_epoch.csv, since stdout here is a health check, not the
+    record.
 
-    On a TTY, a header line naming the front-type column order is printed once per epoch (with
-    a real newline), then one line is rewritten in place via ``\r``, throttled to at most every
-    ``every_n_batches`` batches (plus always the epoch's final batch), and finally overwritten
-    once more at ``on_epoch_end`` with validation metrics included, followed by a real newline
-    so the next epoch's header starts on a fresh line.
-
-    On a non-TTY stdout (e.g. a SLURM log file, where ``\r`` is useless and only bloats the
-    file), no per-batch output is emitted at all — exactly one plain line, including validation
-    metrics, is printed per epoch at ``on_epoch_end``. Whether stdout is a TTY is determined
-    once, at construction, not re-checked per batch.
+    A header line naming the front-type column order is printed once per epoch (real newline).
+    On a TTY, one train-only row is then rewritten in place via ``\r``, throttled to at most
+    every ``every_n_batches`` batches (plus always the epoch's final batch). At ``on_epoch_end``,
+    two permanent rows are printed — the final train row, then a "val" row with the validation
+    equivalents — each ending in a real newline, so the next epoch's header starts fresh and
+    neither row is ever truncated away by cramming both onto one line. On a non-TTY stdout (e.g.
+    a SLURM log file, where ``\r`` is useless and only bloats the file), no per-batch output is
+    emitted at all — only the header and the same two epoch-end rows. Whether stdout is a TTY is
+    determined once, at construction, not re-checked per batch.
 
     Must run after ``MetricsConsolidationCallback`` in the callbacks list passed to
     ``model.fit`` — it reads ``front/{front_type}/hss`` and ``front/{front_type}/csi``, which
@@ -285,9 +332,9 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
     shared ``logs`` dict. See ``train._build_run_callbacks``.
 
     Attributes:
-        every_n_batches: Update the in-place line at most this often, in batches (plus always
-            the epoch's final batch). Has no effect on a non-TTY stdout, which never updates
-            per batch regardless.
+        every_n_batches: Update the in-place train row at most this often, in batches (plus
+            always the epoch's final batch). Has no effect on a non-TTY stdout, which never
+            updates per batch regardless.
     """
 
     def __init__(self, every_n_batches: int) -> None:
@@ -303,9 +350,7 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
         return (self.params or {}).get("steps")
 
     def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
-        """Prints the epoch header line naming the front-type column order (TTY only)."""
-        if not self._is_tty:
-            return
+        """Prints the epoch header line naming the front-type column order."""
         epochs_total = self._epochs_total()
         header = (
             f"Epoch {epoch + 1}/{epochs_total if epochs_total is not None else '?'}"
@@ -315,7 +360,7 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
         sys.stdout.flush()
 
     def on_train_batch_end(self, batch: int, logs: dict | None = None) -> None:
-        """Rewrites the in-place progress line in place, throttled to every N batches."""
+        """Rewrites the in-place train-only row, throttled to every ``every_n_batches`` batches."""
         if not self._is_tty:
             return
         steps_total = self._steps_total()
@@ -323,21 +368,33 @@ class CompactProgressCallback(tf.keras.callbacks.Callback):
         is_final_batch = steps_total is not None and batch_number >= steps_total
         if not is_final_batch and batch_number % self.every_n_batches != 0:
             return
-        line = _render_progress_line(batch_number, steps_total, logs or {}, self._front_types, False)
-        sys.stdout.write("\r" + _truncate_to_terminal_width(line))
+        logs = logs or {}
+        label = _batch_label(batch_number, steps_total)
+        label_width = _row_label_width(steps_total)
+        hss_values = [logs.get(f"front/{ft}/hss") for ft in self._front_types]
+        csi_values = [logs.get(f"front/{ft}/csi") for ft in self._front_types]
+        row = _render_metrics_row(label, label_width, logs.get("loss"), hss_values, csi_values)
+        sys.stdout.write("\r" + _truncate_to_terminal_width(row))
         sys.stdout.flush()
 
     def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
-        """Prints the epoch's final line, including validation metrics, then a real newline."""
+        """Prints the epoch's final train row and a val row, each ending in a real newline."""
         logs = logs or {}
         steps_total = self._steps_total()
-        line = _render_progress_line(steps_total, steps_total, logs, self._front_types, True)
-        if self._is_tty:
-            sys.stdout.write("\r" + _truncate_to_terminal_width(line) + "\n")
-        else:
-            epochs_total = self._epochs_total()
-            header = f"Epoch {epoch + 1}/{epochs_total if epochs_total is not None else '?'}"
-            sys.stdout.write(_truncate_to_terminal_width(header + line) + "\n")
+        label_width = _row_label_width(steps_total)
+
+        train_label = _batch_label(steps_total, steps_total) if steps_total is not None else "train"
+        hss_values = [logs.get(f"front/{ft}/hss") for ft in self._front_types]
+        csi_values = [logs.get(f"front/{ft}/csi") for ft in self._front_types]
+        train_row = _render_metrics_row(train_label, label_width, logs.get("loss"), hss_values, csi_values)
+
+        val_hss_values = [logs.get(f"front/{ft}/val_hss") for ft in self._front_types]
+        val_csi_values = [logs.get(f"front/{ft}/val_csi") for ft in self._front_types]
+        val_row = _render_metrics_row(_VAL_ROW_LABEL, label_width, logs.get("val_loss"), val_hss_values, val_csi_values)
+
+        prefix = "\r" if self._is_tty else ""
+        sys.stdout.write(prefix + _truncate_to_terminal_width(train_row) + "\n")
+        sys.stdout.write(_truncate_to_terminal_width(val_row) + "\n")
         sys.stdout.flush()
 
 
