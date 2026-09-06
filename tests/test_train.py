@@ -6,6 +6,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from fronts.data import inputs as data_inputs
+from fronts.data import targets as data_targets
 from fronts.data.targets import FRONT_CLASS_MAP, filter_timesteps
 from fronts.utils import IcechunkStorageConfig, apply_time_resolution
 
@@ -530,7 +532,7 @@ class TestFrontsPyDatasetPatchMode:
             np.float32
         )
 
-    def _make_ds(self, flip_probability=0.0, augment=False):
+    def _make_ds(self, flip_probability=0.0, augment=False, front_dilation=0):
         core_input_vals = self._core_vals()
         input_ds = xr.Dataset(
             {
@@ -564,6 +566,7 @@ class TestFrontsPyDatasetPatchMode:
             variables=["temperature"],
             test_years=[],
             val_years=[],
+            front_dilation=front_dilation,
             patch_config=patch_config,
         )
         return FrontsPyDataset(input_ds, target_da, data_config, batch_size=1, augment=augment, seed=0)
@@ -620,6 +623,50 @@ class TestFrontsPyDatasetPatchMode:
         start = starts[0]
         expected = padded[:, start : start + self._PATCH_WIDTH + 2 * self._BUFFER]
         np.testing.assert_allclose(x[0, :, :, 0], expected)
+
+    def test_patches_sharing_a_timestep_materialize_inputs_once_per_unique_timestep(self, monkeypatch):
+        """Regression test: a batch of patches from the same timestep must trigger one
+        full-domain read of that timestep, not one per patch (see
+        ``FrontsPyDataset._get_patches_at_indices``)."""
+        ds = self._make_ds()
+        seen_time_sizes = []
+        original = data_inputs.inputs_ds_to_dataarray
+
+        def spy(ds_arg, variables):
+            seen_time_sizes.append(ds_arg.sizes["time"])
+            return original(ds_arg, variables)
+
+        monkeypatch.setattr(data_inputs, "inputs_ds_to_dataarray", spy)
+        idxs = np.array([0, 1, 2, self._N_PATCHES])  # 3 patches of timestep 0, 1 patch of timestep 1
+        ds.get_at_indices(idxs)
+        assert seen_time_sizes == [len(np.unique(idxs // self._N_PATCHES))]
+
+    def test_patches_sharing_a_timestep_dilate_once_per_unique_timestep(self, monkeypatch):
+        """Regression test: binary dilation (the expensive step) must run once per unique
+        timestep in the batch, not once per patch."""
+        ds = self._make_ds(front_dilation=1)
+        call_count = 0
+        original = data_targets._dilate_one_timestep
+
+        def spy(arr, dilation):
+            nonlocal call_count
+            call_count += 1
+            return original(arr, dilation)
+
+        monkeypatch.setattr(data_targets, "_dilate_one_timestep", spy)
+        idxs = np.array([0, 1, 2, self._N_PATCHES])
+        ds.get_at_indices(idxs)
+        assert call_count == len(np.unique(idxs // self._N_PATCHES))
+
+    def test_patches_from_duplicated_timestep_match_individual_lookups(self):
+        """Deduplicating the materialization must not change any individual patch's values."""
+        ds = self._make_ds()
+        idxs = np.array([0, 1, 2, self._N_PATCHES])
+        x_batch, y_batch = ds.get_at_indices(idxs)
+        for i, global_idx in enumerate(idxs):
+            x_single, y_single = ds.get_at_indices(np.array([global_idx]))
+            np.testing.assert_allclose(x_batch[i], x_single[0])
+            np.testing.assert_allclose(y_batch[i], y_single[0])
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

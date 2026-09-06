@@ -337,8 +337,13 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         time_idxs = idxs // pc.n_patches
         patch_idxs = idxs % pc.n_patches
 
-        x_xarray = self.input_ds.isel(time=time_idxs)
-        y_da = self.target_da.isel(time=time_idxs)
+        # A batch commonly holds several patches of the same timestep (up to n_patches of
+        # them), so materialize each unique timestep once and fan patches back out via
+        # `inverse`, instead of redoing the full-domain read/pad/dilation once per patch.
+        unique_time_idxs, inverse = np.unique(time_idxs, return_inverse=True)
+
+        x_xarray = self.input_ds.isel(time=unique_time_idxs)
+        y_da = self.target_da.isel(time=unique_time_idxs)
 
         if self.data_config.volume_inputs:
             x_full = inputs.inputs_ds_to_volume_dataarray(x_xarray, self.data_config.variables).values
@@ -363,9 +368,12 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
             pad_width = [(0, 0), (buf, buf), (buf, buf)] + [(0, 0)] * (x_full.ndim - 3)
             x_full = np.pad(x_full, pad_width, mode="reflect")
         x = np.stack(
-            [x_full[i, :, starts[p] : starts[p] + width + 2 * buf, ...] for i, p in enumerate(patch_idxs)], axis=0
+            [x_full[inverse[i], :, starts[p] : starts[p] + width + 2 * buf, ...] for i, p in enumerate(patch_idxs)],
+            axis=0,
         )
-        y = np.stack([y_full[i, :, starts[p] : starts[p] + width, :] for i, p in enumerate(patch_idxs)], axis=0)
+        y = np.stack(
+            [y_full[inverse[i], :, starts[p] : starts[p] + width, :] for i, p in enumerate(patch_idxs)], axis=0
+        )
 
         if self.augment and pc.flip_probability > 0:
             x, y = self._apply_flip_augmentation(x, y, pc.flip_probability)
