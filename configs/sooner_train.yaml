@@ -41,6 +41,13 @@ data_config:
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax
   num_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
+  patch_config:
+    # n_patches scaled from the paper's original 9 (over a 288px CONUS core domain) to
+    # preserve the same patch density over the full 960px-wide domain: 9 * (960/288) = 30.
+    n_patches: 30
+    patch_lon_width_px: 128  # patch core width; latitude uses the full 320px coordinates height (no lat tiling)
+    buffer_px: 16  # 128 + 2*16 = 160 = 20 * 8, divisible by the model's total downsampling stride below (8)
+    flip_probability: 0.25  # independent per-axis flip probability on train patches only
 
 model_config:
   n_classes: 6

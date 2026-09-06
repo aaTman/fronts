@@ -60,12 +60,15 @@ class PatchConfig:
             CONUS's 128-point latitude range already equals the paper's patch height.
         buffer_px: Extra context pixels appended on every side (north, south, east, west)
             of each patch's core region, for the *input* only — never the target. 0
-            disables buffering. ``patch_lon_width_px + 2 * buffer_px`` (and the core
-            latitude height + 2 * buffer_px) must stay divisible by the model's total
-            downsampling stride (product of ``model_config.pool_size`` across
-            ``model_config.levels - 1`` pooling stages) or the model fails to build — see
-            the "What We're NOT Doing" note on stride validation in
-            docs/rse/specs/plan-patch-buffer-training.md.
+            disables buffering. The core domain generally has no real data past
+            ``DatasetConfig.coordinates`` on disk, so this context is reflected off the
+            core domain's own edges (``np.pad(..., mode="reflect")``) rather than read
+            from the store — see ``FrontsPyDataset._get_patches_at_indices``.
+            ``patch_lon_width_px + 2 * buffer_px`` (and the core latitude height +
+            2 * buffer_px) must stay divisible by the model's total downsampling stride
+            (product of ``model_config.pool_size`` across ``model_config.levels - 1``
+            pooling stages) or the model fails to build — see the "What We're NOT Doing"
+            note on stride validation in docs/rse/specs/plan-patch-buffer-training.md.
         flip_probability: Independent per-axis probability of flipping a training patch
             along latitude and along longitude. 0.25 reproduces the paper's rate (a
             1 - (1 - p)^2 = 43.75% chance of at least one flip at p=0.25). Applied only to
@@ -350,6 +353,15 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         width = pc.patch_lon_width_px
         buf = pc.buffer_px
         starts = self._patch_lon_starts
+        if buf > 0:
+            # The core domain rarely has buf extra real pixels of margin past
+            # DatasetConfig.coordinates on disk, so buffer context is reflected off the
+            # core domain's own edges (Ronneberger et al. 2015's overlap-tile strategy:
+            # "missing input data is extrapolated by mirroring") rather than read from
+            # the store. Padding is applied here, per already-materialized batch, instead
+            # of at whole-dataset load time so it stays cheap regardless of split size.
+            pad_width = [(0, 0), (buf, buf), (buf, buf)] + [(0, 0)] * (x_full.ndim - 3)
+            x_full = np.pad(x_full, pad_width, mode="reflect")
         x = np.stack(
             [x_full[i, :, starts[p] : starts[p] + width + 2 * buf, ...] for i, p in enumerate(patch_idxs)], axis=0
         )

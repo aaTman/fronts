@@ -191,23 +191,7 @@ def load_data_into_dataloader(
 
     if data_config.coordinates is not None:
         logger.info("Restricting to spatial domain: %s", data_config.coordinates)
-        if data_config.patch_config is not None and data_config.patch_config.buffer_px > 0:
-            core_inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
-            resolution_deg = float(np.median(np.abs(np.diff(core_inputs_ds["latitude"].values))))
-            buffer_px = data_config.patch_config.buffer_px
-            buffered_bbox = utils.expand_bounding_box(data_config.coordinates, buffer_px, resolution_deg)
-            inputs_ds = utils.select_spatial_domain(inputs_ds, buffered_bbox)
-            expected_lat = core_inputs_ds.sizes["latitude"] + 2 * buffer_px
-            expected_lon = core_inputs_ds.sizes["longitude"] + 2 * buffer_px
-            if inputs_ds.sizes["latitude"] != expected_lat or inputs_ds.sizes["longitude"] != expected_lon:
-                raise ValueError(
-                    f"patch_config.buffer_px={buffer_px} extends past the input store's available "
-                    f"domain: expected buffered shape (lat={expected_lat}, lon={expected_lon}), got "
-                    f"(lat={inputs_ds.sizes['latitude']}, lon={inputs_ds.sizes['longitude']}). Widen "
-                    "the icechunk store's coverage or reduce buffer_px."
-                )
-        else:
-            inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
+        inputs_ds = utils.select_spatial_domain(inputs_ds, data_config.coordinates)
         targets_da = utils.select_spatial_domain(targets_da, data_config.coordinates)
 
     # The time indexes aren't identical between the two datasets
