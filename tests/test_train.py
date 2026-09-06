@@ -37,6 +37,7 @@ try:
         _load_pretrained_weights,
         _optimizer_uses_ema,
         _per_front_type_loss_metrics,
+        _resolve_fit_verbose,
         load_data_into_dataloader,
     )
 
@@ -342,6 +343,31 @@ class TestBuildRunCallbacks:
         checkpoint_path = str(tmp_path / "nested" / "run1" / "model")
         self._build(uses_ema=False, model_checkpoint_path=checkpoint_path, metrics_csv_path=None)
         assert (tmp_path / "nested" / "run1").is_dir()
+
+    def test_compact_progress_none_omits_callback(self):
+        callbacks = self._build(uses_ema=False, compact_progress_every_n_batches=None)
+        assert not any(isinstance(cb, fronts_callbacks.CompactProgressCallback) for cb in callbacks)
+
+    def test_compact_progress_int_adds_callback_after_metrics_consolidation(self):
+        callbacks = self._build(uses_ema=False, compact_progress_every_n_batches=10)
+        consolidation_idx = next(
+            i for i, cb in enumerate(callbacks) if isinstance(cb, fronts_callbacks.MetricsConsolidationCallback)
+        )
+        compact_idx = next(
+            i for i, cb in enumerate(callbacks) if isinstance(cb, fronts_callbacks.CompactProgressCallback)
+        )
+        assert consolidation_idx < compact_idx
+
+    def test_compact_progress_int_is_passed_through_as_throttle(self):
+        callbacks = self._build(uses_ema=False, compact_progress_every_n_batches=7)
+        compact_callback = next(cb for cb in callbacks if isinstance(cb, fronts_callbacks.CompactProgressCallback))
+        assert compact_callback.every_n_batches == 7
+
+    def test_resolve_fit_verbose_unchanged_when_compact_progress_none(self):
+        assert _resolve_fit_verbose(None) == "auto"
+
+    def test_resolve_fit_verbose_silenced_when_compact_progress_enabled(self):
+        assert _resolve_fit_verbose(10) == 0
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

@@ -1,8 +1,13 @@
 """Tests for fronts.callbacks: W&B metric consolidation and test-set visualization helpers."""
 
+import os
+from typing import ClassVar
+
 import numpy as np
 import pytest
 import xarray as xr
+
+from fronts import constants
 
 fc = pytest.importorskip("fronts.callbacks")
 
@@ -96,6 +101,118 @@ class TestMetricsConsolidationCallbackFrontTypeRenaming:
         logs = {"sup1_softmax_hss_CF": 0.75}
         fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
         assert logs == {"front/CF/hss": pytest.approx(0.75)}
+
+
+class TestCompactProgressCallback:
+    """Covers the terminal-width-bounded stdout progress display added to replace verbose=1."""
+
+    _FRONT_TYPES: ClassVar[list[str]] = list(constants.FRONT_TYPE_CLASS_INDEX)
+
+    def _make(self, monkeypatch, is_tty, every_n_batches=10, terminal_width=120, steps=450, epochs=5000):
+        monkeypatch.setattr(fc.sys.stdout, "isatty", lambda: is_tty)
+        monkeypatch.setattr(
+            fc.shutil, "get_terminal_size", lambda fallback=None: os.terminal_size((terminal_width, 24))
+        )
+        callback = fc.CompactProgressCallback(every_n_batches=every_n_batches)
+        callback.set_params({"steps": steps, "epochs": epochs})
+        return callback
+
+    def _logs(self, value_fn, with_validation=False):
+        logs = {"loss": value_fn(0)}
+        for i, front_type in enumerate(self._FRONT_TYPES, start=1):
+            logs[f"front/{front_type}/hss"] = value_fn(i)
+            logs[f"front/{front_type}/csi"] = value_fn(i + len(self._FRONT_TYPES))
+        if with_validation:
+            logs["val_loss"] = value_fn(100)
+            for i, front_type in enumerate(self._FRONT_TYPES, start=1):
+                logs[f"front/{front_type}/val_hss"] = value_fn(i + 200)
+                logs[f"front/{front_type}/val_csi"] = value_fn(i + 300)
+        return logs
+
+    def test_line_never_exceeds_narrow_terminal_width_even_with_large_values(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=40)
+        logs = self._logs(lambda i: 12345.6789 + i)
+        callback.on_epoch_begin(2, None)
+        callback.on_train_batch_end(449, logs)  # final batch (steps=450) -> always updates
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            assert len(line) <= 39
+
+    def test_tty_batch_update_emits_carriage_return_and_no_newline(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True)
+        logs = self._logs(lambda i: 0.1 * i)
+        callback.on_train_batch_end(9, logs)  # batch_number 10 -> throttle boundary, fires
+        out = capsys.readouterr().out
+        assert out.startswith("\r")
+        assert "\n" not in out
+
+    def test_non_tty_emits_no_per_batch_output(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=False)
+        logs = self._logs(lambda i: 0.1 * i)
+        for batch in range(25):
+            callback.on_train_batch_end(batch, logs)
+        assert capsys.readouterr().out == ""
+
+    def test_non_tty_emits_exactly_one_line_per_epoch(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=False)
+        logs = self._logs(lambda i: 0.1 * i, with_validation=True)
+        callback.on_epoch_end(2, logs)
+        out = capsys.readouterr().out
+        assert out.count("\n") == 1
+        assert len(out.splitlines()) == 1
+
+    def test_throttling_fires_expected_number_of_updates_plus_final(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=10, steps=25)
+        logs = self._logs(lambda i: 0.1 * i)
+        for batch in range(25):
+            callback.on_train_batch_end(batch, logs)
+        out = capsys.readouterr().out
+        # Batches 10 and 20 hit the throttle boundary; batch 25 is the epoch's final batch.
+        assert out.count("\r") == 3
+
+    def test_front_type_values_appear_in_constants_order_aligned_with_header(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200, steps=25)
+        callback.on_epoch_begin(0, None)
+        values = [0.1 * (i + 1) for i in range(len(self._FRONT_TYPES))]
+        logs = {"loss": 0.5}
+        for front_type, value in zip(self._FRONT_TYPES, values, strict=True):
+            logs[f"front/{front_type}/hss"] = value
+        callback.on_train_batch_end(24, logs)  # final batch -> always updates
+        out_lines = [line for line in capsys.readouterr().out.splitlines() if line]
+        header_line, progress_line = out_lines
+        assert f"fronts: {' '.join(self._FRONT_TYPES)}" in header_line
+        expected_hss = " ".join(f"{value:6.3f}" for value in values)
+        assert expected_hss in progress_line
+
+    def test_missing_keys_degrade_gracefully_instead_of_raising(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200, steps=25)
+        callback.on_train_batch_end(24, {})  # no metrics present at all; must not raise
+        out = capsys.readouterr().out
+        assert "--" in out
+
+    def test_missing_keys_on_epoch_end_do_not_raise(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        callback.on_epoch_end(0, {})
+        out = capsys.readouterr().out
+        assert "--" in out
+
+    def test_epoch_end_line_includes_validation_values(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        logs = self._logs(lambda i: 0.1 * i, with_validation=True)
+        callback.on_epoch_end(0, logs)
+        out = capsys.readouterr().out
+        assert "val_loss" in out
+        assert "val_HSS" in out
+        assert "val_CSI" in out
+        expected_val_loss = f"{0.1 * 100:7.4f}"
+        assert expected_val_loss in out
+
+    def test_epoch_end_writes_real_newline_so_next_epoch_starts_fresh(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True)
+        logs = self._logs(lambda i: 0.1 * i, with_validation=True)
+        callback.on_epoch_end(0, logs)
+        out = capsys.readouterr().out
+        assert out.endswith("\n")
 
 
 class TestBuildDatasetShapeSummary:

@@ -776,6 +776,7 @@ def _build_run_callbacks(
     wandb_log_freq: str | int,
     model_checkpoint_path: str | None,
     metrics_csv_path: str | None = None,
+    compact_progress_every_n_batches: int | None = None,
 ) -> list[tf.keras.callbacks.Callback]:
     """Build the ordered callback list passed to model.fit().
 
@@ -802,6 +803,10 @@ def _build_run_callbacks(
         metrics_csv_path: Explicit path to append per-epoch metrics to as CSV. None derives
             ``metrics_epoch.csv`` next to ``model_checkpoint_path``; if that is also None, CSV
             logging is skipped entirely. See ``_resolve_metrics_csv_path``.
+        compact_progress_every_n_batches: ``CallbacksConfig.compact_progress_every_n_batches``.
+            None omits ``CompactProgressCallback`` entirely, leaving Keras's default progress
+            bar alone; an int appends it, throttled to that many batches. See
+            ``_resolve_fit_verbose``, which silences Keras's own progress bar to match.
 
     Returns:
         Ordered list of callbacks for ``model.fit()``.
@@ -822,17 +827,21 @@ def _build_run_callbacks(
         )
     )
     callbacks.append(fronts_callbacks.GcCallback())
-    # Must run before WandbMetricsLogger and _ResumeSafeCSVLogger: it mutates the shared `logs`
-    # dict that both read, collapsing per-deep-supervision-output keys into single aggregate
-    # hss/val_hss (and stripping the per-output loss keys) and renaming per-front-type keys into
-    # slash-delimited form. _ResumeSafeCSVLogger is listed immediately after it for the same
-    # reason — writing the consolidated, renamed keys rather than raw
-    # sup{N}_{activation}_{metric} ones.
+    # Must run before WandbMetricsLogger, _ResumeSafeCSVLogger, and CompactProgressCallback: it
+    # mutates the shared `logs` dict that all three read, collapsing per-deep-supervision-output
+    # keys into single aggregate hss/val_hss (and stripping the per-output loss keys) and
+    # renaming per-front-type keys into slash-delimited form. _ResumeSafeCSVLogger is listed
+    # immediately after it for the same reason — writing the consolidated, renamed keys rather
+    # than raw sup{N}_{activation}_{metric} ones. CompactProgressCallback is listed after it too,
+    # for the same reason again — it reads front/{front_type}/hss and front/{front_type}/csi,
+    # which only exist in that form once this callback has run.
     callbacks.append(fronts_callbacks.MetricsConsolidationCallback())
     csv_path = _resolve_metrics_csv_path(metrics_csv_path, model_checkpoint_path)
     if csv_path:
         os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
         callbacks.append(_ResumeSafeCSVLogger(csv_path))
+    if compact_progress_every_n_batches is not None:
+        callbacks.append(fronts_callbacks.CompactProgressCallback(compact_progress_every_n_batches))
     callbacks.extend(extra_callbacks or [])
     if wandb_project:
         callbacks.append(wandb.keras.WandbMetricsLogger(log_freq=wandb_log_freq))
@@ -846,6 +855,22 @@ def _build_run_callbacks(
             )
         )
     return callbacks
+
+
+def _resolve_fit_verbose(compact_progress_every_n_batches: int | None) -> str | int:
+    """Return the ``verbose`` value for ``model.fit`` given the compact-progress setting.
+
+    ``CompactProgressCallback`` renders its own terminal-width-bounded progress line, so
+    Keras's default ``ProgbarLogger`` must be silenced whenever it is active — otherwise both
+    would print, defeating the reason ``CompactProgressCallback`` exists.
+
+    Args:
+        compact_progress_every_n_batches: ``CallbacksConfig.compact_progress_every_n_batches``.
+
+    Returns:
+        ``0`` if the compact callback is active, else Keras's own default ``"auto"``.
+    """
+    return 0 if compact_progress_every_n_batches is not None else "auto"
 
 
 def _run(
@@ -869,6 +894,7 @@ def _run(
     run_config: dict | None = None,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
     metrics_csv_path: str | None = None,
+    compact_progress_every_n_batches: int | None = None,
 ) -> tuple[tf.keras.callbacks.History, float]:
     if wandb_project:
         wandb.init(
@@ -891,6 +917,7 @@ def _run(
         wandb_log_freq=wandb_log_freq,
         model_checkpoint_path=model_checkpoint_path,
         metrics_csv_path=metrics_csv_path,
+        compact_progress_every_n_batches=compact_progress_every_n_batches,
     )
     t0 = time.time()
     history = model.fit(
@@ -901,6 +928,7 @@ def _run(
         validation_steps=validation_steps,
         callbacks=callbacks,
         shuffle=shuffle,
+        verbose=_resolve_fit_verbose(compact_progress_every_n_batches),
     )
     elapsed = time.time() - t0
     if model_checkpoint_path:
@@ -1278,6 +1306,7 @@ def train(
         early_stopping_patience=effective_stopping_patience,
         model_checkpoint_path=callbacks_cfg.model_checkpoint_path,
         metrics_csv_path=callbacks_cfg.metrics_csv_path,
+        compact_progress_every_n_batches=callbacks_cfg.compact_progress_every_n_batches,
         wandb_project=wandb_project,
         run_name=run_name,
         wandb_log_freq=wandb_cfg.log_freq if wandb_cfg is not None else "epoch",

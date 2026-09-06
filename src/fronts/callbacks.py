@@ -1,10 +1,12 @@
-"""Keras callbacks for training: resource monitoring, W&B metric cleanup, and periodic test-set visualization."""
+"""Keras callbacks for training: resource monitoring, metric cleanup, compact progress, and test-set visualization."""
 
 import collections
 import dataclasses
 import gc
 import logging
 import re
+import shutil
+import sys
 
 import numpy as np
 import psutil
@@ -97,6 +99,11 @@ class CallbacksConfig:
             local record independent of W&B. None derives ``metrics_epoch.csv`` in the same
             directory as ``model_checkpoint_path``; if that is also None, CSV logging is
             skipped entirely rather than guessing a location. See ``train._build_run_callbacks``.
+        compact_progress_every_n_batches: Optional batch throttle for ``CompactProgressCallback``,
+            a terminal-width-bounded replacement for Keras's default per-batch progress bar
+            (which prints every key in ``logs`` on one line — far wider than a terminal once
+            per-front-type metrics are added, so it wraps and floods stdout). None disables
+            the compact callback and leaves Keras's default progress bar (``verbose=1``) alone.
     """
 
     monitor: str = "val_loss"
@@ -111,6 +118,9 @@ class CallbacksConfig:
     # Defaulted (contrary to the usual no-defaults rule for dataclasses) so the 17 existing
     # YAML configs keep parsing: dacite raises on a missing required field.
     metrics_csv_path: str | None = None
+    # Defaulted (contrary to the usual no-defaults rule for dataclasses) so the 17 existing
+    # YAML configs keep parsing: dacite raises on a missing required field.
+    compact_progress_every_n_batches: int | None = 10
 
 
 class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
@@ -170,6 +180,165 @@ class MetricsConsolidationCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
         """Aggregates per-output hss into hss/val_hss and strips per-output loss keys in place."""
         self._consolidate(logs)
+
+
+_LOSS_FIELD_WIDTH = 7
+_LOSS_DECIMALS = 4
+_METRIC_FIELD_WIDTH = 6
+_METRIC_DECIMALS = 3
+_MISSING_VALUE_PLACEHOLDER = "--"
+
+
+def _format_scalar(value: float | None, width: int, decimals: int) -> str:
+    """Formats one metric value to a fixed width, or a right-justified placeholder if missing."""
+    if value is None:
+        return f"{_MISSING_VALUE_PLACEHOLDER:>{width}}"
+    return f"{float(value):{width}.{decimals}f}"
+
+
+def _render_progress_line(
+    batch: int | None,
+    steps: int | None,
+    logs: dict,
+    front_types: list[str],
+    include_validation: bool,
+) -> str:
+    """Renders one compact "loss/HSS/CSI" progress line, optionally with validation metrics.
+
+    Args:
+        batch: Current 1-indexed batch number, or None if unknown.
+        steps: Total batches in the epoch, or None if unknown (omits the "batch/steps" segment
+            unless ``batch`` is also given, in which case only ``batch`` is shown).
+        logs: Keras logs dict, already consolidated by ``MetricsConsolidationCallback`` so
+            per-front-type keys are available as ``front/{front_type}/{metric}``.
+        front_types: Front-type keys in display order, from ``constants.FRONT_TYPE_CLASS_INDEX``.
+        include_validation: Whether to append the ``val_loss``/``val_HSS``/``val_CSI`` segments.
+
+    Returns:
+        The rendered line, not yet truncated to the terminal width.
+    """
+    segments = []
+    if steps is not None and batch is not None:
+        width = len(str(steps))
+        segments.append(f"{batch:>{width}}/{steps}")
+    elif batch is not None:
+        segments.append(str(batch))
+    segments.append("loss " + _format_scalar(logs.get("loss"), _LOSS_FIELD_WIDTH, _LOSS_DECIMALS))
+    hss = " ".join(
+        _format_scalar(logs.get(f"front/{ft}/hss"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
+    )
+    segments.append(f"HSS {hss}")
+    csi = " ".join(
+        _format_scalar(logs.get(f"front/{ft}/csi"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
+    )
+    segments.append(f"CSI {csi}")
+    if include_validation:
+        segments.append("val_loss " + _format_scalar(logs.get("val_loss"), _LOSS_FIELD_WIDTH, _LOSS_DECIMALS))
+        val_hss = " ".join(
+            _format_scalar(logs.get(f"front/{ft}/val_hss"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
+        )
+        segments.append(f"val_HSS {val_hss}")
+        val_csi = " ".join(
+            _format_scalar(logs.get(f"front/{ft}/val_csi"), _METRIC_FIELD_WIDTH, _METRIC_DECIMALS) for ft in front_types
+        )
+        segments.append(f"val_CSI {val_csi}")
+    return "  " + "  ".join(segments)
+
+
+def _truncate_to_terminal_width(line: str) -> str:
+    r"""Truncates ``line`` to one column short of the terminal width, so ``\r`` always rewinds it."""
+    width = shutil.get_terminal_size(fallback=(120, 24)).columns - 1
+    return line[:width]
+
+
+class CompactProgressCallback(tf.keras.callbacks.Callback):
+    r"""Prints one terminal-width-bounded progress line per epoch instead of Keras's default.
+
+    Keras's default ``ProgbarLogger`` (``verbose=1``) prints every key in ``logs`` on a single
+    line. With the ~29 per-front-type metric keys this branch adds, that line is far wider than
+    any terminal: it wraps across several visual rows, and Keras's trailing ``\r`` only rewinds
+    the last one, so every update strands the wrapped rows above it and stdout degenerates into
+    an unreadable wall of text.
+
+    This callback instead renders a fixed, deliberately small set of health-check metrics —
+    aggregate ``loss``, and per-front-type ``HSS`` (the soft ``front/{front_type}/hss``) and
+    ``CSI`` (``front/{front_type}/csi``), in ``constants.FRONT_TYPE_CLASS_INDEX`` order — and
+    truncates the rendered line to the terminal width before writing it, so ``\r`` always
+    rewinds the whole line and no new lines are ever spawned. ``hss_hard``, ``pod``, and the
+    per-front-type losses are deliberately omitted: they remain in W&B and metrics_epoch.csv,
+    since stdout here is a health check, not the record.
+
+    On a TTY, a header line naming the front-type column order is printed once per epoch (with
+    a real newline), then one line is rewritten in place via ``\r``, throttled to at most every
+    ``every_n_batches`` batches (plus always the epoch's final batch), and finally overwritten
+    once more at ``on_epoch_end`` with validation metrics included, followed by a real newline
+    so the next epoch's header starts on a fresh line.
+
+    On a non-TTY stdout (e.g. a SLURM log file, where ``\r`` is useless and only bloats the
+    file), no per-batch output is emitted at all — exactly one plain line, including validation
+    metrics, is printed per epoch at ``on_epoch_end``. Whether stdout is a TTY is determined
+    once, at construction, not re-checked per batch.
+
+    Must run after ``MetricsConsolidationCallback`` in the callbacks list passed to
+    ``model.fit`` — it reads ``front/{front_type}/hss`` and ``front/{front_type}/csi``, which
+    only exist in that slash-delimited form after ``MetricsConsolidationCallback`` rewrites the
+    shared ``logs`` dict. See ``train._build_run_callbacks``.
+
+    Attributes:
+        every_n_batches: Update the in-place line at most this often, in batches (plus always
+            the epoch's final batch). Has no effect on a non-TTY stdout, which never updates
+            per batch regardless.
+    """
+
+    def __init__(self, every_n_batches: int) -> None:
+        super().__init__()
+        self.every_n_batches = every_n_batches
+        self._is_tty = sys.stdout.isatty()
+        self._front_types = list(constants.FRONT_TYPE_CLASS_INDEX)
+
+    def _epochs_total(self) -> int | None:
+        return (self.params or {}).get("epochs")
+
+    def _steps_total(self) -> int | None:
+        return (self.params or {}).get("steps")
+
+    def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
+        """Prints the epoch header line naming the front-type column order (TTY only)."""
+        if not self._is_tty:
+            return
+        epochs_total = self._epochs_total()
+        header = (
+            f"Epoch {epoch + 1}/{epochs_total if epochs_total is not None else '?'}"
+            f"  fronts: {' '.join(self._front_types)}"
+        )
+        sys.stdout.write(_truncate_to_terminal_width(header) + "\n")
+        sys.stdout.flush()
+
+    def on_train_batch_end(self, batch: int, logs: dict | None = None) -> None:
+        """Rewrites the in-place progress line in place, throttled to every N batches."""
+        if not self._is_tty:
+            return
+        steps_total = self._steps_total()
+        batch_number = batch + 1
+        is_final_batch = steps_total is not None and batch_number >= steps_total
+        if not is_final_batch and batch_number % self.every_n_batches != 0:
+            return
+        line = _render_progress_line(batch_number, steps_total, logs or {}, self._front_types, False)
+        sys.stdout.write("\r" + _truncate_to_terminal_width(line))
+        sys.stdout.flush()
+
+    def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
+        """Prints the epoch's final line, including validation metrics, then a real newline."""
+        logs = logs or {}
+        steps_total = self._steps_total()
+        line = _render_progress_line(steps_total, steps_total, logs, self._front_types, True)
+        if self._is_tty:
+            sys.stdout.write("\r" + _truncate_to_terminal_width(line) + "\n")
+        else:
+            epochs_total = self._epochs_total()
+            header = f"Epoch {epoch + 1}/{epochs_total if epochs_total is not None else '?'}"
+            sys.stdout.write(_truncate_to_terminal_width(header + line) + "\n")
+        sys.stdout.flush()
 
 
 class GcCallback(tf.keras.callbacks.Callback):
