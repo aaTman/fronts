@@ -469,6 +469,22 @@ class TestFrontsPyDataset:
             matches = [s for s in range(N_TIME - n + 1) if np.allclose(x_batch, expected[s : s + n])]
             assert matches, f"batch {i} is not a contiguous run of original timesteps"
 
+    def test_shuffle_covers_every_timestep_exactly_once_across_seeds(self, era5_ds, front_da, data_config):
+        """Regression test: __getitem__ must resolve each batch's samples from
+        ``self._order[start:stop]``, not ``self._order[idx] * batch_size``.
+
+        The latter reduces to the correct batch only when ``self._order`` happens to be
+        the identity permutation; for any other block permutation it silently produces
+        undersized or entirely empty batches, dropping most of the epoch's data. Checked
+        across many seeds since the failure is seed-dependent.
+        """
+        batch_size = 2
+        for seed in range(20):
+            ds = self._make_ds(era5_ds, front_da, data_config, batch_size=batch_size, shuffle=True, seed=seed)
+            batch_sizes = [ds[i][0].shape[0] for i in range(len(ds))]
+            assert all(n > 0 for n in batch_sizes), f"seed {seed}: empty batch in {batch_sizes}"
+            assert sum(batch_sizes) == N_TIME, f"seed {seed}: batch sizes {batch_sizes} do not sum to {N_TIME}"
+
     def test_drop_remainder_drops_undersized_final_batch(self, era5_ds, front_da, data_config):
         """N_TIME=5 with batch_size=2 has a 1-sample remainder batch that must be dropped.
 
@@ -730,6 +746,27 @@ class TestFrontsPyDatasetPatchModeShuffleBlocks:
                 start = starts[p]
                 expected = ds.input_ds["temperature"].isel(time=t).values[:, start : start + 4]
                 np.testing.assert_allclose(row[..., 0], expected)
+
+    def test_dunder_getitem_matches_get_at_indices_across_seeds(self):
+        """Regression test: ``ds[i]`` (what Keras's training loop actually calls) must
+        resolve the same samples as ``ds.get_at_indices(ds._order[i*batch_size:...])``.
+
+        ``__getitem__`` previously passed a raw ``slice`` object straight into patch mode's
+        ``get_at_indices``, which crashes (``TypeError`` on ``slice // int``) the moment a
+        real training loop calls ``ds[i]``, since only ``ds.get_at_indices`` with a concrete
+        index array was ever exercised directly in tests. Checked across many seeds since
+        the pre-fix bug in the non-patch-mode branch (see TestFrontsPyDataset's analogous
+        regression test) was also seed-dependent.
+        """
+        n_time, n_patches, batch_size = 12, 3, 6
+        for seed in range(10):
+            ds = self._make_ds(n_time=n_time, n_patches=n_patches, batch_size=batch_size, seed=seed)
+            for i in range(len(ds)):
+                local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+                expected_x, expected_y = ds.get_at_indices(local_idxs)
+                x_batch, y_batch = ds[i]
+                np.testing.assert_allclose(x_batch, expected_x)
+                np.testing.assert_allclose(y_batch, expected_y)
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

@@ -393,11 +393,19 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) batch at ``idx``, as a single contiguous read."""
-        block_idx = self._order[idx]
-        start = block_idx * self.batch_size
+        start = idx * self.batch_size
         stop = min(start + self.batch_size, self._total)
+        idxs = self._order[start:stop]
         t0 = time.time()
-        result = self.get_at_indices(slice(start, stop))
+        if self.data_config.patch_config is not None:
+            # Patch mode needs the concrete sample indices themselves (not just the time
+            # range they span) to recover each sample's own patch position.
+            result = self.get_at_indices(idxs)
+        else:
+            # idxs is a contiguous ascending run of integers by construction (_build_order
+            # aligns batch boundaries on block boundaries), so a plain slice is equivalent
+            # here and keeps the underlying store read a single contiguous take.
+            result = self.get_at_indices(slice(int(idxs[0]), int(idxs[-1]) + 1))
         elapsed = time.time() - t0
         if elapsed > 30:
             logger.warning(f"Slow batch {idx}: {elapsed:.1f}s")
