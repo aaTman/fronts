@@ -49,6 +49,10 @@ class DatasetConfig:
         volume_inputs: If True, batches keep the vertical structure as a separate axis —
             shape (batch, latitude, longitude, level, variable) for a 3D Conv3D model —
             instead of flattening level and variable into one channel axis for a 2D model.
+        pressure_levels: Pressure levels (hPa) to select from the icechunk store's
+            ``level`` dimension. None keeps every level already present in the store.
+            Must be a subset of the levels the store was generated with (see
+            ``fronts.data.generate.ERA5DataLoaderConfig.pressure_levels``).
     """
 
     inputs_icechunk_config: utils.IcechunkStorageConfig
@@ -66,6 +70,7 @@ class DatasetConfig:
     max_pydataset_workers: int = 16
     coordinates: utils.BoundingBox | None = None
     volume_inputs: bool = False
+    pressure_levels: list[int] | None = None
 
 
 class FrontsPyDataset(tf.keras.utils.PyDataset):
@@ -83,11 +88,20 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
     ``SharedTargetModel`` (see ``fronts.model``) is responsible for broadcasting it
     across any deep-supervision outputs, not the dataset.
 
+    Shuffling reorders whole batches, not individual timesteps: each batch stays a
+    contiguous run of ``batch_size`` original timesteps, and only the order in which
+    batches are visited is randomized per epoch. Both icechunk stores backing this
+    dataset chunk at 1 timestep, so a fully random per-sample shuffle turns every batch
+    read into ``batch_size`` scattered single-chunk fetches — measured at 10-30x slower
+    than a sequential read covering the same timesteps (see
+    ``scripts/diagnose_read_throughput.py``). Batch-level shuffling keeps every read a
+    single contiguous slice while still randomizing batch order across epochs.
+
     Attributes:
         input_ds: This split's input Dataset, shape (time, latitude, longitude) per variable.
         target_da: This split's raw integer front-code DataArray, shape (time, latitude, longitude).
         batch_size: Number of timesteps per batch.
-        shuffle: If True, reshuffles the sample order at the end of every epoch.
+        shuffle: If True, reshuffles the batch visitation order at the end of every epoch.
         drop_remainder: If True, drop the final under-sized batch instead of yielding it,
             so every batch has exactly ``batch_size`` samples. A trailing batch smaller
             than ``batch_size`` splits unevenly across replicas under
@@ -120,7 +134,7 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         self.shuffle = shuffle
         self.drop_remainder = drop_remainder
         self._rng = np.random.default_rng(seed)
-        self._order = self._rng.permutation(self._total) if shuffle else np.arange(self._total)
+        self._order = self._rng.permutation(len(self)) if shuffle else np.arange(len(self))
 
     @property
     def _total(self) -> int:
@@ -138,15 +152,15 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         return math.ceil(self._total / self.batch_size)
 
     def on_epoch_end(self) -> None:
-        """Reshuffles the sample order for the next epoch, if shuffling is enabled."""
+        """Reshuffles the batch visitation order for the next epoch, if shuffling is enabled."""
         if self.shuffle:
-            self._order = self._rng.permutation(self._total)
+            self._order = self._rng.permutation(len(self))
 
-    def get_at_indices(self, idxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def get_at_indices(self, idxs: np.ndarray | slice) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) arrays at arbitrary global time indices.
 
-        Unlike ``__getitem__``, ``idxs`` need not be batch-sized or in ``_order``'s
-        epoch sequence — used by callers that need specific timesteps directly (e.g. a
+        Unlike ``__getitem__``, ``idxs`` need not be a contiguous slice or in ``_order``'s
+        shuffled batch sequence — used by callers that need specific timesteps directly (e.g. a
         test-set visualization callback selecting one active day or a random subsample).
         """
         x_xarray = self.input_ds.isel(time=idxs)
@@ -171,10 +185,12 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         return x, y
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the (input, target) batch at ``idx``."""
-        local_idxs = self._order[idx * self.batch_size : (idx + 1) * self.batch_size]
+        """Returns the (input, target) batch at ``idx``, as a single contiguous read."""
+        block_idx = self._order[idx]
+        start = block_idx * self.batch_size
+        stop = min(start + self.batch_size, self._total)
         t0 = time.time()
-        result = self.get_at_indices(local_idxs)
+        result = self.get_at_indices(slice(start, stop))
         elapsed = time.time() - t0
         if elapsed > 30:
             logger.warning(f"Slow batch {idx}: {elapsed:.1f}s")

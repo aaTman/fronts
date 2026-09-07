@@ -5,7 +5,6 @@ import datetime
 import math
 import os
 import subprocess
-from collections import namedtuple
 from string import Template
 from typing import Any, TypeVar
 
@@ -19,9 +18,13 @@ import zarr
 from xarray.core.indexes import IndexSelResult, PandasIndex, _query_slice
 from xarray.core.indexing import _expand_slice
 
+# Deliberate compatibility re-export: BoundingBox lives in fronts.constants (so
+# fronts.layers.metrics can use it without pulling in this module's icechunk/xarray/pandas
+# imports), but utils.BoundingBox is referenced widely as a type annotation.
+from fronts.constants import BoundingBox
+
 T = TypeVar("T")
 _XArray = TypeVar("_XArray", xr.Dataset, xr.DataArray)
-BoundingBox = namedtuple("BoundingBox", ["lat_min", "lat_max", "lon_min", "lon_max"])
 
 
 @dataclasses.dataclass
@@ -174,6 +177,23 @@ def select_spatial_domain(data: _XArray, bb: BoundingBox) -> _XArray:
     if not isinstance(data.xindexes.get("longitude"), PeriodicBoundaryIndex):
         data = attach_periodic_lon_index(data)
     return data.sel(latitude=lat_slice, longitude=slice(bb.lon_min, bb.lon_max))
+
+
+def select_pressure_levels(data: _XArray, levels: list[int] | None) -> _XArray:
+    """Select a subset of pressure levels from a Dataset or DataArray.
+
+    Args:
+        data: Dataset or DataArray with a ``level`` coordinate.
+        levels: Pressure levels (hPa) to keep, or None to keep every level
+            already present (a no-op).
+
+    Returns:
+        ``data`` restricted to ``levels`` via ``.sel(level=levels)``, or ``data``
+        unchanged if ``levels`` is None.
+    """
+    if levels is None:
+        return data
+    return data.sel(level=levels)
 
 
 def unwrap_longitude(data: _XArray) -> _XArray:

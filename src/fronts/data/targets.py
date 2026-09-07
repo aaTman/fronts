@@ -1,28 +1,7 @@
 import numpy as np
 import xarray as xr
 
-# Original front codes → experiment class indices.
-# 0 = no front (background), 1-4 kept as-is, forming (5-8) and dissipating (9-12) variants
-# collapse into their parent front class, 14=TROF -> 6, 15=TT -> 7, 16=DL -> 5, INST (13) is
-# its own class -> 8. All other codes map to 0.
-FRONT_CLASS_MAP = {
-    1: 1,
-    2: 2,
-    3: 3,
-    4: 4,
-    5: 1,
-    6: 2,
-    7: 3,
-    8: 4,
-    9: 1,
-    10: 2,
-    11: 3,
-    12: 4,
-    13: 8,
-    14: 6,
-    15: 7,
-    16: 5,
-}
+from fronts import constants
 
 
 def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.ndarray:
@@ -34,7 +13,7 @@ def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.nd
 
     Args:
         fronts_da: Raw identifier DataArray of shape (time, latitude, longitude) with
-            original front codes (see ``FRONT_CLASS_MAP``).
+            original front codes (see ``constants.FRONT_CLASS_MAP``).
         rng: Seeded generator used for the 50% draws.
 
     Returns:
@@ -44,7 +23,7 @@ def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.nd
     # are materialised rather than the full spatial array. Group raw codes by target class
     # so e.g. a forming OR dissipating cold front both count toward "cold front present".
     codes_by_class: dict[int, list[int]] = {}
-    for code, cls in FRONT_CLASS_MAP.items():
+    for code, cls in constants.FRONT_CLASS_MAP.items():
         codes_by_class.setdefault(cls, []).append(code)
     presence = xr.concat(
         [
@@ -73,7 +52,7 @@ def remap_fronts(da: xr.DataArray) -> xr.DataArray:
         Lazy int32 DataArray of the same shape as ``da``.
     """
     remapped = xr.full_like(da, 0, dtype=np.int32)
-    for orig, new in FRONT_CLASS_MAP.items():
+    for orig, new in constants.FRONT_CLASS_MAP.items():
         remapped = xr.where(da == orig, new, remapped)
     return remapped
 

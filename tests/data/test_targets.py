@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fronts.data.targets import FRONT_CLASS_MAP, dilate_fronts, one_hot_encode_to_dataarray, remap_fronts
+from fronts.constants import FRONT_CLASS_MAP
+from fronts.data.targets import dilate_fronts, one_hot_encode_to_dataarray, remap_fronts
 
 N_TIME = 5
 N_LAT = 80

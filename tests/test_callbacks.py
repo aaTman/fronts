@@ -1,28 +1,18 @@
 """Tests for fronts.callbacks: W&B metric consolidation and test-set visualization helpers."""
 
+import math
+import os
 import subprocess
 import sys
+from typing import ClassVar
 
 import numpy as np
 import pytest
 import xarray as xr
 
+from fronts import constants
+
 fc = pytest.importorskip("fronts.callbacks")
-
-
-class TestFrontTypeClassIndex:
-    def test_matches_full_nine_class_mapping(self):
-        assert list(fc.FRONT_TYPE_CLASS_INDEX) == ["CF", "WF", "SF", "OF", "DL", "TROF", "TT", "INST"]
-        assert fc.FRONT_TYPE_CLASS_INDEX == {
-            "CF": 1,
-            "WF": 2,
-            "SF": 3,
-            "OF": 4,
-            "DL": 5,
-            "TROF": 6,
-            "TT": 7,
-            "INST": 8,
-        }
 
 
 class TestMetricsConsolidationCallback:
@@ -75,6 +65,484 @@ class TestMetricsConsolidationCallback:
     def test_noop_on_none_logs(self):
         # Should not raise even though Keras can call on_epoch_end with logs=None.
         fc.MetricsConsolidationCallback().on_epoch_end(0, None)
+
+
+class TestMetricsConsolidationCallbackFrontTypeRenaming:
+    """Covers the post-consolidation rename step that groups per-front-type W&B keys."""
+
+    @pytest.mark.parametrize(
+        ("raw_key", "renamed_key"),
+        [
+            ("sup1_softmax_hss_CF", "front/CF/hss"),
+            ("sup1_softmax_hss_hard_CF", "front/CF/hss_hard"),
+            ("sup1_softmax_csi_DL", "front/DL/csi"),
+            ("sup1_softmax_pod_OF", "front/OF/pod"),
+            ("sup1_softmax_loss_CF", "front/CF/loss"),
+            ("sup1_softmax_loss_none", "front/none/loss"),
+            ("val_sup1_softmax_hss_CF", "front/CF/val_hss"),
+            ("val_sup1_softmax_loss_none", "front/none/val_loss"),
+        ],
+    )
+    def test_renames_per_front_type_keys(self, raw_key, renamed_key):
+        logs = {raw_key: 0.42}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {renamed_key: pytest.approx(0.42)}
+
+    @pytest.mark.parametrize("key", ["hss", "hss_hard", "loss", "val_loss", "val_hss"])
+    def test_aggregate_keys_are_left_alone(self, key):
+        logs = {key: 0.5}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {key: pytest.approx(0.5)}
+
+    def test_key_containing_but_not_ending_with_front_type_token_is_untouched(self):
+        """A key containing a front-type token without ending in one must not be renamed."""
+        logs = {"CF_hss": 0.5}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {"CF_hss": pytest.approx(0.5)}
+
+    def test_per_front_type_key_on_only_sup1_survives_with_value_intact(self):
+        logs = {"sup1_softmax_hss_CF": 0.75}
+        fc.MetricsConsolidationCallback().on_epoch_end(0, logs)
+        assert logs == {"front/CF/hss": pytest.approx(0.75)}
+
+
+class TestCompactProgressCallback:
+    """Covers the terminal-width-bounded stdout progress display added to replace verbose=1."""
+
+    _FRONT_TYPES: ClassVar[list[str]] = list(constants.FRONT_TYPE_CLASS_INDEX)
+    # Columns a full epoch-summary row occupies with the current front-type count. Measured from
+    # the renderer itself rather than fixed at a literal, so the width the display is designed
+    # around follows constants.FRONT_TYPE_CLASS_INDEX instead of silently going stale when a
+    # front type is added.
+    _EPOCH_ROW_WIDTH: ClassVar[int] = len(
+        fc._epoch_summary_row(
+            "HSS",
+            [0.0] * len(_FRONT_TYPES),
+            [0.0] * len(_FRONT_TYPES),
+            fc._METRIC_FIELD_WIDTH,
+            fc._METRIC_DECIMALS,
+        )
+    )
+
+    def _descending_values(self, start: float, step: float) -> list[float]:
+        """One value per front type, stepping down from ``start`` — distinct values per column."""
+        return [round(start - step * i, 3) for i in range(len(self._FRONT_TYPES))]
+
+    def _make(self, monkeypatch, is_tty, every_n_batches=10, terminal_width=120, steps=450, epochs=5000):
+        monkeypatch.setattr(fc.sys.stdout, "isatty", lambda: is_tty)
+        monkeypatch.setattr(
+            fc.shutil, "get_terminal_size", lambda fallback=None: os.terminal_size((terminal_width, 24))
+        )
+        callback = fc.CompactProgressCallback(every_n_batches=every_n_batches)
+        callback.set_params({"steps": steps, "epochs": epochs})
+        return callback
+
+    def _logs(self, value_fn, with_validation=False):
+        logs = {"loss": value_fn(0)}
+        for i, front_type in enumerate(self._FRONT_TYPES, start=1):
+            logs[f"front/{front_type}/hss"] = value_fn(i)
+            logs[f"front/{front_type}/csi"] = value_fn(i + len(self._FRONT_TYPES))
+        if with_validation:
+            logs["val_loss"] = value_fn(11)
+            for i, front_type in enumerate(self._FRONT_TYPES, start=1):
+                logs[f"front/{front_type}/val_hss"] = value_fn(i + 12)
+                logs[f"front/{front_type}/val_csi"] = value_fn(i + 17)
+        return logs
+
+    def _epoch_end_logs(self, hss, csi, val_hss, val_csi, loss=0.0123, val_loss=0.0141):
+        logs = {"loss": loss, "val_loss": val_loss}
+        for front_type, h, c, vh, vc in zip(self._FRONT_TYPES, hss, csi, val_hss, val_csi, strict=True):
+            logs[f"front/{front_type}/hss"] = h
+            logs[f"front/{front_type}/csi"] = c
+            logs[f"front/{front_type}/val_hss"] = vh
+            logs[f"front/{front_type}/val_csi"] = vc
+        return logs
+
+    def test_default_batch_row_fits_comfortably_in_80_columns(self, monkeypatch, capsys):
+        """The per-batch row (loss + HSS only) is short by construction; sanity-check it fits."""
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=1, terminal_width=80, steps=450)
+        hss_values = self._descending_values(0.412, 0.04)
+        logs = {"loss": 0.0123}
+        for front_type, hss in zip(self._FRONT_TYPES, hss_values, strict=True):
+            logs[f"front/{front_type}/hss"] = hss
+        callback.on_train_batch_end(311, logs)  # batch_number 312
+        row = capsys.readouterr().out.lstrip("\r")
+        assert len(row) < 79, "the 80-column safety net truncated a row that should fit by design"
+        for value in hss_values:
+            assert f"{value:.3f}".lstrip("0") in row
+
+    def test_all_negative_hss_and_csi_fit_the_designed_row_width_at_epoch_end(self, monkeypatch, capsys):
+        """The critical regression guard: sign must not widen a row past what positive values need.
+
+        Fix round 1 made the row fit its width budget for positive values only; every field there
+        dropped its leading zero but reserved no column for a sign, so two or more negative
+        values pushed the row past the budget and the safety net silently ate the tail (the
+        exact bug fix round 2 addresses). Here every one of the HSS/CSI values, train and val
+        alike, is negative — the worst case for row width — and must still render in full.
+        """
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=self._EPOCH_ROW_WIDTH + 1)
+        hss = self._descending_values(-0.412, -0.04)
+        csi = self._descending_values(-0.310, -0.03)
+        val_hss = self._descending_values(-0.400, -0.035)
+        val_csi = self._descending_values(-0.300, -0.03)
+        logs = self._epoch_end_logs(hss, csi, val_hss, val_csi, loss=-0.0123, val_loss=-0.0141)
+        callback.on_epoch_end(0, logs)
+        out = capsys.readouterr().out
+        lines = [line for line in out.splitlines() if line]
+        assert len(lines) == 3
+        for line in lines:
+            assert len(line) <= self._EPOCH_ROW_WIDTH, f"line exceeds the row-width budget: {line!r}"
+        hss_line = next(line for line in lines if line.startswith("HSS"))
+        csi_line = next(line for line in lines if line.startswith("CSI"))
+        for value in hss + val_hss:
+            expected = f"{value:.3f}".lstrip("-").lstrip("0")
+            assert f"-{expected}" in hss_line, f"HSS value {value} missing from: {hss_line!r}"
+        for value in csi + val_csi:
+            expected = f"{value:.3f}".lstrip("-").lstrip("0")
+            assert f"-{expected}" in csi_line, f"CSI value {value} missing from: {csi_line!r}"
+
+    def test_mixed_sign_rows_are_identical_width_to_all_positive_rows(self, monkeypatch, capsys):
+        """Column alignment must not depend on sign: a negative value cannot shift later columns."""
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        pos_hss = self._descending_values(0.412, 0.04)
+        pos_csi = self._descending_values(0.310, 0.03)
+        mixed_hss = [value if i % 2 else -value for i, value in enumerate(pos_hss)]
+        mixed_csi = [-value if i % 2 else value for i, value in enumerate(pos_csi)]
+
+        callback.on_epoch_end(0, self._epoch_end_logs(pos_hss, pos_csi, pos_hss, pos_csi))
+        positive_lines = [line for line in capsys.readouterr().out.splitlines() if line]
+
+        callback.on_epoch_end(1, self._epoch_end_logs(mixed_hss, mixed_csi, mixed_hss, mixed_csi))
+        mixed_lines = [line for line in capsys.readouterr().out.splitlines() if line]
+
+        assert len(positive_lines) == len(mixed_lines) == 3
+        for positive_line, mixed_line in zip(positive_lines, mixed_lines, strict=True):
+            assert len(positive_line) == len(mixed_line), f"sign changed row width: {positive_line!r} vs {mixed_line!r}"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (1.0, "1.000"),
+            (0.0, " .000"),
+            (-0.0, " .000"),
+            (math.nan, "  nan"),
+            (math.inf, "  inf"),
+            (-math.inf, " -inf"),
+        ],
+    )
+    def test_edge_case_values_format_without_crash_or_misreported_sign(self, value, expected):
+        rendered = fc._format_value(value, fc._METRIC_FIELD_WIDTH, fc._METRIC_DECIMALS)
+        assert rendered == expected
+        assert len(rendered) == fc._METRIC_FIELD_WIDTH, "edge-case value did not get a stable width"
+
+    def test_epoch_end_with_nan_and_inf_values_does_not_raise(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        hss = [math.nan, math.inf, -math.inf, 0.0, -0.0, *self._descending_values(0.412, 0.04)[5:]]
+        csi = self._descending_values(0.310, 0.03)
+        logs = self._epoch_end_logs(hss, csi, hss, csi, loss=math.nan, val_loss=math.inf)
+        callback.on_epoch_end(0, logs)  # must not raise
+        out = capsys.readouterr().out
+        assert "nan" in out
+        assert "inf" in out
+
+    def test_every_n_batches_zero_raises(self):
+        with pytest.raises(ValueError, match="positive"):
+            fc.CompactProgressCallback(every_n_batches=0)
+
+    def test_every_n_batches_negative_raises(self):
+        with pytest.raises(ValueError, match="positive"):
+            fc.CompactProgressCallback(every_n_batches=-3)
+
+    def test_shorter_inplace_write_pads_to_blot_out_longer_previous_write(self, monkeypatch, capsys):
+        r"""Covers the residue bug: a bare `\r` moves the cursor but does not clear the line.
+
+        A shorter write must be padded to at least the previous write's length, or that write's
+        tail would remain visible, looking like corrupted digits.
+        """
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=1, terminal_width=200, steps=450)
+        hss_values = self._descending_values(0.412, 0.04)
+        long_logs = {"loss": 12.3456}  # loss overflows its reserved width, making this row longer.
+        short_logs = {"loss": 0.0123}
+        for front_type, hss in zip(self._FRONT_TYPES, hss_values, strict=True):
+            long_logs[f"front/{front_type}/hss"] = hss
+            short_logs[f"front/{front_type}/hss"] = hss
+
+        callback.on_train_batch_end(0, long_logs)
+        first_write = capsys.readouterr().out
+        assert first_write.startswith("\r")
+        first_content = first_write[1:]
+
+        callback.on_train_batch_end(1, short_logs)
+        second_write = capsys.readouterr().out
+        assert second_write.startswith("\r")
+        second_content = second_write[1:]
+
+        assert len(second_content) == len(first_content), (
+            "the second (shorter) write was not padded to blot out the first (longer) write"
+        )
+        assert second_content.startswith(fc._batch_label(2, 450))  # batch index 1 -> batch number 2
+        assert ".0123" in second_content
+        assert "12.3456" not in second_content  # no residue from the first write's loss value.
+
+    def test_epoch_end_loss_row_pads_over_longer_batch_row_residue(self, monkeypatch, capsys):
+        """The guaranteed-every-epoch case: the epoch-end loss row is shorter than the batch row.
+
+        The batch row it overwrites has an HSS block the loss row lacks, so the loss row must be
+        padded or the batch row's HSS values would trail behind it on screen.
+        """
+        callback = self._make(
+            monkeypatch, is_tty=True, every_n_batches=1, terminal_width=self._EPOCH_ROW_WIDTH + 1, steps=450
+        )
+        hss_values = self._descending_values(0.412, 0.04)
+        csi_values = self._descending_values(0.310, 0.03)
+        val_hss_values = self._descending_values(0.400, 0.035)
+        val_csi_values = self._descending_values(0.300, 0.03)
+        batch_logs = {"loss": 0.0123}
+        for front_type, hss in zip(self._FRONT_TYPES, hss_values, strict=True):
+            batch_logs[f"front/{front_type}/hss"] = hss
+
+        callback.on_train_batch_end(309, batch_logs)  # batch_number 310
+        batch_write = capsys.readouterr().out
+        assert batch_write.startswith("\r")
+        batch_content = batch_write[1:]
+        assert ".412" in batch_content  # sanity: the batch row does carry HSS values.
+
+        epoch_logs = self._epoch_end_logs(hss_values, csi_values, val_hss_values, val_csi_values)
+        callback.on_epoch_end(0, epoch_logs)
+        epoch_write = capsys.readouterr().out
+        first_line, _, _rest = epoch_write.partition("\n")
+        assert first_line.startswith("\r")
+        first_line_content = first_line[1:]
+
+        unpadded_loss_row = fc._epoch_summary_row("loss", [0.0123], [0.0141], fc._LOSS_FIELD_WIDTH, fc._LOSS_DECIMALS)
+        assert first_line_content.startswith(unpadded_loss_row)
+        padding = first_line_content[len(unpadded_loss_row) :]
+        assert padding == " " * len(padding), f"non-space residue after the loss row: {padding!r}"
+        assert len(first_line_content) >= len(batch_content), (
+            "epoch-end loss row is shorter than the last batch row and would leave residue"
+        )
+        assert ".412" not in first_line_content  # the batch row's HSS block must not survive.
+
+    def test_narrow_terminal_safety_net_still_truncates_when_needed(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=40)
+        logs = self._logs(lambda i: 12345.6789 + i)
+        callback.on_epoch_begin(2, None)
+        callback.on_train_batch_end(449, logs)  # final batch (steps=450) -> always updates
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            assert len(line) <= 39
+
+    def test_tty_batch_update_emits_carriage_return_and_no_newline(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True)
+        logs = self._logs(lambda i: 0.01 * i)
+        callback.on_train_batch_end(9, logs)  # batch_number 10 -> throttle boundary, fires
+        out = capsys.readouterr().out
+        assert out.startswith("\r")
+        assert "\n" not in out
+
+    def test_batch_update_shows_current_batch_number_not_final(self, monkeypatch, capsys):
+        """Regression test for the coordinator's "showed 450/450 instead of 312/450" concern."""
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=1, steps=450, terminal_width=200)
+        logs = self._logs(lambda i: 0.01 * i)
+        callback.on_train_batch_end(311, logs)  # batch index 311 -> displayed batch number 312
+        out = capsys.readouterr().out
+        assert "312/450" in out
+        assert "450/450" not in out
+
+    def test_non_tty_emits_no_per_batch_output(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=False)
+        logs = self._logs(lambda i: 0.01 * i)
+        for batch in range(25):
+            callback.on_train_batch_end(batch, logs)
+        assert capsys.readouterr().out == ""
+
+    def test_throttling_fires_expected_number_of_updates_plus_final(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=10, steps=25)
+        logs = self._logs(lambda i: 0.01 * i)
+        for batch in range(25):
+            callback.on_train_batch_end(batch, logs)
+        out = capsys.readouterr().out
+        # Batches 10 and 20 hit the throttle boundary; batch 25 is the epoch's final batch.
+        assert out.count("\r") == 3
+
+    def test_header_names_front_types_in_constants_order(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        callback.on_epoch_begin(2, None)
+        out = capsys.readouterr().out
+        assert out == f"Epoch 3/5000  fronts: {' '.join(self._FRONT_TYPES)}\n"
+
+    def test_header_is_printed_on_non_tty_too(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=False, terminal_width=200)
+        callback.on_epoch_begin(2, None)
+        out = capsys.readouterr().out
+        assert f"fronts: {' '.join(self._FRONT_TYPES)}" in out
+
+    def test_front_type_values_appear_in_constants_order_within_batch_row(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200, steps=25)
+        values = [0.01 * (i + 1) for i in range(len(self._FRONT_TYPES))]
+        logs = {"loss": 0.5}
+        for front_type, value in zip(self._FRONT_TYPES, values, strict=True):
+            logs[f"front/{front_type}/hss"] = value
+        callback.on_train_batch_end(24, logs)  # final batch -> always updates
+        out = capsys.readouterr().out
+        expected_hss = " ".join(fc._format_value(v, fc._METRIC_FIELD_WIDTH, fc._METRIC_DECIMALS) for v in values)
+        assert expected_hss in out
+
+    def test_missing_keys_degrade_gracefully_instead_of_raising(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200, steps=25)
+        callback.on_train_batch_end(24, {})  # no metrics present at all; must not raise
+        out = capsys.readouterr().out
+        assert "--" in out
+
+    def test_missing_keys_on_epoch_end_do_not_raise(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        callback.on_epoch_end(0, {})
+        out = capsys.readouterr().out
+        assert "--" in out
+
+    def test_epoch_end_prints_three_metric_rows_with_train_and_val_side_by_side(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        logs = self._logs(lambda i: 0.01 * i, with_validation=True)
+        callback.on_epoch_end(2, logs)
+        out = capsys.readouterr().out
+        lines = [line for line in out.splitlines() if line]
+        assert len(lines) == 3
+        assert lines[0].lstrip("\r").startswith("loss")
+        assert lines[1].startswith("HSS")
+        assert lines[2].startswith("CSI")
+        for line in lines:
+            assert "| val" in line
+
+    def test_epoch_end_val_values_are_not_truncated_away(self, monkeypatch, capsys):
+        """The core bug fix: at epoch end, every validation value must survive in full."""
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=self._EPOCH_ROW_WIDTH + 1)
+        hss = self._descending_values(0.412, 0.04)
+        csi = self._descending_values(0.310, 0.03)
+        val_hss = self._descending_values(0.400, 0.035)
+        val_csi = self._descending_values(0.300, 0.03)
+        logs = self._epoch_end_logs(hss, csi, val_hss, val_csi)
+        callback.on_epoch_end(0, logs)
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        loss_line = next(line for line in lines if line.startswith("loss"))
+        hss_line = next(line for line in lines if line.startswith("HSS"))
+        csi_line = next(line for line in lines if line.startswith("CSI"))
+        assert ".0141" in loss_line
+        for value in val_hss:
+            assert f"{value:.3f}".lstrip("0") in hss_line, f"val HSS {value} missing from: {hss_line!r}"
+        for value in val_csi:
+            assert f"{value:.3f}".lstrip("0") in csi_line, f"val CSI {value} missing from: {csi_line!r}"
+
+    def test_non_tty_epoch_end_also_prints_three_rows_with_val_values(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=False, terminal_width=self._EPOCH_ROW_WIDTH + 1)
+        logs = self._logs(lambda i: 0.01 * i, with_validation=True)
+        callback.on_epoch_end(2, logs)
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        assert len(lines) == 3
+        assert "\r" not in out
+        assert all("| val" in line for line in lines)
+
+    def test_metric_rows_share_label_width_so_columns_align(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, terminal_width=200)
+        logs = self._logs(lambda i: 0.01 * i, with_validation=True)
+        callback.on_epoch_end(0, logs)
+        out = capsys.readouterr().out
+        lines = [line for line in out.splitlines() if line]
+        first_value_columns = {line.index(".") for line in lines}
+        assert len(first_value_columns) == 1, f"metric rows are not column-aligned: {lines!r}"
+
+    def test_epoch_end_writes_real_newlines_so_next_epoch_starts_fresh(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True)
+        logs = self._logs(lambda i: 0.01 * i, with_validation=True)
+        callback.on_epoch_end(0, logs)
+        out = capsys.readouterr().out
+        assert out.endswith("\n")
+        assert out.count("\n") == 3
+
+    def test_single_space_separators_and_no_leading_zero_in_representative_batch_row(self, monkeypatch, capsys):
+        callback = self._make(monkeypatch, is_tty=True, every_n_batches=1, terminal_width=200, steps=450)
+        hss_values = self._descending_values(0.412, 0.04)
+        logs = {"loss": 0.0123}
+        for front_type, hss in zip(self._FRONT_TYPES, hss_values, strict=True):
+            logs[f"front/{front_type}/hss"] = hss
+        callback.on_train_batch_end(311, logs)
+        out = capsys.readouterr().out
+        expected_hss = " ".join(f"{value:.3f}".lstrip("0").rjust(fc._METRIC_FIELD_WIDTH) for value in hss_values)
+        assert f"312/450 loss  .0123 HSS {expected_hss}" in out
+
+
+class TestBuildDatasetShapeSummary:
+    def test_builds_shape_and_date_range(self):
+        times = np.array(["2020-01-01", "2020-01-02", "2020-01-03"], dtype="datetime64[D]")
+        summary = fc.build_dataset_shape_summary(
+            split="train", input_shape=(3, 4, 5, 2), target_shape=(3, 4, 5), times=times
+        )
+        assert summary.split == "train"
+        assert summary.input_shape == (3, 4, 5, 2)
+        assert summary.target_shape == (3, 4, 5)
+        assert summary.date_min == "2020-01-01"
+        assert summary.date_max == "2020-01-03"
+
+    def test_out_of_order_times_still_yield_true_min_max(self):
+        times = np.array(["2020-03-01", "2020-01-05", "2020-02-10"], dtype="datetime64[D]")
+        summary = fc.build_dataset_shape_summary(
+            split="val", input_shape=(3, 2, 2), target_shape=(3, 2, 2), times=times
+        )
+        assert summary.date_min == "2020-01-05"
+        assert summary.date_max == "2020-03-01"
+
+    def test_empty_times_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            fc.build_dataset_shape_summary(
+                split="test", input_shape=(0, 2, 2), target_shape=(0, 2, 2), times=np.array([], dtype="datetime64[D]")
+            )
+
+
+class TestDatasetSummaryCallback:
+    def _make_summaries(self) -> list["fc.DatasetShapeSummary"]:
+        return [
+            fc.DatasetShapeSummary(
+                split="train",
+                input_shape=(10, 4, 5, 2),
+                target_shape=(10, 4, 5),
+                date_min="2020-01-01",
+                date_max="2020-06-01",
+            ),
+            fc.DatasetShapeSummary(
+                split="val",
+                input_shape=(2, 4, 5, 2),
+                target_shape=(2, 4, 5),
+                date_min="2020-06-02",
+                date_max="2020-07-01",
+            ),
+        ]
+
+    def test_logs_every_split(self, caplog):
+        cb = fc.DatasetSummaryCallback(self._make_summaries())
+        with caplog.at_level("INFO", logger="fronts.callbacks"):
+            cb.on_train_begin()
+        assert "train split" in caplog.text
+        assert "val split" in caplog.text
+        assert "2020-01-01" in caplog.text
+        assert "2020-07-01" in caplog.text
+
+    def test_updates_wandb_summary_when_run_active(self, monkeypatch):
+        summary_updates = {}
+        fake_run = type("FakeRun", (), {"summary": type("FakeSummary", (), {"update": summary_updates.update})()})()
+        monkeypatch.setattr(fc.wandb, "run", fake_run)
+
+        cb = fc.DatasetSummaryCallback(self._make_summaries())
+        cb.on_train_begin()
+
+        assert summary_updates["data/train"]["input_shape"] == [10, 4, 5, 2]
+        assert summary_updates["data/train"]["date_min"] == "2020-01-01"
+        assert summary_updates["data/val"]["date_max"] == "2020-07-01"
+
+    def test_no_wandb_call_when_no_run_active(self, monkeypatch):
+        monkeypatch.setattr(fc.wandb, "run", None)
+        cb = fc.DatasetSummaryCallback(self._make_summaries())
+        cb.on_train_begin()  # Must not raise even with no active run.
 
 
 class TestSelectActiveTestTimestep:
@@ -244,7 +712,7 @@ result = cb._predict(cb.subsample_x)
 assert result.shape[0] == n_samples, f"expected {n_samples} rows, got {result.shape[0]}"
 print("OK")
 """
-        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=False)
         assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         assert "OK" in proc.stdout
 
