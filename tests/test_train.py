@@ -36,6 +36,7 @@ try:
         _pred_buffer_px_from_data_config,
         _should_build_test_visualization,
         _target_latitudes,
+        _validate_batch_size_for_strategy,
         load_data_into_dataloader,
     )
 
@@ -1357,6 +1358,26 @@ class TestBuildLoss:
         y_pred[..., 0] = 1.0
         result = loss_fn(y_true, y_pred).numpy()
         assert np.all(np.isfinite(result))
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestValidateBatchSizeForStrategy:
+    """batch_size must split evenly across MirroredStrategy's replicas.
+
+    An uneven split (e.g. batch_size=30 over 4 replicas -> shards of 8, 8, 8, 6) crashes
+    deep-supervision gradient aggregation with an AddN shape mismatch well after
+    model.fit has already started; this should be caught immediately instead.
+    """
+
+    def test_single_replica_never_raises(self):
+        _validate_batch_size_for_strategy(batch_size=30, num_replicas=1)
+
+    def test_even_split_does_not_raise(self):
+        _validate_batch_size_for_strategy(batch_size=60, num_replicas=4)
+
+    def test_uneven_split_raises(self):
+        with pytest.raises(ValueError, match="must be a multiple"):
+            _validate_batch_size_for_strategy(batch_size=30, num_replicas=4)
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")

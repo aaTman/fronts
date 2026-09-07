@@ -45,6 +45,31 @@ def _get_distribution_strategy() -> tf.distribute.Strategy:
     return strategy
 
 
+def _validate_batch_size_for_strategy(batch_size: int, num_replicas: int) -> None:
+    """Raises if ``batch_size`` can't split evenly across MirroredStrategy's replicas.
+
+    An uneven per-replica split (e.g. batch_size=30 over 4 replicas -> shards of
+    8, 8, 8, 6) crashes deep-supervision gradient aggregation with an AddN shape
+    mismatch, or the cuDNN backward pass on the odd-sized replica -- both well
+    after model.fit has already started, wasting a full model build and data load.
+    Checking this upfront turns that into an immediate, actionable config error.
+
+    Args:
+        batch_size: ``DatasetConfig.batch_size``, the global batch size.
+        num_replicas: ``strategy.num_replicas_in_sync``.
+
+    Raises:
+        ValueError: If ``batch_size`` is not a multiple of ``num_replicas``.
+    """
+    if batch_size % num_replicas != 0:
+        raise ValueError(
+            f"data_config.batch_size ({batch_size}) must be a multiple of the number of GPUs "
+            f"MirroredStrategy detected ({num_replicas}); an uneven per-replica batch split crashes "
+            "deep-supervision gradient aggregation (AddN shape mismatch) or the cuDNN backward pass, "
+            "well after model.fit has already started."
+        )
+
+
 @dataclasses.dataclass
 class WandBConfig:
     """W&B project and run naming configuration."""
@@ -872,6 +897,7 @@ def train(
     logger.info("Mixed precision policy: %s", tf.keras.mixed_precision.global_policy().name)
 
     strategy = _get_distribution_strategy()
+    _validate_batch_size_for_strategy(data_cfg.batch_size, strategy.num_replicas_in_sync)
 
     # Derived from the actual loaded data rather than a hand-maintained config value, so
     # it automatically reflects data_cfg.variables and data_cfg.pressure_levels: (channel,)

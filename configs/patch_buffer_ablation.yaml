@@ -1,4 +1,4 @@
-run_name: ablation_patches_batch_size_30_scratch
+run_name: ablation_patches_batch_size_60_scratch
 
 # Reproduces the paper's (Justin et al. 2025) original patch-based training regime: nine
 # 128x128x5x10 (lon x lat x level x variable) patches, evenly spaced along longitude,
@@ -31,7 +31,7 @@ data_config:
     store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
     branch_name: "main"
     virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
-  batch_size: 30  # == n_patches below, so every batch is exactly one timestep's patches -- avoids splitting a timestep's full-domain read across two batches, which forces re-decompressing it once per batch it lands in
+  batch_size: 60  # a multiple of n_patches below (30), so no timestep's patches ever split across two batches (see fronts/data/datasets.py's FrontsPyDataset), and a multiple of this job's 4-GPU MirroredStrategy split -- batch_size=30 crashed with an AddN shape mismatch from an uneven 8/8/8/6 per-replica split
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
