@@ -50,6 +50,10 @@ _CANONICAL_CODE_BY_CLASS: dict[int, int] = {}
 for _code, _cls in FRONT_CLASS_MAP.items():
     _CANONICAL_CODE_BY_CLASS.setdefault(_cls, _code)
 _ALL_CODES = [_CANONICAL_CODE_BY_CLASS[cls] for cls in sorted(_CANONICAL_CODE_BY_CLASS)]
+# Canonical codes for just the front types that gate the filter_timesteps sampling rule.
+_REQUIRED_CODES = [
+    _CANONICAL_CODE_BY_CLASS[constants.FRONT_TYPE_CLASS_INDEX[ft]] for ft in constants.SAMPLING_REQUIRED_FRONT_TYPES
+]
 
 
 def _make_fronts(time_codes: list[list[int]], lat: int = 4, lon: int = 8) -> xr.DataArray:
@@ -79,18 +83,43 @@ class TestFilterTimesteps:
         assert mask.all()
 
     def test_incomplete_timestep_dropped_by_rng(self):
-        # One code missing — outcome is purely the RNG 50% draw.
+        # One required code missing — outcome is purely the RNG 50% draw.
         # Seed 0: first draw ~0.64 (>= 0.5), so dropped.
-        da = _make_fronts([_ALL_CODES[:-1]])
+        da = _make_fronts([_REQUIRED_CODES[:-1]])
         rng = np.random.default_rng(0)
         mask = filter_timesteps(da, rng)
         assert not mask[0]
 
     def test_incomplete_timestep_kept_by_rng(self):
         # Seed 2: first draw ~0.26 (< 0.5), so kept.
-        da = _make_fronts([_ALL_CODES[:-1]])
+        da = _make_fronts([_REQUIRED_CODES[:-1]])
         rng = np.random.default_rng(2)
         mask = filter_timesteps(da, rng)
+        assert mask[0]
+
+    def test_only_the_original_front_types_gate_the_rule(self):
+        """A timestep carrying every required type but no trough, tropical trough or instability axis is kept.
+
+        The rule's purpose is class balance across the front types the label set actually
+        populates densely. Requiring the three new classes too would leave it firing almost
+        never, collapsing train/val to a straight 50% draw and making runs on the nine-class
+        mapping incomparable to runs on the five-class one.
+        """
+        # Seed 0's first draw is >= 0.5, so a kept timestep can only come from the rule firing.
+        da = _make_fronts([_REQUIRED_CODES])
+        mask = filter_timesteps(da, np.random.default_rng(0))
+        assert mask[0]
+
+    def test_missing_a_new_front_type_does_not_force_the_rng_draw(self):
+        """Trough/TT/INST absence must never be the reason a timestep goes to the coin flip."""
+        kept = sum(filter_timesteps(_make_fronts([_REQUIRED_CODES]), np.random.default_rng(s))[0] for s in range(50))
+        assert kept == 50
+
+    def test_forming_and_dissipating_codes_count_toward_their_parent_type(self):
+        """A forming/dissipating variant satisfies its parent front type's presence requirement."""
+        forming_and_dissipating = {1: 5, 2: 6, 3: 7, 4: 8}  # CF-F, WF-F, SF-F, OF-F
+        codes = [forming_and_dissipating.get(cls, _CANONICAL_CODE_BY_CLASS[cls]) for cls in (1, 2, 3, 4, 5)]
+        mask = filter_timesteps(_make_fronts([codes]), np.random.default_rng(0))
         assert mask[0]
 
     def test_background_only_uses_rng(self):

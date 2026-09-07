@@ -7,9 +7,13 @@ from fronts import constants
 def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.ndarray:
     """Return a boolean keep-mask per timestep using the Justin et al. (2025) sampling rule.
 
-    Retain a timestep unconditionally if every front type is present somewhere in the
-    spatial domain; otherwise retain it with 50% probability. This balances class
-    frequency without introducing seasonal bias (Justin et al. 2025, section 2b).
+    Retain a timestep unconditionally if every front type in
+    ``constants.SAMPLING_REQUIRED_FRONT_TYPES`` is present somewhere in the spatial domain;
+    otherwise retain it with 50% probability. This balances class frequency without
+    introducing seasonal bias (Justin et al. 2025, section 2b).
+
+    Trough, tropical trough and instability axis are deliberately outside that requirement
+    even though the model predicts them — see ``constants.SAMPLING_REQUIRED_FRONT_TYPES``.
 
     Args:
         fronts_da: Raw identifier DataArray of shape (time, latitude, longitude) with
@@ -19,12 +23,14 @@ def filter_timesteps(fronts_da: xr.DataArray, rng: np.random.Generator) -> np.nd
     Returns:
         Boolean array of shape (time,).
     """
-    # Compute any() over space before .compute() so only (n_classes, n_times) booleans
-    # are materialised rather than the full spatial array. Group raw codes by target class
-    # so e.g. a forming OR dissipating cold front both count toward "cold front present".
+    # Compute any() over space before .compute() so only (n_required_classes, n_times)
+    # booleans are materialised rather than the full spatial array. Group raw codes by target
+    # class so e.g. a forming OR dissipating cold front both count toward "cold front present".
+    required_classes = {constants.FRONT_TYPE_CLASS_INDEX[ft] for ft in constants.SAMPLING_REQUIRED_FRONT_TYPES}
     codes_by_class: dict[int, list[int]] = {}
     for code, cls in constants.FRONT_CLASS_MAP.items():
-        codes_by_class.setdefault(cls, []).append(code)
+        if cls in required_classes:
+            codes_by_class.setdefault(cls, []).append(code)
     presence = xr.concat(
         [
             xr.concat([(fronts_da == code) for code in codes], dim="code").any(dim=["code", "latitude", "longitude"])

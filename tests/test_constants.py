@@ -48,6 +48,14 @@ def test_front_class_map_values_match_front_type_class_index_values():
     assert set(constants.FRONT_CLASS_MAP.values()) == set(constants.FRONT_TYPE_CLASS_INDEX.values())
 
 
+def test_sampling_required_front_types_are_the_five_original_types():
+    assert constants.SAMPLING_REQUIRED_FRONT_TYPES == ("CF", "WF", "SF", "OF", "DL")
+
+
+def test_every_sampling_required_front_type_is_a_known_front_type():
+    assert set(constants.SAMPLING_REQUIRED_FRONT_TYPES) <= set(constants.FRONT_TYPE_CLASS_INDEX)
+
+
 def test_importing_constants_does_not_import_heavy_optional_dependencies():
     result = subprocess.run(
         [

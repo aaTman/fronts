@@ -21,6 +21,14 @@ FRONT_TYPE_CLASS_INDEX: dict[str, int] = {"CF": 1, "WF": 2, "SF": 3, "OF": 4, "D
 # collide with any key in FRONT_TYPE_CLASS_INDEX.
 BACKGROUND_CLASS_KEY = "none"
 
+# Front types that must all be present in the domain for targets.filter_timesteps to keep a
+# timestep unconditionally (Justin et al. 2025, section 2b). Deliberately the five original
+# types rather than every key in FRONT_TYPE_CLASS_INDEX: trough, tropical trough and
+# instability axis are sparse enough in the label set that requiring them too would leave the
+# rule almost never firing, collapsing the train/val sample to a straight 50% draw and making
+# nine-class runs incomparable to the five-class runs they are meant to be measured against.
+SAMPLING_REQUIRED_FRONT_TYPES: tuple[str, ...] = ("CF", "WF", "SF", "OF", "DL")
+
 FRONT_NAMES: dict[str, str] = {
     "CF": "Cold front",
     "WF": "Warm front",
