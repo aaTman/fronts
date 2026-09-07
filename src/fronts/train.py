@@ -723,11 +723,20 @@ def _build_test_visualization_callback(
     Always loads in whole-domain mode, ignoring ``data_config.patch_config``: the
     active-day map and per-office-region performance diagrams assume one input/target
     pair per whole-domain timestep and whole-domain ``lats``/``lons``, not
-    per-longitude-patch tiling with a buffered input shape. This is safe even when the
-    model was trained in patch mode — ``model.UNet3Plus`` builds with a fully dynamic
-    spatial input shape (``Input(shape=(None, None, ...))``), so it accepts a
-    whole-domain input at inference regardless of the (smaller, buffered) patch shape
-    it saw during training.
+    per-longitude-patch tiling. ``model.UNet3Plus`` builds with a fully dynamic spatial
+    input shape (``Input(shape=(None, None, ...))``), so it accepts a whole-domain input
+    at inference regardless of the (smaller) patch shape it saw during training — but a
+    patch-buffer-trained model (``data_config.patch_config.buffer_px`` > 0) was never
+    scored on a core pixel closer than ``buffer_px`` real pixels to a zero-padded tensor
+    edge (every training patch's core got that much real reflected context on every
+    side — see ``datasets.FrontsPyDataset._get_patches_at_indices``). A bare whole-domain
+    pass breaks that invariant right at the domain's own edges, producing systematically
+    wrong predictions there (observed as a false-front stripe along the un-tiled latitude
+    edges). So the whole-domain input is reflect-padded by that same ``buffer_px`` before
+    inference (``datasets.reflect_pad_lat_lon_buffer``), matching what every training
+    patch saw; ``TestVisualizationCallback`` crops the buffer back off the model's raw
+    prediction (via its own ``buffer_px``) before comparing against the unbuffered
+    ``lats``/``lons``/target.
 
     Args:
         test_dataset: The sequestered test split, already loaded via load_data_into_dataloader.
@@ -739,6 +748,8 @@ def _build_test_visualization_callback(
         A configured TestVisualizationCallback.
     """
     assert callbacks_config.test_viz_every_n_epochs is not None
+    buffer_px = data_config.patch_config.buffer_px if data_config.patch_config is not None else 0
+
     active_idx = fronts_callbacks.select_active_test_timestep(test_dataset.target_da)
     active_x, active_y = test_dataset.get_at_indices(np.array([active_idx]))
     active_label = str(test_dataset.input_ds.time.values[active_idx])
@@ -747,6 +758,9 @@ def _build_test_visualization_callback(
         test_dataset.n_samples, callbacks_config.test_viz_sample_size, seed
     )
     subsample_x, subsample_y = test_dataset.get_at_indices(subsample_idxs)
+
+    active_x = datasets.reflect_pad_lat_lon_buffer(active_x, buffer_px)
+    subsample_x = datasets.reflect_pad_lat_lon_buffer(subsample_x, buffer_px)
 
     return fronts_callbacks.TestVisualizationCallback(
         active_day_x=active_x[0],
@@ -759,6 +773,7 @@ def _build_test_visualization_callback(
         front_types=list(fronts_callbacks.FRONT_TYPE_CLASS_INDEX),
         predict_batch_size=data_config.batch_size,
         every_n_epochs=callbacks_config.test_viz_every_n_epochs,
+        buffer_px=buffer_px,
     )
 
 

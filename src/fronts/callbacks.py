@@ -385,15 +385,32 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
 
     Attributes:
         active_day_x: Single-timestep model input, shape (latitude, longitude, channel).
+            Buffered by ``buffer_px`` on every spatial side when ``buffer_px`` > 0 — see
+            ``buffer_px``.
         active_day_y: Single-timestep one-hot truth, shape (latitude, longitude, class).
+            Always at the unbuffered core size (matches ``lats``/``lons``).
         active_day_label: Title label for the prediction figure (e.g. the timestamp).
         subsample_x: Subsampled test inputs, shape (time, latitude, longitude, channel).
+            Buffered like ``active_day_x``.
         subsample_y: Subsampled test one-hot truth, shape (time, latitude, longitude, class).
-        lats: 1-D latitude array matching the spatial dims above.
-        lons: 1-D longitude array matching the spatial dims above.
+            Always at the unbuffered core size.
+        lats: 1-D latitude array matching the unbuffered (core) spatial size.
+        lons: 1-D longitude array matching the unbuffered (core) spatial size.
         front_types: Front type labels to evaluate, in class order.
         predict_batch_size: Batch size used to chunk ``subsample_x`` inference.
         every_n_epochs: Visualization cadence in epochs.
+        buffer_px: Pixels of input-only context buffer to crop off every spatial side of the
+            model's raw prediction before use, matching a patch-buffer-trained model's
+            ``PatchConfig.buffer_px`` (see ``fronts.data.datasets.PatchConfig``). 0 (default)
+            means ``active_day_x``/``subsample_x`` are already core-sized and predictions need
+            no cropping. Set whenever ``active_day_x``/``subsample_x`` were reflect-padded by
+            ``fronts.data.datasets.reflect_pad_lat_lon_buffer`` before being stored here — see
+            ``fronts.train._build_test_visualization_callback``. Without this, a
+            patch-buffer-trained model scored directly at the true (unbuffered) domain edge
+            produces systematically wrong predictions there: every core pixel it saw during
+            training had >= buffer_px pixels of real spatial context before the nearest
+            zero-padded tensor edge, an invariant a bare whole-domain pass at inference breaks
+            right at the domain's own edges.
     """
 
     active_day_x: np.ndarray
@@ -406,13 +423,19 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
     front_types: list[str]
     predict_batch_size: int
     every_n_epochs: int = 10
+    buffer_px: int = 0
 
     def __post_init__(self) -> None:
         """Initializes the underlying Callback base after dataclass field assignment."""
         super().__init__()
 
     def _predict(self, x: np.ndarray) -> np.ndarray:
-        """Run the model's finest-resolution (first) output, chunked by ``predict_batch_size``."""
+        """Run the model's finest-resolution (first) output, chunked by ``predict_batch_size``.
+
+        Crops ``buffer_px`` off every spatial side of the result before returning, so the
+        output always matches ``lats``/``lons``'s unbuffered core size regardless of whether
+        ``x`` itself carries a buffer (see ``buffer_px``).
+        """
         # model.predict() over the full array batches its forward passes but still accumulates
         # every batch's output into one GPU-resident tensor before returning; at full spatial
         # resolution (e.g. full-CONUS-domain runs) that accumulated buffer, on top of training's
@@ -431,7 +454,11 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
             if isinstance(pred, (list, tuple)):
                 pred = pred[0]
             outputs.append(np.asarray(pred))
-        return np.concatenate(outputs, axis=0)
+        pred = np.concatenate(outputs, axis=0)
+        if self.buffer_px > 0:
+            b = self.buffer_px
+            pred = pred[:, b : pred.shape[1] - b, b : pred.shape[2] - b, :]
+        return pred
 
     def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:
         """Every ``every_n_epochs`` epochs, logs an active-day prediction map and per-region diagrams."""

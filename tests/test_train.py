@@ -15,7 +15,13 @@ try:
     import tensorflow as tf
 
     from fronts.callbacks import CallbacksConfig
-    from fronts.data.datasets import DatasetConfig, FrontsPyDataset, PatchConfig, compute_patch_lon_starts
+    from fronts.data.datasets import (
+        DatasetConfig,
+        FrontsPyDataset,
+        PatchConfig,
+        compute_patch_lon_starts,
+        reflect_pad_lat_lon_buffer,
+    )
     from fronts.data.generate import write_or_append_icechunk_store
     from fronts.data.inputs import inputs_ds_to_dataarray
     from fronts.layers import losses
@@ -1431,12 +1437,22 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
     """train() must load the visualization test split whole-domain, regardless of patch_config.
 
     _build_test_visualization_callback's active-day map and per-office-region performance
-    diagrams assume one whole-domain input/target pair per sample. Patch-mode training only
-    changes how *training* samples are drawn; the model's input shape stays fully dynamic
-    (Input(shape=(None, None, ...))), so whole-domain inference works regardless of
-    patch_config. train() enforces this by loading the visualization test split via
+    diagrams assume one whole-domain input/target pair per sample, at the core (unbuffered)
+    lats/lons. Patch-mode training only changes how *training* samples are drawn; the model's
+    input shape stays fully dynamic (Input(shape=(None, None, ...))), so whole-domain
+    inference works regardless of patch_config. train() enforces the whole-domain *load* via
     ``dataclasses.replace(data_config, patch_config=None)`` before calling
     _build_test_visualization_callback — this test exercises that same composition.
+
+    When ``patch_config.buffer_px`` > 0, _build_test_visualization_callback additionally
+    reflect-pads that whole-domain input by buffer_px (see
+    ``datasets.reflect_pad_lat_lon_buffer``) before handing it to the callback: every core
+    pixel a patch-buffer-trained model was scored on during training had >= buffer_px real
+    pixels of context before the nearest zero-padded tensor edge (see
+    ``FrontsPyDataset._get_patches_at_indices``), and scoring it directly at the true
+    (unbuffered) domain edge breaks that invariant, producing a systematic false-front stripe
+    there. ``TestVisualizationCallback.buffer_px`` crops the buffer back off the prediction
+    before it's compared against the still-core-sized target/lats/lons.
     """
 
     _TIMES = pd.date_range("2020-01-01", periods=3, freq="6h")
@@ -1501,26 +1517,52 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
         return load_data_into_dataloader(viz_data_config, split="test", seed=0)
 
     def test_whole_domain_shape_with_patch_config_set(self, tmp_path):
+        buffer_px = 1
         data_config = self._data_config(
             self._write_inputs(tmp_path),
             self._write_targets(tmp_path),
-            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=1),
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=buffer_px),
         )
         test_dataset = self._load_viz_dataset(data_config)
 
         callback = _build_test_visualization_callback(test_dataset, data_config, self._callbacks_config(), seed=0)
 
-        assert callback.active_day_x.shape == (len(self._LAT_CORE), len(self._LON_CORE), 1)
+        assert callback.buffer_px == buffer_px
+        assert callback.active_day_x.shape == (
+            len(self._LAT_CORE) + 2 * buffer_px,
+            len(self._LON_CORE) + 2 * buffer_px,
+            1,
+        )
         assert callback.active_day_y.shape[:2] == (len(self._LAT_CORE), len(self._LON_CORE))
-        assert callback.subsample_x.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
+        assert callback.subsample_x.shape[1:3] == (
+            len(self._LAT_CORE) + 2 * buffer_px,
+            len(self._LON_CORE) + 2 * buffer_px,
+        )
         assert callback.subsample_y.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
         np.testing.assert_array_equal(callback.lats, self._LAT_CORE)
         np.testing.assert_array_equal(callback.lons, self._LON_CORE)
 
-    def test_output_identical_with_and_without_patch_config(self, tmp_path):
+    def test_whole_domain_stays_core_sized_without_patch_config(self, tmp_path):
+        data_config = self._data_config(self._write_inputs(tmp_path), self._write_targets(tmp_path), patch_config=None)
+        test_dataset = self._load_viz_dataset(data_config)
+
+        callback = _build_test_visualization_callback(test_dataset, data_config, self._callbacks_config(), seed=0)
+
+        assert callback.buffer_px == 0
+        assert callback.active_day_x.shape == (len(self._LAT_CORE), len(self._LON_CORE), 1)
+        assert callback.subsample_x.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
+
+    def test_buffered_input_core_matches_unbuffered_input(self, tmp_path):
+        """Reflect-padding only touches the border.
+
+        Stripping buffer_px back off the padded (patch_config-set) input must reproduce the
+        unbuffered (patch_config=None) input exactly. Targets/lats/lons are always core-sized
+        and must match outright either way.
+        """
         inputs_store = self._write_inputs(tmp_path)
         targets_store = self._write_targets(tmp_path)
         callbacks_config = self._callbacks_config()
+        buffer_px = 1
 
         no_patch_config = self._data_config(inputs_store, targets_store, patch_config=None)
         test_dataset_no_patch = self._load_viz_dataset(no_patch_config)
@@ -1529,16 +1571,19 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
         )
 
         with_patch_config = self._data_config(
-            inputs_store, targets_store, patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=1)
+            inputs_store,
+            targets_store,
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=buffer_px),
         )
         test_dataset_with_patch = self._load_viz_dataset(with_patch_config)
         callback_with_patch = _build_test_visualization_callback(
             test_dataset_with_patch, with_patch_config, callbacks_config, seed=0
         )
 
-        np.testing.assert_allclose(callback_with_patch.active_day_x, callback_no_patch.active_day_x)
+        b = buffer_px
+        np.testing.assert_allclose(callback_with_patch.active_day_x[b:-b, b:-b, :], callback_no_patch.active_day_x)
+        np.testing.assert_allclose(callback_with_patch.subsample_x[:, b:-b, b:-b, :], callback_no_patch.subsample_x)
         np.testing.assert_allclose(callback_with_patch.active_day_y, callback_no_patch.active_day_y)
-        np.testing.assert_allclose(callback_with_patch.subsample_x, callback_no_patch.subsample_x)
         np.testing.assert_allclose(callback_with_patch.subsample_y, callback_no_patch.subsample_y)
 
 
@@ -1748,6 +1793,36 @@ class TestComputePatchLonStarts:
     def test_last_patch_ends_exactly_at_core_width(self):
         starts = compute_patch_lon_starts(n_lon_core=12, patch_width=4, n_patches=3)
         assert starts[-1] + 4 == 12
+
+
+class TestReflectPadLatLonBuffer:
+    def test_zero_buffer_returns_input_unchanged(self):
+        x = np.arange(24, dtype=np.float32).reshape(2, 3, 4, 1)
+        result = reflect_pad_lat_lon_buffer(x, 0)
+        assert result is x
+
+    def test_pads_lat_lon_axes_only(self):
+        x = np.arange(2 * 3 * 4 * 5, dtype=np.float32).reshape(2, 3, 4, 5)
+        result = reflect_pad_lat_lon_buffer(x, 1)
+        assert result.shape == (2, 5, 6, 5)
+
+    def test_matches_manual_reflect_pad(self):
+        x = np.arange(2 * 4 * 6, dtype=np.float32).reshape(2, 4, 6, 1)
+        expected = np.pad(x, [(0, 0), (2, 2), (2, 2), (0, 0)], mode="reflect")
+        result = reflect_pad_lat_lon_buffer(x, 2)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_core_slice_of_padded_result_matches_original(self):
+        x = np.arange(2 * 5 * 5 * 3, dtype=np.float32).reshape(2, 5, 5, 3)
+        buf = 2
+        padded = reflect_pad_lat_lon_buffer(x, buf)
+        np.testing.assert_array_equal(padded[:, buf:-buf, buf:-buf, :], x)
+
+    def test_handles_extra_trailing_axes(self):
+        # (sample, latitude, longitude, level, variable) — the volume_inputs shape.
+        x = np.arange(1 * 3 * 3 * 2 * 2, dtype=np.float32).reshape(1, 3, 3, 2, 2)
+        result = reflect_pad_lat_lon_buffer(x, 1)
+        assert result.shape == (1, 5, 5, 2, 2)
 
 
 def _build_small_unet(

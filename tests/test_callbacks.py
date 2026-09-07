@@ -254,6 +254,51 @@ class TestVisualizationCallbackPredict:
                 front_types=["CF"],
             )
 
+    def test_buffer_px_defaults_to_zero(self):
+        cb = self._make_callback(n_samples=1, predict_batch_size=1)
+        assert cb.buffer_px == 0
+
+
+class TestVisualizationCallbackPredictBuffer:
+    """buffer_px must crop the model's raw (buffered) output back down to the core size.
+
+    Mirrors the training-side invariant (FrontsPyDataset._get_patches_at_indices /
+    losses.neighborhood_brier_score's pred_buffer_px): a patch-buffer-trained model's input
+    carries buffer_px extra context pixels on every spatial side beyond what should be scored
+    or plotted; _predict must strip that margin back off before returning.
+    """
+
+    def _make_callback(self, n_samples: int, buffer_px: int) -> "fc.TestVisualizationCallback":
+        # 4x4 identity model: output == input, so cropping is the only thing that can change
+        # the predicted shape/values relative to the (buffered) input.
+        inputs = fc.tf.keras.Input(shape=(4, 4, 1))
+        model = fc.tf.keras.Model(inputs, inputs)
+        cb = fc.TestVisualizationCallback(
+            active_day_x=np.zeros((4, 4, 1), dtype=np.float32),
+            active_day_y=np.zeros((2, 2, 1), dtype=np.float32),
+            active_day_label="active day",
+            subsample_x=np.arange(n_samples * 16, dtype=np.float32).reshape(n_samples, 4, 4, 1),
+            subsample_y=np.zeros((n_samples, 2, 2, 1), dtype=np.float32),
+            lats=np.array([0.0, 1.0]),
+            lons=np.array([0.0, 1.0]),
+            front_types=["CF"],
+            predict_batch_size=2,
+            buffer_px=buffer_px,
+        )
+        cb.set_model(model)
+        return cb
+
+    def test_crops_buffer_off_every_spatial_side(self):
+        cb = self._make_callback(n_samples=3, buffer_px=1)
+        result = cb._predict(cb.subsample_x)
+        assert result.shape == (3, 2, 2, 1)
+        np.testing.assert_allclose(result, cb.subsample_x[:, 1:-1, 1:-1, :])
+
+    def test_zero_buffer_leaves_output_uncropped(self):
+        cb = self._make_callback(n_samples=2, buffer_px=0)
+        result = cb._predict(cb.subsample_x)
+        np.testing.assert_allclose(result, cb.subsample_x)
+
 
 class TestVisualizationCallbackOnEpochEnd:
     """On_epoch_end must not pass an explicit `step` to wandb.log: WandbMetricsLogger's.
@@ -299,6 +344,36 @@ class TestVisualizationCallbackOnEpochEnd:
         assert "step" not in kwargs
         assert "test/prediction" in payload
         assert any(k.startswith("test/performance_diagram/") for k in payload)
+
+    def test_runs_end_to_end_with_buffered_input(self, monkeypatch):
+        # Core is 2x2 with a buffer_px=1 margin on every side, matching what
+        # _build_test_visualization_callback hands a patch-buffer-trained model.
+        inputs = fc.tf.keras.Input(shape=(None, None, 2))
+        model = fc.tf.keras.Model(inputs, inputs)  # identity
+        cb = fc.TestVisualizationCallback(
+            active_day_x=np.zeros((4, 4, 2), dtype=np.float32),
+            active_day_y=np.zeros((2, 2, 2), dtype=np.float32),
+            active_day_label="active day",
+            subsample_x=np.zeros((3, 4, 4, 2), dtype=np.float32),
+            subsample_y=np.zeros((3, 2, 2, 2), dtype=np.float32),
+            lats=np.array([0.0, 1.0]),
+            lons=np.array([0.0, 1.0]),
+            front_types=["CF"],
+            predict_batch_size=2,
+            every_n_epochs=1,
+            buffer_px=1,
+        )
+        cb.set_model(model)
+        monkeypatch.setattr(fc.plot_module, "plot_test_prediction", lambda **_: fc.plot_module.plt.figure())
+        monkeypatch.setattr(fc.plot_module, "plot_performance_diagram_lite", lambda **_: fc.plot_module.plt.figure())
+        calls = []
+        monkeypatch.setattr(fc.wandb, "log", lambda payload, **kwargs: calls.append((payload, kwargs)))
+
+        cb.on_epoch_end(epoch=0)
+
+        assert len(calls) == 1
+        payload, _ = calls[0]
+        assert "test/prediction" in payload
 
     def test_skips_logging_outside_cadence(self, monkeypatch):
         cb = self._make_callback(monkeypatch, every_n_epochs=10)

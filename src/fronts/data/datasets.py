@@ -13,6 +13,31 @@ from fronts.data import inputs, targets
 logger = logging.getLogger(__name__)
 
 
+def reflect_pad_lat_lon_buffer(x: np.ndarray, buffer_px: int) -> np.ndarray:
+    """Reflect-pads an array's latitude/longitude axes (1, 2) by ``buffer_px`` on every side.
+
+    Shared by patch extraction (``FrontsPyDataset._get_patches_at_indices``, buffering each
+    patch's core) and whole-domain visualization (``fronts.train._build_test_visualization_callback``,
+    buffering the whole core domain so a patch-buffer-trained model sees the same kind of
+    input-only context at inference that it saw around every scored pixel during training).
+    Neither generally has real data past its own edges, so context is reflected off those
+    edges (Ronneberger et al. 2015's overlap-tile strategy: "missing input data is
+    extrapolated by mirroring") rather than read from the store.
+
+    Args:
+        x: Array shaped (sample, latitude, longitude, ...).
+        buffer_px: Pixels of reflect-padding to add on every side of the latitude and
+            longitude axes. 0 returns ``x`` unchanged.
+
+    Returns:
+        The padded array, or ``x`` itself if ``buffer_px`` is 0.
+    """
+    if buffer_px == 0:
+        return x
+    pad_width = [(0, 0), (buffer_px, buffer_px), (buffer_px, buffer_px)] + [(0, 0)] * (x.ndim - 3)
+    return np.pad(x, pad_width, mode="reflect")
+
+
 def compute_patch_lon_starts(n_lon_core: int, patch_width: int, n_patches: int) -> np.ndarray:
     """Evenly spaced starting pixel offsets for sliding longitude windows.
 
@@ -358,15 +383,11 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         width = pc.patch_lon_width_px
         buf = pc.buffer_px
         starts = self._patch_lon_starts
-        if buf > 0:
-            # The core domain rarely has buf extra real pixels of margin past
-            # DatasetConfig.coordinates on disk, so buffer context is reflected off the
-            # core domain's own edges (Ronneberger et al. 2015's overlap-tile strategy:
-            # "missing input data is extrapolated by mirroring") rather than read from
-            # the store. Padding is applied here, per already-materialized batch, instead
-            # of at whole-dataset load time so it stays cheap regardless of split size.
-            pad_width = [(0, 0), (buf, buf), (buf, buf)] + [(0, 0)] * (x_full.ndim - 3)
-            x_full = np.pad(x_full, pad_width, mode="reflect")
+        # Padding is applied here, per already-materialized batch, instead of at
+        # whole-dataset load time so it stays cheap regardless of split size. See
+        # reflect_pad_lat_lon_buffer for why reflection (rather than reading real store
+        # margin) is used.
+        x_full = reflect_pad_lat_lon_buffer(x_full, buf)
         x = np.stack(
             [x_full[inverse[i], :, starts[p] : starts[p] + width + 2 * buf, ...] for i, p in enumerate(patch_idxs)],
             axis=0,
