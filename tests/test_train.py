@@ -1105,6 +1105,50 @@ class TestTrainConfigLossClassWeights:
         assert callbacks_cfg.early_stopping_patience == 12
 
 
+class TestEvalConfigMirrorsItsTrainingRun:
+    """schooner_eval.yaml feeds its own data_config into a checkpoint another config trained.
+
+    evaluate.load_eval_arrays builds the model's inputs from these fields, so any divergence
+    from the run's training config either fails at the input layer or silently scores the
+    model on inputs it was never trained on. These pin the two files together.
+    """
+
+    _EVAL_CONFIG = "configs/schooner_eval.yaml"
+    _TRAINING_CONFIG = "configs/schooner_train_3d.yaml"
+
+    def _data_config(self, path):
+        from fronts import utils
+        from fronts.data.datasets import DatasetConfig
+
+        return utils.parse_config_section(utils.load_yaml(path), DatasetConfig, "data_config")
+
+    def test_eval_names_the_run_its_training_config_produces(self):
+        from fronts import utils
+
+        eval_run = utils.load_yaml(self._EVAL_CONFIG)["run_name"]
+        training_run = utils.load_yaml(self._TRAINING_CONFIG)["run_name"]
+        assert eval_run == training_run
+
+    def test_model_facing_data_fields_match_the_training_config(self):
+        eval_data = self._data_config(self._EVAL_CONFIG)
+        training_data = self._data_config(self._TRAINING_CONFIG)
+        assert eval_data.variables == training_data.variables
+        assert eval_data.volume_inputs == training_data.volume_inputs
+        assert eval_data.pressure_levels == training_data.pressure_levels
+        assert eval_data.normalization_method == training_data.normalization_method
+        assert eval_data.front_dilation == training_data.front_dilation
+        assert eval_data.class_weights == training_data.class_weights
+
+    def test_eval_domain_is_the_full_extent_the_run_trained_on(self):
+        from fronts import utils
+        from fronts.evaluate import EvalConfig
+
+        eval_cfg = utils.parse_config_section(utils.load_yaml(self._EVAL_CONFIG), EvalConfig, "eval_config")
+        training_data = self._data_config(self._TRAINING_CONFIG)
+        assert training_data.coordinates is None, "training config now restricts its domain; eval must follow it"
+        assert tuple(eval_cfg.coordinates) == (0.25, 80.0, 130.0, 369.75)
+
+
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestFrontsPyDatasetVolume:
     """volume_inputs=True must yield (batch, lat, lon, level, variable) batches for a 3D model."""
