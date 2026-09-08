@@ -1,4 +1,5 @@
 import dataclasses
+import glob
 import logging
 import math
 from typing import ClassVar
@@ -1103,6 +1104,46 @@ class TestTrainConfigLossClassWeights:
         assert train_cfg.gradient_clip_norm == 1.0
         assert callbacks_cfg.min_delta == 0.0
         assert callbacks_cfg.early_stopping_patience == 12
+
+
+class TestEveryConfigAgreesOnTheClassCount:
+    """Every shipped config must describe the same number of classes the label mapping produces.
+
+    remap_fronts emits one channel per entry in constants.FRONT_TYPE_CLASS_INDEX plus
+    background, so a config declaring fewer builds a model whose output cannot be compared
+    against its own targets — it fails deep inside the loss with a dimension mismatch rather
+    than at parse time. Scanning every config catches the ones nobody has run recently.
+    """
+
+    _CONFIG_PATHS: ClassVar[list[str]] = sorted(glob.glob("configs/*.yaml"))
+
+    def test_config_files_were_found(self):
+        """Guards the glob itself: an empty sweep would make every test below vacuously pass."""
+        assert self._CONFIG_PATHS
+
+    @pytest.mark.parametrize("path", _CONFIG_PATHS)
+    def test_declared_n_classes_matches_the_front_type_mapping(self, path):
+        from fronts import utils
+
+        model_section = utils.load_yaml(path).get("model_config") or {}
+        if "n_classes" not in model_section:
+            pytest.skip(f"{path} declares no n_classes")
+        assert model_section["n_classes"] == N_CLASSES
+
+    @pytest.mark.parametrize("path", _CONFIG_PATHS)
+    def test_class_weight_vectors_have_one_entry_per_class(self, path):
+        from fronts import utils
+
+        yaml_data = utils.load_yaml(path)
+        vectors = {
+            "data_config.class_weights": (yaml_data.get("data_config") or {}).get("class_weights"),
+            "train_config.loss_class_weights": (yaml_data.get("train_config") or {}).get("loss_class_weights"),
+        }
+        present = {name: weights for name, weights in vectors.items() if weights is not None}
+        if not present:
+            pytest.skip(f"{path} declares no class-weight vector")
+        for name, weights in present.items():
+            assert len(weights) == N_CLASSES, f"{path}: {name} has {len(weights)} entries, expected {N_CLASSES}"
 
 
 class TestEvalConfigMirrorsItsTrainingRun:
