@@ -41,6 +41,7 @@ try:
         _build_run_callbacks,
         _build_test_visualization_callback,
         _build_wandb_config,
+        _collect_run_metadata,
         _compile,
         _freeze_layers,
         _load_pretrained_weights,
@@ -2848,6 +2849,18 @@ class TestPerFrontTypeLossMetrics:
             values.append(float(metric.result()))
 
         assert values == pytest.approx(expected, abs=1e-5)
+
+
+@pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
+class TestCollectRunMetadata:
+    def test_includes_config_name_and_path(self, data_config, monkeypatch):
+        monkeypatch.setattr("fronts.train.utils.get_git_commit", lambda: "abc123")
+        monkeypatch.setattr("fronts.train.utils.get_icechunk_snapshot_id", lambda *args, **kwargs: "snap1")
+
+        meta = _collect_run_metadata(data_config, config_path="configs/sooner_train.yaml")
+
+        assert meta["config_name"] == "sooner_train.yaml"
+        assert meta["config_path"] == "configs/sooner_train.yaml"
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
