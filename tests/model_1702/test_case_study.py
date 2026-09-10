@@ -7,7 +7,7 @@ import pytest
 import xarray as xr
 
 from fronts import utils
-from fronts.model_1702 import case_study, normalization
+from fronts.model_1702 import case_study, normalization, store
 
 N_LAT = 6
 N_LON = 8
@@ -66,6 +66,16 @@ def test_config_parses():
     assert isinstance(case_cfg.coordinates, utils.BoundingBox)
     assert case_cfg.storage_options == {"token": "anon"}
     assert case_cfg.figure_name.endswith(".png")
+    assert case_cfg.use_training_style is False
+
+
+def test_test_case_config_parses_full_domain_training_style():
+    config_path = os.path.join("configs", "model_1702", "case_study_test_2019_01_01.yaml")
+    yaml_data = utils.load_yaml(config_path)
+    case_cfg = utils.parse_config_section(yaml_data, case_study.CaseStudyConfig, "case_config", utils.YAML_TYPE_HOOKS)
+    assert case_cfg.times == ["2019-01-01T00:00:00"]
+    assert case_cfg.coordinates == utils.BoundingBox(0.25, 80.0, 130.0, 369.75)
+    assert case_cfg.use_training_style is True
 
 
 class TestLoadCaseInputs:
@@ -83,6 +93,49 @@ class TestLoadCaseInputs:
         case_cfg = _case_cfg(inputs_cache_path=cache_path)
         with pytest.raises(ValueError, match="lack timesteps"):
             case_study.load_case_inputs(case_cfg)
+
+    def test_derive_unwraps_longitude_for_a_wrap_crossing_domain(self, mocker):
+        # A full-domain box like configs/model_1702/case_study_test_2019_01_01.yaml's
+        # [0.25, 80.0, 130.0, 369.75] crosses the 360 deg boundary: select_spatial_domain
+        # returns longitude ordered [340, 350, 0, 10] (non-monotonic) for a box like
+        # [0, 10, 340, 370] below, which load_case_inputs must unwrap to [340, 350, 360, 370]
+        # before it reaches store.build_1702_dataset — a non-monotonic axis produces the
+        # wraparound/banding artifacts seen when this call was missing.
+        times = np.array(["2019-01-01T00:00:00"], dtype="datetime64[ns]")
+        lats = np.array([10.0, 0.0])
+        lons = np.arange(0.0, 360.0, 10.0)
+        levels = np.array(store.PRESSURE_LEVELS_HPA)
+        rng = np.random.default_rng(11)
+        shape_p = (len(times), len(levels), len(lats), len(lons))
+        shape_s = (len(times), len(lats), len(lons))
+        source = xr.Dataset(
+            {
+                "geopotential": (("time", "level", "latitude", "longitude"), rng.uniform(500.0, 15000.0, shape_p)),
+                "temperature": (("time", "level", "latitude", "longitude"), rng.uniform(250.0, 300.0, shape_p)),
+                "u_component_of_wind": (("time", "level", "latitude", "longitude"), rng.uniform(-30.0, 30.0, shape_p)),
+                "v_component_of_wind": (("time", "level", "latitude", "longitude"), rng.uniform(-30.0, 30.0, shape_p)),
+                "specific_humidity": (("time", "level", "latitude", "longitude"), rng.uniform(0.0001, 0.02, shape_p)),
+                "surface_pressure": (("time", "latitude", "longitude"), rng.uniform(80000.0, 103000.0, shape_s)),
+                "2m_temperature": (("time", "latitude", "longitude"), rng.uniform(260.0, 305.0, shape_s)),
+                "2m_dewpoint_temperature": (("time", "latitude", "longitude"), rng.uniform(250.0, 300.0, shape_s)),
+                "10m_u_component_of_wind": (("time", "latitude", "longitude"), rng.uniform(-20.0, 20.0, shape_s)),
+                "10m_v_component_of_wind": (("time", "latitude", "longitude"), rng.uniform(-20.0, 20.0, shape_s)),
+            },
+            coords={"time": times, "level": levels, "latitude": lats, "longitude": lons},
+        )
+        mocker.patch.object(case_study.store, "open_source_era5", return_value=source)
+
+        case_cfg = _case_cfg(
+            times=["2019-01-01T00:00:00"],
+            coordinates=utils.BoundingBox(0.0, 10.0, 340.0, 370.0),
+            inputs_cache_path=None,
+        )
+        built = case_study.load_case_inputs(case_cfg)
+
+        lon_values = built["longitude"].values
+        assert np.all(np.diff(lon_values) > 0), f"longitude not monotonic: {lon_values}"
+        assert lon_values[0] == pytest.approx(340.0)
+        assert lon_values[-1] == pytest.approx(370.0)
 
 
 def test_predict_case_shape():
@@ -113,3 +166,26 @@ def test_render_case_figure_writes_file(tmp_path):
     )
     assert os.path.exists(out_path)
     assert os.path.getsize(out_path) > 0
+
+
+@pytest.mark.skipif(
+    not os.environ.get("MODEL_1702_RENDER_TESTS"),
+    reason="set MODEL_1702_RENDER_TESTS=1 to run figure rendering (needs cartopy Natural Earth data)",
+)
+def test_render_training_style_figure_writes_one_file_per_timestep(tmp_path):
+    built = _tiny_inputs_ds(CASE_TIMES)
+    preds = np.random.default_rng(7).random((len(CASE_TIMES), N_LAT, N_LON, 9)).astype(np.float32)
+    case_study.render_training_style_figure(
+        preds=preds,
+        lats=built["latitude"].values,
+        lons=built["longitude"].values,
+        times=built["time"].values,
+        front_types=["CF", "WF", "SF", "OF"],
+        outdir=str(tmp_path),
+        figure_name="case.png",
+    )
+    written = sorted(tmp_path.iterdir())
+    assert len(written) == len(CASE_TIMES)
+    for f in written:
+        assert f.name.startswith("case_") and f.name.endswith(".png")
+        assert f.stat().st_size > 0
