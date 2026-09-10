@@ -20,6 +20,12 @@ train_config:
                          # this same 8.7M-param 3D model mid-epoch-2 (W&B run 898culiq); 1e-4 also matches
                          # AIES model_1702
   shuffle: true
+  gradient_clip_norm: 1.0  # matches every other 3D config in this repo; TrainConfig defaults it to None
+                           # (unclipped). Caps the damage a single outlier batch can do -- the brier_3d run
+                           # (W&B 898culiq) lost its learned features to one unclipped spike. Patch batches
+                           # vary more in content than whole-domain ones (a window can be near-empty ocean or
+                           # dense with fronts, and flip augmentation adds to that), so the spike risk this
+                           # guards against is if anything higher here than in whole-domain training.
   loss_class_weights: null  # null supervises all classes incl. background, matching the AIES FrontFinder model
   loss_name: neighborhood_brier_score
   nbs_tolerance_km: 25.0
