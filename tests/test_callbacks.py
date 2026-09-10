@@ -254,50 +254,89 @@ class TestVisualizationCallbackPredict:
                 front_types=["CF"],
             )
 
-    def test_buffer_px_defaults_to_zero(self):
+    def test_buffer_lat_and_lon_px_default_to_zero(self):
         cb = self._make_callback(n_samples=1, predict_batch_size=1)
-        assert cb.buffer_px == 0
+        assert cb.buffer_lat_px == 0
+        assert cb.buffer_lon_px == 0
 
 
 class TestVisualizationCallbackPredictBuffer:
-    """buffer_px must crop the model's raw (buffered) output back down to the core size.
+    """buffer_lat_px/buffer_lon_px must crop the model's raw (buffered) output per-axis.
 
     Mirrors the training-side invariant (FrontsPyDataset._get_patches_at_indices /
-    losses.neighborhood_brier_score's pred_buffer_px): a patch-buffer-trained model's input
-    carries buffer_px extra context pixels on every spatial side beyond what should be scored
-    or plotted; _predict must strip that margin back off before returning.
+    losses.neighborhood_brier_score's pred_buffer_lat_px/pred_buffer_lon_px): a
+    patch-buffer-trained model's input carries buffer_lat_px/buffer_lon_px extra context
+    pixels on the corresponding spatial side beyond what should be scored or plotted;
+    _predict must strip that margin back off before returning. Only longitude is ever
+    buffered in practice (every training patch already spans the full latitude height of
+    the domain, so there is no artificial tile cut along latitude to compensate for), but
+    _predict must support either axis independently and must treat a 0 buffer on either
+    axis as an exact no-op (the safe `pred[:, b:shape-b, ...]` form, never `[:, b:-b]`,
+    which collapses the whole axis to empty when b == 0).
     """
 
-    def _make_callback(self, n_samples: int, buffer_px: int) -> "fc.TestVisualizationCallback":
-        # 4x4 identity model: output == input, so cropping is the only thing that can change
+    def _make_callback(
+        self,
+        n_samples: int,
+        buffer_lat_px: int,
+        buffer_lon_px: int,
+        core_lat: int = 3,
+        core_lon: int = 4,
+        predict_batch_size: int = 2,
+    ) -> "fc.TestVisualizationCallback":
+        # Identity model: output == input, so cropping is the only thing that can change
         # the predicted shape/values relative to the (buffered) input.
-        inputs = fc.tf.keras.Input(shape=(4, 4, 1))
+        buffered_lat = core_lat + 2 * buffer_lat_px
+        buffered_lon = core_lon + 2 * buffer_lon_px
+        inputs = fc.tf.keras.Input(shape=(buffered_lat, buffered_lon, 1))
         model = fc.tf.keras.Model(inputs, inputs)
         cb = fc.TestVisualizationCallback(
-            active_day_x=np.zeros((4, 4, 1), dtype=np.float32),
-            active_day_y=np.zeros((2, 2, 1), dtype=np.float32),
+            active_day_x=np.zeros((buffered_lat, buffered_lon, 1), dtype=np.float32),
+            active_day_y=np.zeros((core_lat, core_lon, 1), dtype=np.float32),
             active_day_label="active day",
-            subsample_x=np.arange(n_samples * 16, dtype=np.float32).reshape(n_samples, 4, 4, 1),
-            subsample_y=np.zeros((n_samples, 2, 2, 1), dtype=np.float32),
-            lats=np.array([0.0, 1.0]),
-            lons=np.array([0.0, 1.0]),
+            subsample_x=np.arange(n_samples * buffered_lat * buffered_lon, dtype=np.float32).reshape(
+                n_samples, buffered_lat, buffered_lon, 1
+            ),
+            subsample_y=np.zeros((n_samples, core_lat, core_lon, 1), dtype=np.float32),
+            lats=np.arange(core_lat, dtype=np.float64),
+            lons=np.arange(core_lon, dtype=np.float64),
             front_types=["CF"],
-            predict_batch_size=2,
-            buffer_px=buffer_px,
+            predict_batch_size=predict_batch_size,
+            buffer_lat_px=buffer_lat_px,
+            buffer_lon_px=buffer_lon_px,
         )
         cb.set_model(model)
         return cb
 
-    def test_crops_buffer_off_every_spatial_side(self):
-        cb = self._make_callback(n_samples=3, buffer_px=1)
+    def test_asymmetric_buffer_crops_longitude_only(self):
+        # buffer_lat_px=0 with buffer_lon_px=2: input is 4 px wider in longitude only
+        # (2 px each side) and the same height in latitude as the core.
+        cb = self._make_callback(n_samples=3, buffer_lat_px=0, buffer_lon_px=2)
         result = cb._predict(cb.subsample_x)
-        assert result.shape == (3, 2, 2, 1)
-        np.testing.assert_allclose(result, cb.subsample_x[:, 1:-1, 1:-1, :])
+        assert result.shape == (3, 3, 4, 1)
+        np.testing.assert_allclose(result, cb.subsample_x[:, :, 2:-2, :])
 
-    def test_zero_buffer_leaves_output_uncropped(self):
-        cb = self._make_callback(n_samples=2, buffer_px=0)
+    def test_zero_both_buffers_is_exact_passthrough(self):
+        # Guards the `pred[:, 0:-0, 0:-0, :]` empty-slice trap: both buffers 0 must leave
+        # the prediction completely unchanged, not collapse an axis to length 0.
+        cb = self._make_callback(n_samples=2, buffer_lat_px=0, buffer_lon_px=0)
         result = cb._predict(cb.subsample_x)
         np.testing.assert_allclose(result, cb.subsample_x)
+
+    def test_symmetric_buffer_crops_both_axes(self):
+        cb = self._make_callback(n_samples=3, buffer_lat_px=2, buffer_lon_px=2)
+        result = cb._predict(cb.subsample_x)
+        assert result.shape == (3, 3, 4, 1)
+        np.testing.assert_allclose(result, cb.subsample_x[:, 2:-2, 2:-2, :])
+
+    def test_crop_applied_after_chunked_concatenation(self):
+        # 5 samples with predict_batch_size=2 forces 3 chunks (sizes 2, 2, 1); the crop
+        # must be applied once to the concatenated (n_samples, ...) result, not per-chunk,
+        # so a multi-chunk subsample_x still ends up exactly core-sized end to end.
+        cb = self._make_callback(n_samples=5, buffer_lat_px=0, buffer_lon_px=2, predict_batch_size=2)
+        result = cb._predict(cb.subsample_x)
+        assert result.shape == (5, 3, 4, 1)
+        np.testing.assert_allclose(result, cb.subsample_x[:, :, 2:-2, :])
 
 
 class TestVisualizationCallbackOnEpochEnd:
@@ -346,8 +385,8 @@ class TestVisualizationCallbackOnEpochEnd:
         assert any(k.startswith("test/performance_diagram/") for k in payload)
 
     def test_runs_end_to_end_with_buffered_input(self, monkeypatch):
-        # Core is 2x2 with a buffer_px=1 margin on every side, matching what
-        # _build_test_visualization_callback hands a patch-buffer-trained model.
+        # Core is 2x2 with a buffer_lat_px=buffer_lon_px=1 margin on every side, matching
+        # what _build_test_visualization_callback hands a patch-buffer-trained model.
         inputs = fc.tf.keras.Input(shape=(None, None, 2))
         model = fc.tf.keras.Model(inputs, inputs)  # identity
         cb = fc.TestVisualizationCallback(
@@ -361,7 +400,8 @@ class TestVisualizationCallbackOnEpochEnd:
             front_types=["CF"],
             predict_batch_size=2,
             every_n_epochs=1,
-            buffer_px=1,
+            buffer_lat_px=1,
+            buffer_lon_px=1,
         )
         cb.set_model(model)
         monkeypatch.setattr(fc.plot_module, "plot_test_prediction", lambda **_: fc.plot_module.plt.figure())

@@ -293,11 +293,34 @@ def _lat_dependent_pool(field: tf.Tensor, half_y: int, half_x_per_row: np.ndarra
     return tf.gather(tf.concat(pieces, axis=1), original_row_order, axis=1)
 
 
-def _crop_pred_buffer(field: tf.Tensor, buffer_px: int) -> tf.Tensor:
-    """Crops ``buffer_px`` pixels off every side of the latitude/longitude axes."""
-    if buffer_px == 0:
-        return field
-    return field[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :]
+def _crop_pred_buffer(field: tf.Tensor, buffer_lat_px: int, buffer_lon_px: int) -> tf.Tensor:
+    """Crops buffer pixels off the latitude and longitude axes independently.
+
+    Latitude and longitude are cropped by different amounts because the two axes play
+    different roles in patch training: longitude is buffered to counteract artificial tile
+    cuts along that axis (Ronneberger et al. 2015's overlap-tile strategy), while latitude
+    typically is not, since a patch already spans the domain's full latitude extent (see
+    ``fronts.data.datasets.PatchConfig``). A single scalar buffer can't express that
+    asymmetry, hence the per-axis split.
+
+    Each axis is sliced independently and only when its buffer is > 0. Slicing an axis
+    with a 0-width buffer via ``field[:, 0:-0, ...]`` would produce an empty tensor
+    (``-0 == 0``, so the stop bound collapses to the start), so a 0 buffer must skip
+    that axis's slice entirely rather than slicing with a computed-but-degenerate bound.
+
+    Args:
+        field: Tensor shaped ``(batch, latitude, longitude, ...)``.
+        buffer_lat_px: Pixels to crop off each side of the latitude axis.
+        buffer_lon_px: Pixels to crop off each side of the longitude axis.
+
+    Returns:
+        ``field`` cropped per-axis; unchanged (same tensor) when both buffers are 0.
+    """
+    if buffer_lat_px > 0:
+        field = field[:, buffer_lat_px:-buffer_lat_px, :, :]
+    if buffer_lon_px > 0:
+        field = field[:, :, buffer_lon_px:-buffer_lon_px, :]
+    return field
 
 
 def neighborhood_brier_score(
@@ -306,7 +329,8 @@ def neighborhood_brier_score(
     tolerance_km: float = 25.0,
     include_pixel: bool = False,
     pixel_weight: float = 0.1,
-    pred_buffer_px: int = 0,
+    pred_buffer_lat_px: int = 0,
+    pred_buffer_lon_px: int = 0,
     class_weights: list[int | float] | None = None,
     periodic_lon: bool = False,
     max_half_x: int = 128,
@@ -330,15 +354,19 @@ def neighborhood_brier_score(
         tolerance_km: Neighborhood tolerance in kilometers.
         include_pixel: If True, adds a pixelwise (un-pooled) Brier term for sharpness.
         pixel_weight: Relative weight of the pixelwise term when ``include_pixel`` is True.
-        pred_buffer_px: If > 0, y_pred is expected to carry this many extra pixels of
-            context on every spatial side beyond y_true's shape (e.g. from a patch trained
-            with an input-only buffer — see fronts.data.datasets.PatchConfig). The
-            neighborhood pool runs on the full buffered y_pred first; only the *pooled*
-            result is then cropped by pred_buffer_px on every side before scoring against
-            y_true, so boundary cells use real buffer-region context instead of falling
-            back to zero-padding (the overlap-tile strategy from Ronneberger et al. 2015,
-            https://arxiv.org/abs/1505.04597). 0 (default) requires y_pred and y_true to
-            share the same shape, matching prior behavior.
+        pred_buffer_lat_px: If > 0, y_pred is expected to carry this many extra pixels of
+            context on each side of the latitude axis beyond y_true's shape (e.g. from a
+            patch trained with an input-only buffer — see fronts.data.datasets.PatchConfig).
+            The neighborhood pool runs on the full buffered y_pred first; only the *pooled*
+            result is then cropped by pred_buffer_lat_px on the latitude axis before scoring
+            against y_true, so boundary cells use real buffer-region context instead of
+            falling back to zero-padding (the overlap-tile strategy from Ronneberger et al.
+            2015, https://arxiv.org/abs/1505.04597). 0 (default) requires y_pred and y_true
+            to share the same latitude extent, matching prior behavior. Latitude and
+            longitude are buffered independently because, unlike longitude, a patch's
+            latitude extent is typically the full domain height with no artificial tile
+            cut to compensate for — see PatchConfig's ``buffer_lat_px``.
+        pred_buffer_lon_px: Same as ``pred_buffer_lat_px``, but for the longitude axis.
         class_weights: Weights to apply to each class. Length must equal the number of classes
             in y_pred and y_true. Applied post-pooling on the squared error.
         periodic_lon: If True, wraps the zonal window across the longitude edges. Only set for
@@ -381,8 +409,9 @@ def neighborhood_brier_score(
 
         Args:
             y_true: One-hot encoded tensor containing labels.
-            y_pred: Tensor containing model predictions. When pred_buffer_px > 0, this is
-                pred_buffer_px pixels wider than y_true on every spatial side.
+            y_pred: Tensor containing model predictions. When pred_buffer_lat_px or
+                pred_buffer_lon_px is > 0, y_pred is that many pixels wider than y_true on
+                the corresponding spatial axis.
         """
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
@@ -402,10 +431,10 @@ def neighborhood_brier_score(
         else:
             O_n = isotropic_pool(y_true)
             M_n = isotropic_pool(y_pred)
-        M_n = _crop_pred_buffer(M_n, pred_buffer_px)
+        M_n = _crop_pred_buffer(M_n, pred_buffer_lat_px, pred_buffer_lon_px)
         total = _brier(O_n, M_n)
         if include_pixel:
-            y_pred_core = _crop_pred_buffer(y_pred, pred_buffer_px)
+            y_pred_core = _crop_pred_buffer(y_pred, pred_buffer_lat_px, pred_buffer_lon_px)
             total += float(pixel_weight) * _brier(y_true, y_pred_core)
         return total / weight_sum
 

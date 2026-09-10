@@ -159,26 +159,107 @@ class TestHeidkeSkillScoreClassWeights:
 
 
 class TestHeidkeSkillScorePredBufferPx:
-    def test_buffered_pred_cropped_to_match_unbuffered_target(self):
-        """y_pred wider than y_true (patch-buffer training) must be cropped before scoring."""
-        buffer_px = 2
+    def test_asymmetric_buffer_lon_only(self):
+        """pred_buffer_lat_px=0, pred_buffer_lon_px=2: y_pred wider than y_true in longitude only.
+
+        This is the case that fails today under the single-scalar ``pred_buffer_px`` API: a
+        longitude-only buffer with zero latitude buffer needs the crop to be a genuine no-op on
+        the latitude axis (not ``field[:, 0:-0, ...]``, which yields an empty tensor).
+        """
+        buffer_lon_px = 2
         rng = np.random.default_rng(1)
         labels = rng.integers(0, N_CLASSES, size=(N_BATCH, N_H, N_W))
         core = (labels[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
 
-        y_pred = np.pad(core, ((0, 0), (buffer_px, buffer_px), (buffer_px, buffer_px), (0, 0)), mode="edge")
+        # Pad only the longitude axis; latitude height matches y_true exactly.
+        y_pred = np.pad(core, ((0, 0), (0, 0), (buffer_lon_px, buffer_lon_px), (0, 0)), mode="edge")
         # Buffer region disagrees with what the crop should discard, so a wrong crop changes the score.
-        y_pred[:, :buffer_px, :, :] = 0.0
-        y_pred[:, -buffer_px:, :, :] = 0.0
+        y_pred[:, :, :buffer_lon_px, :] = 0.0
+        y_pred[:, :, -buffer_lon_px:, :] = 0.0
 
-        result = heidke_skill_score(threshold=0.5, pred_buffer_px=buffer_px)(core, y_pred).numpy()
+        result = heidke_skill_score(threshold=0.5, pred_buffer_lat_px=0, pred_buffer_lon_px=buffer_lon_px)(
+            core, y_pred
+        ).numpy()
+        assert np.isfinite(result)
         assert result == pytest.approx(1.0, abs=1e-5)
 
-    def test_default_pred_buffer_px_requires_matching_shapes(self, perfect_pred):
-        """pred_buffer_px=0 (default) must reproduce prior no-crop behavior."""
+    def test_zero_buffer_on_both_axes_is_true_noop(self, perfect_pred):
+        """pred_buffer_lat_px=0, pred_buffer_lon_px=0 must reproduce the un-buffered HSS value exactly.
+
+        A naive ``field[:, 0:-0, 0:-0, :]`` slice would yield an empty tensor rather than a no-op;
+        this guards against that regression.
+        """
         y_true, y_pred = perfect_pred
-        result = heidke_skill_score(threshold=0.5, pred_buffer_px=0)(y_true, y_pred).numpy()
-        assert result == pytest.approx(1.0, abs=1e-5)
+        unbuffered = heidke_skill_score(threshold=0.5)(y_true, y_pred).numpy()
+        result = heidke_skill_score(threshold=0.5, pred_buffer_lat_px=0, pred_buffer_lon_px=0)(y_true, y_pred).numpy()
+        assert result == pytest.approx(unbuffered, abs=1e-7)
+
+    def test_symmetric_buffer_matches_hand_cropped_expected(self):
+        """pred_buffer_lat_px=2, pred_buffer_lon_px=2 matches an independently hand-cropped expected value."""
+        buffer_px = 2
+        rng = np.random.default_rng(2)
+        y_true = rng.integers(0, N_CLASSES, size=(N_BATCH, N_H, N_W))
+        y_true = (y_true[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
+
+        rng_pred = np.random.default_rng(3)
+        padded_labels = rng_pred.integers(0, N_CLASSES, size=(N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px))
+        y_pred_padded = (padded_labels[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
+
+        # Hand-crop the buffer off both axes ourselves, independent of the code under test.
+        y_pred_cropped = y_pred_padded[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :]
+        expected = heidke_skill_score(threshold=0.5)(y_true, y_pred_cropped).numpy()
+
+        result = heidke_skill_score(threshold=0.5, pred_buffer_lat_px=buffer_px, pred_buffer_lon_px=buffer_px)(
+            y_true, y_pred_padded
+        ).numpy()
+        assert result == pytest.approx(expected, abs=1e-6)
+
+    def test_buffer_composes_with_window_size(self):
+        """The crop must apply AFTER window_size pooling: composing them equals HSS of hand-cropped pooled fields."""
+        buffer_lat_px, buffer_lon_px = 0, 2
+        window_size = (3, 3)
+        rng = np.random.default_rng(4)
+        y_true = rng.integers(0, N_CLASSES, size=(N_BATCH, N_H, N_W))
+        y_true = (y_true[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
+
+        rng_pred = np.random.default_rng(5)
+        padded_labels = rng_pred.integers(0, N_CLASSES, size=(N_BATCH, N_H, N_W + 2 * buffer_lon_px))
+        y_pred_padded = (padded_labels[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
+
+        # Independently pool both fields with window_size, then hand-crop the pooled y_pred.
+        y_true_pooled = tf.nn.max_pool(y_true, ksize=window_size, strides=1, padding="VALID")
+        y_pred_pooled = tf.nn.max_pool(y_pred_padded, ksize=window_size, strides=1, padding="VALID")
+        y_pred_pooled_cropped = y_pred_pooled[:, :, buffer_lon_px:-buffer_lon_px, :]
+        expected = heidke_skill_score(threshold=0.5)(y_true_pooled, y_pred_pooled_cropped).numpy()
+
+        result = heidke_skill_score(
+            threshold=0.5,
+            window_size=window_size,
+            pred_buffer_lat_px=buffer_lat_px,
+            pred_buffer_lon_px=buffer_lon_px,
+        )(y_true, y_pred_padded).numpy()
+        assert result == pytest.approx(expected, abs=1e-6)
+
+    def test_buffer_composes_with_threshold(self):
+        """The crop must apply BEFORE thresholding: composing them equals HSS of hand-cropped, then thresholded."""
+        buffer_lat_px, buffer_lon_px = 1, 3
+        rng = np.random.default_rng(6)
+        y_true = rng.integers(0, N_CLASSES, size=(N_BATCH, N_H, N_W))
+        y_true = (y_true[..., np.newaxis] == np.arange(N_CLASSES)).astype(np.float32)
+
+        # Soft (non-one-hot) predictions so thresholding actually does something.
+        rng_pred = np.random.default_rng(7)
+        y_pred_padded = rng_pred.random((N_BATCH, N_H + 2 * buffer_lat_px, N_W + 2 * buffer_lon_px, N_CLASSES)).astype(
+            np.float32
+        )
+
+        y_pred_cropped = y_pred_padded[:, buffer_lat_px:-buffer_lat_px, buffer_lon_px:-buffer_lon_px, :]
+        expected = heidke_skill_score(threshold=0.5)(y_true, y_pred_cropped).numpy()
+
+        result = heidke_skill_score(threshold=0.5, pred_buffer_lat_px=buffer_lat_px, pred_buffer_lon_px=buffer_lon_px)(
+            y_true, y_pred_padded
+        ).numpy()
+        assert result == pytest.approx(expected, abs=1e-6)
 
 
 class TestFSSMetricPerfectPrediction:

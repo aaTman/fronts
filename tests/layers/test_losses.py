@@ -54,16 +54,12 @@ class TestPlanWindows:
 
     def test_max_distinct_widths_bounds_unique_half_x_values(self):
         wide_latitudes = np.arange(89.0, 0.0, -RESOLUTION_DEG)
-        plans = losses._plan_windows(
-            wide_latitudes, RESOLUTION_DEG, (250.0,), max_half_x=128, max_distinct_widths=4
-        )
+        plans = losses._plan_windows(wide_latitudes, RESOLUTION_DEG, (250.0,), max_half_x=128, max_distinct_widths=4)
         assert len(np.unique(plans[0]["half_x"])) <= 4
 
     def test_max_distinct_widths_none_leaves_full_precision(self):
         wide_latitudes = np.arange(89.0, 0.0, -RESOLUTION_DEG)
-        plans = losses._plan_windows(
-            wide_latitudes, RESOLUTION_DEG, (250.0,), max_half_x=128, max_distinct_widths=None
-        )
+        plans = losses._plan_windows(wide_latitudes, RESOLUTION_DEG, (250.0,), max_half_x=128, max_distinct_widths=None)
         assert len(np.unique(plans[0]["half_x"])) > 4
 
 
@@ -319,98 +315,203 @@ class TestNeighborhoodBrierScore:
         assert np.all(np.isfinite(result))
 
 
+class TestCropPredBuffer:
+    """Unit tests for ``_crop_pred_buffer`` in isolation from the loss's pooling logic."""
+
+    def test_zero_on_both_axes_is_a_genuine_noop(self):
+        """Regression guard for the `field[:, 0:-0, 0:-0, :]` footgun, which yields an empty tensor."""
+        field = tf.reshape(tf.range(2 * 4 * 4 * 3, dtype=tf.float32), (2, 4, 4, 3))
+        cropped = losses._crop_pred_buffer(field, buffer_lat_px=0, buffer_lon_px=0)
+        assert cropped.shape == field.shape
+        np.testing.assert_array_equal(cropped.numpy(), field.numpy())
+
+    def test_crops_longitude_only(self):
+        field = tf.reshape(tf.range(2 * 4 * 8 * 3, dtype=tf.float32), (2, 4, 8, 3))
+        cropped = losses._crop_pred_buffer(field, buffer_lat_px=0, buffer_lon_px=2)
+        assert cropped.shape == (2, 4, 4, 3)
+        np.testing.assert_array_equal(cropped.numpy(), field.numpy()[:, :, 2:-2, :])
+
+    def test_crops_latitude_only(self):
+        field = tf.reshape(tf.range(2 * 8 * 4 * 3, dtype=tf.float32), (2, 8, 4, 3))
+        cropped = losses._crop_pred_buffer(field, buffer_lat_px=2, buffer_lon_px=0)
+        assert cropped.shape == (2, 4, 4, 3)
+        np.testing.assert_array_equal(cropped.numpy(), field.numpy()[:, 2:-2, :, :])
+
+    def test_crops_both_axes_with_different_widths(self):
+        field = tf.reshape(tf.range(2 * 8 * 10 * 3, dtype=tf.float32), (2, 8, 10, 3))
+        cropped = losses._crop_pred_buffer(field, buffer_lat_px=2, buffer_lon_px=3)
+        assert cropped.shape == (2, 4, 4, 3)
+        np.testing.assert_array_equal(cropped.numpy(), field.numpy()[:, 2:-2, 3:-3, :])
+
+
 class TestNeighborhoodBrierScorePredBuffer:
-    def test_pred_buffer_px_zero_matches_default_behavior(self):
+    @staticmethod
+    def _brute_force_isotropic_pool(field: np.ndarray, half: int) -> np.ndarray:
+        """Direct per-pixel valid-cell-normalized window mean, symmetric in both spatial axes.
+
+        Independent of ``losses._lat_dependent_pool`` / ``tf.keras.layers.AveragePooling2D`` --
+        used only to build an expected value that isn't just a recording of the code under test.
+        """
+        _, n_h, n_w, _ = field.shape
+        out = np.zeros_like(field)
+        for i in range(n_h):
+            rows = list(range(max(0, i - half), min(n_h, i + half + 1)))
+            for j in range(n_w):
+                cols = list(range(max(0, j - half), min(n_w, j + half + 1)))
+                out[:, i, j, :] = field[:, rows][:, :, cols].mean(axis=(1, 2))
+        return out
+
+    def test_pred_buffer_zero_on_both_axes_matches_default_behavior(self):
+        """A (0, 0) buffer must reproduce the unbuffered loss exactly -- proof the crop is a no-op, not empty."""
         y_true = _with_front_row(_one_hot_background(), row=4)
         y_pred = _with_front_row(_one_hot_background(), row=5)
         default = losses.neighborhood_brier_score(latitudes=EQUATOR_LATITUDES, tolerance_km=25.0)
         explicit_zero = losses.neighborhood_brier_score(
-            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, pred_buffer_px=0
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, pred_buffer_lat_px=0, pred_buffer_lon_px=0
         )
         np.testing.assert_allclose(default(y_true, y_pred).numpy(), explicit_zero(y_true, y_pred).numpy())
 
-    def test_pred_buffer_px_accepts_larger_prediction_and_returns_finite_scalar(self):
+    def test_asymmetric_buffer_accepts_prediction_wider_only_in_longitude(self):
+        """The whole point of the change: buffer only longitude (buffer_lat_px=0) and still compute.
+
+        y_pred is 4 px wider than y_true in longitude and the SAME height in latitude --
+        with the old scalar ``pred_buffer_px`` this shape combination was impossible to express.
+        """
         y_true = _one_hot_background()
-        buffer_px = 2
-        y_pred = np.zeros((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES), dtype=np.float32)
+        lon_buffer = 2
+        y_pred = np.zeros((N_BATCH, N_H, N_W + 2 * lon_buffer, N_CLASSES), dtype=np.float32)
         y_pred[..., 0] = 1.0
         loss_fn = losses.neighborhood_brier_score(
-            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, pred_buffer_px=buffer_px
+            latitudes=EQUATOR_LATITUDES,
+            tolerance_km=25.0,
+            pred_buffer_lat_px=0,
+            pred_buffer_lon_px=lon_buffer,
         )
         result = loss_fn(y_true, y_pred).numpy()
         assert result.shape == (N_BATCH,)
         assert np.all(np.isfinite(result))
 
-    def test_pred_buffer_px_pooling_reads_real_buffer_values_not_zero_padding(self):
+    def test_symmetric_buffer_matches_independently_constructed_expected_value(self):
+        """A symmetric per-axis buffer must match what the old scalar buffer produced.
+
+        ``pred_buffer_lat_px == pred_buffer_lon_px`` must reproduce what the old scalar
+        ``pred_buffer_px`` produced -- checked against a brute-force pool computed
+        independently of any pooling code in ``losses.py``, not against a recorded output
+        of the new code.
+        """
+        buffer_px = 2
+        rng = np.random.default_rng(0)
+        y_true = rng.random((N_BATCH, N_H, N_W, N_CLASSES)).astype(np.float32)
+        y_true /= y_true.sum(axis=-1, keepdims=True)
+        y_pred = rng.random((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES)).astype(np.float32)
+        y_pred /= y_pred.sum(axis=-1, keepdims=True)
+
+        # EQUATOR_LATITUDES / RESOLUTION_DEG / 25km tolerance gives half_y == 1 (see TestPlanWindows),
+        # and the isotropic pool (the default, lat_dependent_pool=False) uses that half in both axes.
+        half = 1
+        loss_fn = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES,
+            tolerance_km=25.0,
+            pred_buffer_lat_px=buffer_px,
+            pred_buffer_lon_px=buffer_px,
+        )
+        actual = loss_fn(y_true, y_pred).numpy()
+
+        o_n = self._brute_force_isotropic_pool(y_true, half)
+        m_n_full = self._brute_force_isotropic_pool(y_pred, half)
+        m_n = m_n_full[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :]
+        expected = np.square(o_n - m_n).mean(axis=(1, 2, 3))
+
+        np.testing.assert_allclose(actual, expected, atol=1e-5)
+
+    def test_buffered_pool_uses_real_buffer_values_not_zero_padding(self):
         """Pooling the buffered prediction must use the declared buffer-ring content.
 
-        Cells whose pooling window reaches into the buffer must draw from it -- otherwise
-        pred_buffer_px would be a no-op and defeat the point of supplying buffer context.
+        Cells whose pooling window reaches into the buffer must draw from it -- otherwise the
+        buffer would be a no-op and defeat the point of supplying buffer context. Only the
+        longitude axis is buffered here, exercising the asymmetric (lat=0) path.
 
         Keras's AveragePooling2D(padding="same") already excludes padding from its divisor
         (a uniform field pools to itself even at the domain edge), so "zero-padding dilutes
         the edge" is not the right mental model here; edge cells are always
         valid-cell-normalized over however many cells the window actually has access to.
-        That's exactly the lever this test uses: with a front pixel at the very edge (row
-        0, col 4) and a core prediction that matches the truth exactly, the *unbuffered*
-        loss is exactly zero (O_n and M_n both valid-cell-average the identical 6
-        in-domain neighbors). Declaring a buffer ring that continues the same front pattern
-        one row further north changes the buffered M_n's neighbor count from 6 to 9 real
-        cells -- a different (and here, nonzero) average -- proving the crop happens after
-        a pooling call that genuinely saw the buffer pixels, not before it.
+        That's exactly the lever this test uses: with a front pixel at the very west edge
+        (row 4, col 0) and a core prediction that matches the truth exactly, the *unbuffered*
+        loss is exactly zero (O_n and M_n both valid-cell-average the identical in-domain
+        neighbors). Declaring a longitude buffer ring that continues the same front pattern
+        one column further west changes the buffered M_n's neighbor count for that cell --
+        a different (and here, nonzero) average -- proving the crop happens after a pooling
+        call that genuinely saw the buffer pixels, not before it.
         """
         y_true = _one_hot_background().copy()
-        y_true[:, 0, 4, 0] = 0.0
-        y_true[:, 0, 4, 1] = 1.0  # a single front pixel at the very edge (row 0, col 4)
+        y_true[:, 4, 0, 0] = 0.0
+        y_true[:, 4, 0, 1] = 1.0  # a single front pixel at the very west edge (row 4, col 0)
         core_pred = y_true.copy()
-        buffer_px = 1
-        buffered_pred = np.zeros((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES), dtype=np.float32)
+        lon_buffer = 1
+        buffered_pred = np.zeros((N_BATCH, N_H, N_W + 2 * lon_buffer, N_CLASSES), dtype=np.float32)
         buffered_pred[..., 0] = 1.0
-        buffered_pred[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :] = core_pred
-        # North buffer row: the front continues one row further north, aligned under core
-        # col 4 (buffered col index 4 + buffer_px).
-        buffered_pred[:, 0, :, 0] = 1.0
-        buffered_pred[:, 0, :, 1] = 0.0
-        buffered_pred[:, 0, 4 + buffer_px, 0] = 0.0
-        buffered_pred[:, 0, 4 + buffer_px, 1] = 1.0
+        buffered_pred[:, :, lon_buffer:-lon_buffer, :] = core_pred
+        # West buffer column: the front continues one column further west, aligned under core
+        # row 4 (unchanged row index; buffered col index 0).
+        buffered_pred[:, 4, 0, 0] = 0.0
+        buffered_pred[:, 4, 0, 1] = 1.0
 
         cw = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]  # isolate the front class
         unbuffered_loss = losses.neighborhood_brier_score(
             latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, class_weights=cw
         )
         buffered_loss = losses.neighborhood_brier_score(
-            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, class_weights=cw, pred_buffer_px=buffer_px
+            latitudes=EQUATOR_LATITUDES,
+            tolerance_km=25.0,
+            class_weights=cw,
+            pred_buffer_lat_px=0,
+            pred_buffer_lon_px=lon_buffer,
+        )
+        cropped_before_pool_loss = losses.neighborhood_brier_score(
+            latitudes=EQUATOR_LATITUDES, tolerance_km=25.0, class_weights=cw
         )
 
         unbuffered_value = unbuffered_loss(y_true, core_pred).numpy().mean()
         buffered_value = buffered_loss(y_true, buffered_pred).numpy().mean()
+        # Cropping the *raw* buffered prediction before pooling (i.e. discarding the buffer
+        # ring up front) can only ever recover the unbuffered core prediction -- proving that
+        # a nonzero `buffered_value` above required the pool to run on the buffered field first.
+        cropped_first_value = (
+            cropped_before_pool_loss(y_true, buffered_pred[:, :, lon_buffer:-lon_buffer, :]).numpy().mean()
+        )
 
         assert unbuffered_value == pytest.approx(0.0, abs=1e-7), (
-            "sanity check: an unbuffered perfect-core prediction must score exactly zero "
-            "since O_n and M_n valid-cell-average the identical 6 in-domain neighbors"
+            "sanity check: an unbuffered perfect-core prediction must score exactly zero"
         )
         assert buffered_value > 1e-7, (
             "the buffered prediction differs from the unbuffered one only in its buffer "
             "ring, so a nonzero loss here proves the pooling step actually read those "
-            "buffer pixels (averaging over 9 cells) rather than stopping at the domain edge "
-            "(averaging over 6)"
+            "buffer pixels rather than stopping at the domain edge"
         )
+        assert cropped_first_value == pytest.approx(0.0, abs=1e-7), (
+            "cropping the raw prediction before pooling discards the buffer ring and "
+            "recovers the (zero-loss) unbuffered core -- the opposite of what the "
+            "pool-then-crop buffered path must do"
+        )
+        assert buffered_value > cropped_first_value
 
-    def test_pred_buffer_px_pixel_term_uses_cropped_raw_prediction(self):
+    def test_pixel_term_with_asymmetric_buffer_uses_cropped_raw_prediction(self):
         """include_pixel's un-pooled term must compare against the cropped raw prediction.
 
-        Not the full buffered one -- otherwise shapes wouldn't broadcast.
+        Not the full buffered one -- otherwise shapes wouldn't broadcast. Buffer is
+        asymmetric (longitude only) to exercise the per-axis crop in the pixel branch too.
         """
         y_true = _with_front_row(_one_hot_background(), row=4)
-        buffer_px = 1
+        lon_buffer = 1
         core_pred = _one_hot_background()  # wrong everywhere in the core (a miss)
-        buffered_pred = np.zeros((N_BATCH, N_H + 2 * buffer_px, N_W + 2 * buffer_px, N_CLASSES), dtype=np.float32)
+        buffered_pred = np.zeros((N_BATCH, N_H, N_W + 2 * lon_buffer, N_CLASSES), dtype=np.float32)
         buffered_pred[..., 0] = 1.0
-        buffered_pred[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :] = core_pred
+        buffered_pred[:, :, lon_buffer:-lon_buffer, :] = core_pred
         loss_fn = losses.neighborhood_brier_score(
             latitudes=EQUATOR_LATITUDES,
             tolerance_km=25.0,
-            pred_buffer_px=buffer_px,
+            pred_buffer_lat_px=0,
+            pred_buffer_lon_px=lon_buffer,
             include_pixel=True,
             pixel_weight=1.0,
         )

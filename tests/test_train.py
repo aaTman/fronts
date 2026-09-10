@@ -39,7 +39,7 @@ try:
         _freeze_layers,
         _load_pretrained_weights,
         _optimizer_uses_ema,
-        _pred_buffer_px_from_data_config,
+        _pred_buffer_from_data_config,
         _should_build_test_visualization,
         _target_latitudes,
         _validate_batch_size_for_strategy,
@@ -529,7 +529,7 @@ class TestFrontsPyDatasetPatchMode:
     _N_TIME = 2
     _N_LAT_CORE = 6
     _N_LON_CORE = 12
-    _BUFFER = 2
+    _BUFFER = 2  # applied to both axes by default, matching this class's pre-per-axis-buffer coverage
     _PATCH_WIDTH = 4
     _N_PATCHES = 3  # starts = [0, 4, 8] for a 12-wide core and a 4-wide patch
 
@@ -539,7 +539,16 @@ class TestFrontsPyDatasetPatchMode:
             np.float32
         )
 
-    def _make_ds(self, flip_probability=0.0, augment=False, front_dilation=0):
+    def _make_ds(
+        self,
+        flip_probability=0.0,
+        augment=False,
+        front_dilation=0,
+        buffer_lat_px=None,
+        buffer_lon_px=None,
+        patches_per_epoch=None,
+        seed=0,
+    ):
         core_input_vals = self._core_vals()
         input_ds = xr.Dataset(
             {
@@ -564,8 +573,10 @@ class TestFrontsPyDatasetPatchMode:
         patch_config = PatchConfig(
             n_patches=self._N_PATCHES,
             patch_lon_width_px=self._PATCH_WIDTH,
-            buffer_px=self._BUFFER,
+            buffer_lat_px=self._BUFFER if buffer_lat_px is None else buffer_lat_px,
+            buffer_lon_px=self._BUFFER if buffer_lon_px is None else buffer_lon_px,
             flip_probability=flip_probability,
+            patches_per_epoch=patches_per_epoch,
         )
         data_config = DatasetConfig(
             inputs_icechunk_config=dummy_store,
@@ -576,7 +587,7 @@ class TestFrontsPyDatasetPatchMode:
             front_dilation=front_dilation,
             patch_config=patch_config,
         )
-        return FrontsPyDataset(input_ds, target_da, data_config, batch_size=1, augment=augment, seed=0)
+        return FrontsPyDataset(input_ds, target_da, data_config, batch_size=1, augment=augment, seed=seed)
 
     def test_total_samples_equals_time_times_patches(self):
         ds = self._make_ds()
@@ -605,7 +616,8 @@ class TestFrontsPyDatasetPatchMode:
 
     def test_buffer_mirrors_core_values_at_domain_edge(self):
         """The west buffer ring of the first patch must mirror the core's own west edge
-        (reflect padding), not zeros or wrapped-around east-edge values."""
+        (reflect padding), not zeros or wrapped-around east-edge values.
+        """
         ds = self._make_ds()
         x, _ = ds.get_at_indices(np.array([0]))
         padded = np.pad(self._core_vals(), self._BUFFER, mode="reflect")
@@ -634,7 +646,8 @@ class TestFrontsPyDatasetPatchMode:
     def test_patches_sharing_a_timestep_materialize_inputs_once_per_unique_timestep(self, monkeypatch):
         """Regression test: a batch of patches from the same timestep must trigger one
         full-domain read of that timestep, not one per patch (see
-        ``FrontsPyDataset._get_patches_at_indices``)."""
+        ``FrontsPyDataset._get_patches_at_indices``).
+        """
         ds = self._make_ds()
         seen_time_sizes = []
         original = data_inputs.inputs_ds_to_dataarray
@@ -650,7 +663,8 @@ class TestFrontsPyDatasetPatchMode:
 
     def test_patches_sharing_a_timestep_dilate_once_per_unique_timestep(self, monkeypatch):
         """Regression test: binary dilation (the expensive step) must run once per unique
-        timestep in the batch, not once per patch."""
+        timestep in the batch, not once per patch.
+        """
         ds = self._make_ds(front_dilation=1)
         call_count = 0
         original = data_targets._dilate_one_timestep
@@ -675,6 +689,112 @@ class TestFrontsPyDatasetPatchMode:
             np.testing.assert_allclose(x_batch[i], x_single[0])
             np.testing.assert_allclose(y_batch[i], y_single[0])
 
+    def test_zero_latitude_buffer_widens_only_longitude(self):
+        """Buffer_lat_px=0 must widen only longitude — the point of per-axis buffering.
+
+        Latitude must stay at the core height (identical between input and target) while
+        longitude still grows by 2 * buffer_lon_px on the input only. See CONTRACT.md's
+        root-cause table — the latitude buffer was pure waste since every patch already
+        spans the full domain height, so there is no artificial tile cut along latitude
+        to overlap-tile-buffer.
+        """
+        buffer_lon_px = 3
+        ds = self._make_ds(buffer_lat_px=0, buffer_lon_px=buffer_lon_px)
+        x, y = ds.get_at_indices(np.array([0]))
+        assert x.shape == (1, self._N_LAT_CORE, self._PATCH_WIDTH + 2 * buffer_lon_px, 1)
+        assert y.shape[1:3] == (self._N_LAT_CORE, self._PATCH_WIDTH)
+        # Latitude extent must be identical (core height) between input and target.
+        assert x.shape[1] == y.shape[1] == self._N_LAT_CORE
+        # Longitude extent must differ by exactly 2 * buffer_lon_px.
+        assert x.shape[2] - y.shape[2] == 2 * buffer_lon_px
+
+    def test_zero_latitude_buffer_matches_unbuffered_reflect_pad_on_longitude_only(self):
+        """With buffer_lat_px=0, the patch must equal a longitude-only reflect-padded slice."""
+        buffer_lon_px = 3
+        ds = self._make_ds(buffer_lat_px=0, buffer_lon_px=buffer_lon_px)
+        starts = compute_patch_lon_starts(self._N_LON_CORE, self._PATCH_WIDTH, self._N_PATCHES)
+        padded = reflect_pad_lat_lon_buffer(self._core_vals()[None, ...], 0, buffer_lon_px)[0]
+        for global_idx in range(ds.n_samples):
+            x, _ = ds.get_at_indices(np.array([global_idx]))
+            _, patch_idx = divmod(global_idx, self._N_PATCHES)
+            start = starts[patch_idx]
+            expected = padded[:, start : start + self._PATCH_WIDTH + 2 * buffer_lon_px]
+            np.testing.assert_allclose(x[0, :, :, 0], expected)
+
+    def test_patch_config_rejects_negative_buffer_lat_px(self):
+        with pytest.raises(ValueError, match="buffer_lat_px"):
+            PatchConfig(n_patches=self._N_PATCHES, patch_lon_width_px=self._PATCH_WIDTH, buffer_lat_px=-1)
+
+    def test_patch_config_rejects_negative_buffer_lon_px(self):
+        with pytest.raises(ValueError, match="buffer_lon_px"):
+            PatchConfig(n_patches=self._N_PATCHES, patch_lon_width_px=self._PATCH_WIDTH, buffer_lon_px=-1)
+
+    def test_patch_config_rejects_patches_per_epoch_of_zero(self):
+        with pytest.raises(ValueError, match="patches_per_epoch"):
+            PatchConfig(n_patches=self._N_PATCHES, patch_lon_width_px=self._PATCH_WIDTH, patches_per_epoch=0)
+
+    def test_patch_config_rejects_patches_per_epoch_above_n_patches(self):
+        with pytest.raises(ValueError, match="patches_per_epoch"):
+            PatchConfig(
+                n_patches=self._N_PATCHES,
+                patch_lon_width_px=self._PATCH_WIDTH,
+                patches_per_epoch=self._N_PATCHES + 1,
+            )
+
+    def test_patch_config_accepts_patches_per_epoch_equal_to_n_patches(self):
+        # Upper bound of the valid range (1 <= patches_per_epoch <= n_patches) must not raise.
+        cfg = PatchConfig(
+            n_patches=self._N_PATCHES, patch_lon_width_px=self._PATCH_WIDTH, patches_per_epoch=self._N_PATCHES
+        )
+        assert cfg.patches_per_epoch == self._N_PATCHES
+
+    def test_flip_augmentation_is_vectorized_and_matches_manual_per_sample_flip(self):
+        """Contract 7: the vectorized flip must reproduce the old per-sample loop's flips.
+
+        Bit-for-bit, given the same seed, since the RNG draw order (flip_lat then
+        flip_lon, both ``self._rng.random(n) < p``) is unchanged. The expected result is
+        constructed independently here (a fresh RNG replicating the exact draw order, then
+        explicit per-row flipping), not by calling the implementation under test, so this
+        can't pass by construction.
+        """
+        seed = 0
+        flip_probability = 0.5
+        ds_raw = self._make_ds(flip_probability=flip_probability, augment=False, seed=seed)
+        idxs = np.arange(ds_raw.n_samples)
+        x_raw, y_raw = ds_raw.get_at_indices(idxs)
+
+        ds_aug = self._make_ds(flip_probability=flip_probability, augment=True, seed=seed)
+        x_aug, y_aug = ds_aug.get_at_indices(idxs)
+
+        # ds_aug's RNG is untouched before this first get_at_indices call (shuffle=False
+        # never draws from it), so a freshly seeded generator reproduces the exact draws.
+        expected_rng = np.random.default_rng(seed)
+        n = len(idxs)
+        flip_lat = expected_rng.random(n) < flip_probability
+        flip_lon = expected_rng.random(n) < flip_probability
+        assert flip_lat.any() and flip_lon.any(), "test seed must exercise both flip branches"
+
+        expected_x, expected_y = x_raw.copy(), y_raw.copy()
+        for i in range(n):
+            if flip_lat[i]:
+                expected_x[i] = expected_x[i, ::-1, ...]
+                expected_y[i] = expected_y[i, ::-1, ...]
+            if flip_lon[i]:
+                expected_x[i] = expected_x[i, :, ::-1, ...]
+                expected_y[i] = expected_y[i, :, ::-1, ...]
+
+        np.testing.assert_allclose(x_aug, expected_x)
+        np.testing.assert_allclose(y_aug, expected_y)
+
+    def test_flip_probability_zero_is_a_no_op(self):
+        ds_raw = self._make_ds(flip_probability=0.0, augment=False)
+        ds_aug = self._make_ds(flip_probability=0.0, augment=True)
+        idxs = np.arange(ds_raw.n_samples)
+        x_raw, y_raw = ds_raw.get_at_indices(idxs)
+        x_aug, y_aug = ds_aug.get_at_indices(idxs)
+        np.testing.assert_allclose(x_aug, x_raw)
+        np.testing.assert_allclose(y_aug, y_raw)
+
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestFrontsPyDatasetPatchModeShuffleBlocks:
@@ -686,7 +806,9 @@ class TestFrontsPyDatasetPatchModeShuffleBlocks:
     instead group every patch of nearby timesteps together.
     """
 
-    def _make_ds(self, n_time, n_patches, batch_size, shuffle=True, seed=0, drop_remainder=False):
+    def _make_ds(
+        self, n_time, n_patches, batch_size, shuffle=True, seed=0, drop_remainder=False, patches_per_epoch=None
+    ):
         n_lat_core, n_lon_core, patch_width = 4, 12, 4
         vals = (np.arange(n_lat_core)[:, None] + np.arange(n_lon_core)[None, :]).astype(np.float32) % 2
         input_ds = xr.Dataset(
@@ -704,7 +826,13 @@ class TestFrontsPyDatasetPatchModeShuffleBlocks:
             coords={"time": np.arange(n_time)},
         )
         dummy_store = IcechunkStorageConfig(store_path="unused", branch_name="main")
-        patch_config = PatchConfig(n_patches=n_patches, patch_lon_width_px=patch_width, buffer_px=0)
+        patch_config = PatchConfig(
+            n_patches=n_patches,
+            patch_lon_width_px=patch_width,
+            buffer_lat_px=0,
+            buffer_lon_px=0,
+            patches_per_epoch=patches_per_epoch,
+        )
         data_config = DatasetConfig(
             inputs_icechunk_config=dummy_store,
             targets_icechunk_config=dummy_store,
@@ -821,6 +949,161 @@ class TestFrontsPyDatasetPatchModeShuffleBlocks:
                 x_batch, y_batch = ds[i]
                 np.testing.assert_allclose(x_batch, expected_x)
                 np.testing.assert_allclose(y_batch, expected_y)
+
+    def test_patches_per_epoch_reduces_n_samples_and_len(self):
+        """Contract 6: an epoch visits patches_per_epoch, not all n_patches, positions.
+
+        This is the epoch-cost-parity fix (see CONTRACT.md's root-cause table: an
+        unrestricted patch epoch computes 4.00x the core-coverage of a whole-domain
+        epoch; sampling k of n positions divides that redundancy down to k/n).
+        """
+        n_time, n_patches, patches_per_epoch, batch_size = 5, 10, 4, 4
+        ds = self._make_ds(
+            n_time=n_time, n_patches=n_patches, batch_size=batch_size, patches_per_epoch=patches_per_epoch
+        )
+        assert ds.n_samples == n_time * patches_per_epoch
+        assert len(ds) == math.ceil(n_time * patches_per_epoch / batch_size)
+
+    def test_patches_per_epoch_shuffle_selects_k_distinct_valid_patches_per_timestep(self):
+        n_time, n_patches, patches_per_epoch, batch_size = 6, 8, 3, 3
+        ds = self._make_ds(
+            n_time=n_time,
+            n_patches=n_patches,
+            batch_size=batch_size,
+            shuffle=True,
+            seed=2,
+            patches_per_epoch=patches_per_epoch,
+        )
+        assert len(ds._order) == n_time * patches_per_epoch
+        time_idxs = ds._order // n_patches
+        patch_idxs = ds._order % n_patches
+        for t in range(n_time):
+            patches_for_t = patch_idxs[time_idxs == t]
+            assert len(patches_for_t) == patches_per_epoch, f"timestep {t} got {len(patches_for_t)} patches"
+            assert len(set(patches_for_t.tolist())) == patches_per_epoch, f"timestep {t} patches not distinct"
+            assert patches_for_t.min() >= 0 and patches_for_t.max() < n_patches
+            np.testing.assert_array_equal(patches_for_t, np.sort(patches_for_t))  # emitted in ascending order
+
+    def test_patches_per_epoch_shuffle_redraws_a_different_subset_each_epoch(self):
+        """Two successive epochs' patch subsets must both be correct and differ.
+
+        Independently simulating the spec'd algorithm (block-order permutation via
+        ``rng.permutation``, then per-timestep ``rng.choice(n_patches, size=k,
+        replace=False)`` sorted ascending) for seed=7 gives these exact two epochs — a
+        fresh ``np.random.default_rng(7)`` reproduces them deterministically, so this
+        pins down the real draws rather than a vacuous not-equal check.
+        """
+        n_time, n_patches, patches_per_epoch, batch_size = 4, 5, 2, 4
+        ds = self._make_ds(
+            n_time=n_time,
+            n_patches=n_patches,
+            batch_size=batch_size,
+            shuffle=True,
+            seed=7,
+            patches_per_epoch=patches_per_epoch,
+        )
+        first_epoch_order = ds._order.copy()
+        ds.on_epoch_end()
+        second_epoch_order = ds._order.copy()
+
+        np.testing.assert_array_equal(first_epoch_order, np.array([2, 3, 7, 8, 10, 14, 16, 19]))
+        np.testing.assert_array_equal(second_epoch_order, np.array([11, 14, 15, 18, 1, 3, 6, 8]))
+        assert not np.array_equal(first_epoch_order, second_epoch_order)
+
+    def test_patches_per_epoch_no_shuffle_is_deterministic_and_evenly_spaced(self):
+        """shuffle=False must select the same linspace-evenly-spaced subset every epoch.
+
+        Required for a stable val_loss (LR-plateau / early-stopping rely on it).
+        """
+        n_time, n_patches, patches_per_epoch, batch_size = 3, 30, 6, 6
+        ds = self._make_ds(
+            n_time=n_time,
+            n_patches=n_patches,
+            batch_size=batch_size,
+            shuffle=False,
+            patches_per_epoch=patches_per_epoch,
+        )
+        expected_positions = np.array([0, 5, 10, 15, 20, 25])
+        expected_order = np.concatenate([t * n_patches + expected_positions for t in range(n_time)])
+        np.testing.assert_array_equal(ds._order, expected_order)
+
+        order_before = ds._order.copy()
+        ds.on_epoch_end()
+        np.testing.assert_array_equal(ds._order, order_before)
+
+    def test_patches_per_epoch_none_matches_all_patches_behavior(self):
+        """patches_per_epoch=None must reproduce today's all-patches behavior exactly.
+
+        Every sample in the full n_patches index space, once.
+        """
+        n_time, n_patches, batch_size = 9, 3, 9
+        ds = self._make_ds(n_time=n_time, n_patches=n_patches, batch_size=batch_size, seed=2, patches_per_epoch=None)
+        assert ds._patches_per_epoch == n_patches
+        assert ds.n_samples == n_time * n_patches
+        np.testing.assert_array_equal(np.sort(ds._order), np.arange(ds.n_samples))
+
+    def test_read_amplification_invariant_holds_when_batch_size_divides_patches_per_epoch(self):
+        """The read-amplification invariant the whole feature exists for.
+
+        When ``batch_size % patches_per_epoch == 0``, every batch covers exactly
+        ``batch_size // patches_per_epoch`` distinct timesteps, and each timestep is
+        materialized by exactly one batch across the whole epoch (never split across two
+        batches, so never re-read).
+        """
+        n_time, n_patches, patches_per_epoch, batch_size = 8, 6, 3, 6
+        assert batch_size % patches_per_epoch == 0
+        ds = self._make_ds(
+            n_time=n_time,
+            n_patches=n_patches,
+            batch_size=batch_size,
+            shuffle=True,
+            seed=11,
+            patches_per_epoch=patches_per_epoch,
+        )
+        expected_distinct = batch_size // patches_per_epoch
+        time_to_batches: dict[int, set[int]] = {}
+        for i in range(len(ds)):
+            local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+            time_idxs = local_idxs // n_patches
+            uniq = np.unique(time_idxs)
+            assert len(uniq) == expected_distinct, (
+                f"batch {i} covers {len(uniq)} timesteps, expected {expected_distinct}"
+            )
+            for t in uniq:
+                time_to_batches.setdefault(int(t), set()).add(i)
+
+        assert set(time_to_batches.keys()) == set(range(n_time)), "every timestep must be visited"
+        for t, batches in time_to_batches.items():
+            assert len(batches) == 1, f"timestep {t} was materialized by {len(batches)} batches, expected exactly 1"
+
+    def test_read_amplification_invariant_does_not_hold_when_misaligned(self):
+        """Contrast case: a misaligned batch_size/patches_per_epoch allows re-reads.
+
+        batch_size=4 is not a multiple of patches_per_epoch=3, so the invariant is NOT
+        guaranteed — some timestep's patches straddle two different batches, meaning that
+        timestep gets materialized (read) twice in the epoch. This proves the aligned
+        test above is asserting something real, not vacuously true.
+        """
+        n_time, n_patches, patches_per_epoch, batch_size = 4, 6, 3, 4
+        assert batch_size % patches_per_epoch != 0
+        ds = self._make_ds(
+            n_time=n_time,
+            n_patches=n_patches,
+            batch_size=batch_size,
+            shuffle=True,
+            seed=13,
+            patches_per_epoch=patches_per_epoch,
+        )
+        time_to_batches: dict[int, set[int]] = {}
+        for i in range(len(ds)):
+            local_idxs = ds._order[i * batch_size : (i + 1) * batch_size]
+            time_idxs = local_idxs // n_patches
+            for t in np.unique(time_idxs):
+                time_to_batches.setdefault(int(t), set()).add(i)
+
+        assert any(len(batches) > 1 for batches in time_to_batches.values()), (
+            "misaligned batch_size/patches_per_epoch should produce at least one re-read timestep"
+        )
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -1131,9 +1414,10 @@ class TestLoadDataIntoDataloaderPressureLevels:
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
 class TestLoadDataIntoDataloaderPatchBuffer:
-    """patch_config.buffer_px never widens the loaded domain — both inputs_ds and targets_da
-    stay at the core ``coordinates`` box; buffering happens later, per batch, in
-    ``FrontsPyDataset`` via reflect-padding (see TestFrontsPyDatasetPatchMode)."""
+    """patch_config's per-axis buffers never widen the loaded domain — both inputs_ds and
+    targets_da stay at the core ``coordinates`` box; buffering happens later, per batch,
+    in ``FrontsPyDataset`` via reflect-padding (see TestFrontsPyDatasetPatchMode).
+    """
 
     _TIMES = pd.date_range("2020-01-01", periods=4, freq="6h")
     _LAT = np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0])
@@ -1153,7 +1437,7 @@ class TestLoadDataIntoDataloaderPatchBuffer:
         write_or_append_icechunk_store(storage_config, ds)
         return storage_config
 
-    def _data_config(self, tmp_path, coordinates, buffer_px):
+    def _data_config(self, tmp_path, coordinates, buffer):
         return DatasetConfig(
             inputs_icechunk_config=self._write_store(tmp_path, "inputs", "temperature"),
             targets_icechunk_config=self._write_store(tmp_path, "targets", "identifier"),
@@ -1161,17 +1445,17 @@ class TestLoadDataIntoDataloaderPatchBuffer:
             test_years=[2020],
             val_years=[],
             coordinates=coordinates,
-            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=2, buffer_px=buffer_px)
-            if buffer_px is not None
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=2, buffer_lat_px=buffer, buffer_lon_px=buffer)
+            if buffer is not None
             else None,
         )
 
-    @pytest.mark.parametrize("buffer_px", [0, 1])
-    def test_inputs_and_targets_both_stay_core(self, tmp_path, buffer_px):
+    @pytest.mark.parametrize("buffer", [0, 1])
+    def test_inputs_and_targets_both_stay_core(self, tmp_path, buffer):
         from fronts.utils import BoundingBox
 
         data_config = self._data_config(
-            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=buffer_px
+            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer=buffer
         )
         test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
         assert test_dataset.input_ds.sizes["latitude"] == 3
@@ -1180,13 +1464,14 @@ class TestLoadDataIntoDataloaderPatchBuffer:
         assert test_dataset.target_da.sizes["longitude"] == 4
 
     def test_buffer_past_store_edge_no_longer_raises(self, tmp_path):
-        """A buffer_px with no real store margin past coordinates must load cleanly —
+        """A buffer with no real store margin past coordinates must load cleanly —
         the buffer is reflected off the core domain's own edges downstream in
-        FrontsPyDataset, not read from the store (see TestFrontsPyDatasetPatchMode)."""
+        FrontsPyDataset, not read from the store (see TestFrontsPyDatasetPatchMode).
+        """
         from fronts.utils import BoundingBox
 
         data_config = self._data_config(
-            tmp_path, BoundingBox(lat_min=0.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=1
+            tmp_path, BoundingBox(lat_min=0.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer=1
         )
         test_dataset = load_data_into_dataloader(data_config, split="test", seed=0)
         assert test_dataset.input_ds.sizes["latitude"] == 5
@@ -1200,7 +1485,7 @@ class TestLoadDataIntoDataloaderPatchBuffer:
             test_years=[2020],
             val_years=[],
             coordinates=None,
-            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=2, buffer_px=0),
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=2, buffer_lat_px=0, buffer_lon_px=0),
         )
         with pytest.raises(ValueError, match="coordinates"):
             load_data_into_dataloader(data_config, split="test", seed=0)
@@ -1209,7 +1494,7 @@ class TestLoadDataIntoDataloaderPatchBuffer:
         from fronts.utils import BoundingBox
 
         data_config = self._data_config(
-            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer_px=0
+            tmp_path, BoundingBox(lat_min=20.0, lat_max=40.0, lon_min=120.0, lon_max=150.0), buffer=0
         )
         test_dataset = load_data_into_dataloader(data_config, split="test", seed=0, augment=True)
         assert test_dataset.augment is True
@@ -1347,7 +1632,8 @@ class TestBuildLoss:
         assert np.isfinite(with_pixel_value)
         assert with_pixel_value != pytest.approx(pooled_only_value)
 
-    def test_neighborhood_brier_threads_pred_buffer_px(self):
+    def test_neighborhood_brier_threads_pred_buffer_lat_and_lon_px_independently(self):
+        """Both axes must thread through independently — an asymmetric buffer per axis."""
         loss_fn = _build_loss(
             loss_name="neighborhood_brier_score",
             loss_class_weights=None,
@@ -1356,11 +1642,13 @@ class TestBuildLoss:
             nbs_tolerance_km=25.0,
             nbs_periodic_lon=False,
             nbs_lat_dependent_pool=False,
-            nbs_pred_buffer_px=2,
+            nbs_pred_buffer_lat_px=1,
+            nbs_pred_buffer_lon_px=2,
         )
         y_true = np.zeros((1, 8, 8, 6), dtype=np.float32)
         y_true[..., 0] = 1.0
-        y_pred = np.zeros((1, 12, 12, 6), dtype=np.float32)  # buffered by 2 on each side
+        # buffered by 1 on each latitude side and 2 on each longitude side, independently.
+        y_pred = np.zeros((1, 10, 12, 6), dtype=np.float32)
         y_pred[..., 0] = 1.0
         result = loss_fn(y_true, y_pred).numpy()
         assert np.all(np.isfinite(result))
@@ -1387,15 +1675,18 @@ class TestValidateBatchSizeForStrategy:
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
-class TestPredBufferPxFromDataConfig:
-    def test_no_patch_config_returns_zero(self, data_config):
-        assert _pred_buffer_px_from_data_config(data_config) == 0
+class TestPredBufferFromDataConfig:
+    def test_no_patch_config_returns_zero_zero(self, data_config):
+        assert _pred_buffer_from_data_config(data_config) == (0, 0)
 
-    def test_patch_config_returns_its_buffer_px(self, data_config):
+    def test_patch_config_returns_its_per_axis_buffers(self, data_config):
         import dataclasses as dc
 
-        cfg = dc.replace(data_config, patch_config=PatchConfig(n_patches=9, patch_lon_width_px=128, buffer_px=16))
-        assert _pred_buffer_px_from_data_config(cfg) == 16
+        cfg = dc.replace(
+            data_config,
+            patch_config=PatchConfig(n_patches=9, patch_lon_width_px=128, buffer_lat_px=0, buffer_lon_px=16),
+        )
+        assert _pred_buffer_from_data_config(cfg) == (0, 16)
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -1444,15 +1735,17 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
     ``dataclasses.replace(data_config, patch_config=None)`` before calling
     _build_test_visualization_callback — this test exercises that same composition.
 
-    When ``patch_config.buffer_px`` > 0, _build_test_visualization_callback additionally
-    reflect-pads that whole-domain input by buffer_px (see
+    When ``patch_config.buffer_lon_px``/``buffer_lat_px`` > 0, _build_test_visualization_callback
+    additionally reflect-pads that whole-domain input by those per-axis buffers (see
     ``datasets.reflect_pad_lat_lon_buffer``) before handing it to the callback: every core
-    pixel a patch-buffer-trained model was scored on during training had >= buffer_px real
-    pixels of context before the nearest zero-padded tensor edge (see
+    pixel a patch-buffer-trained model was scored on during training had >= buffer_lon_px real
+    pixels of longitude context before the nearest zero-padded tensor edge (see
     ``FrontsPyDataset._get_patches_at_indices``), and scoring it directly at the true
     (unbuffered) domain edge breaks that invariant, producing a systematic false-front stripe
-    there. ``TestVisualizationCallback.buffer_px`` crops the buffer back off the prediction
-    before it's compared against the still-core-sized target/lats/lons.
+    there. Latitude gets no such buffer by default (``buffer_lat_px=0``): every training patch
+    already spans the domain's full latitude height, so there's no artificial tile cut to
+    buffer there. ``TestVisualizationCallback.buffer_lat_px``/``buffer_lon_px`` crop the buffer
+    back off the prediction before it's compared against the still-core-sized target/lats/lons.
     """
 
     _TIMES = pd.date_range("2020-01-01", periods=3, freq="6h")
@@ -1517,26 +1810,28 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
         return load_data_into_dataloader(viz_data_config, split="test", seed=0)
 
     def test_whole_domain_shape_with_patch_config_set(self, tmp_path):
-        buffer_px = 1
+        """buffer_lat_px=0 leaves latitude untouched; only longitude gets padded."""
+        buffer_lon_px = 1
         data_config = self._data_config(
             self._write_inputs(tmp_path),
             self._write_targets(tmp_path),
-            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=buffer_px),
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_lat_px=0, buffer_lon_px=buffer_lon_px),
         )
         test_dataset = self._load_viz_dataset(data_config)
 
         callback = _build_test_visualization_callback(test_dataset, data_config, self._callbacks_config(), seed=0)
 
-        assert callback.buffer_px == buffer_px
+        assert callback.buffer_lat_px == 0
+        assert callback.buffer_lon_px == buffer_lon_px
         assert callback.active_day_x.shape == (
-            len(self._LAT_CORE) + 2 * buffer_px,
-            len(self._LON_CORE) + 2 * buffer_px,
+            len(self._LAT_CORE),
+            len(self._LON_CORE) + 2 * buffer_lon_px,
             1,
         )
         assert callback.active_day_y.shape[:2] == (len(self._LAT_CORE), len(self._LON_CORE))
         assert callback.subsample_x.shape[1:3] == (
-            len(self._LAT_CORE) + 2 * buffer_px,
-            len(self._LON_CORE) + 2 * buffer_px,
+            len(self._LAT_CORE),
+            len(self._LON_CORE) + 2 * buffer_lon_px,
         )
         assert callback.subsample_y.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
         np.testing.assert_array_equal(callback.lats, self._LAT_CORE)
@@ -1548,21 +1843,22 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
 
         callback = _build_test_visualization_callback(test_dataset, data_config, self._callbacks_config(), seed=0)
 
-        assert callback.buffer_px == 0
+        assert callback.buffer_lat_px == 0
+        assert callback.buffer_lon_px == 0
         assert callback.active_day_x.shape == (len(self._LAT_CORE), len(self._LON_CORE), 1)
         assert callback.subsample_x.shape[1:3] == (len(self._LAT_CORE), len(self._LON_CORE))
 
     def test_buffered_input_core_matches_unbuffered_input(self, tmp_path):
-        """Reflect-padding only touches the border.
+        """Reflect-padding only touches the (longitude) border.
 
-        Stripping buffer_px back off the padded (patch_config-set) input must reproduce the
+        Stripping buffer_lon_px back off the padded (patch_config-set) input must reproduce the
         unbuffered (patch_config=None) input exactly. Targets/lats/lons are always core-sized
-        and must match outright either way.
+        and must match outright either way, and latitude is never padded (buffer_lat_px=0).
         """
         inputs_store = self._write_inputs(tmp_path)
         targets_store = self._write_targets(tmp_path)
         callbacks_config = self._callbacks_config()
-        buffer_px = 1
+        buffer_lon_px = 1
 
         no_patch_config = self._data_config(inputs_store, targets_store, patch_config=None)
         test_dataset_no_patch = self._load_viz_dataset(no_patch_config)
@@ -1573,16 +1869,16 @@ class TestLoadDataIntoDataloaderIgnoresPatchConfigForViz:
         with_patch_config = self._data_config(
             inputs_store,
             targets_store,
-            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_px=buffer_px),
+            patch_config=PatchConfig(n_patches=2, patch_lon_width_px=4, buffer_lat_px=0, buffer_lon_px=buffer_lon_px),
         )
         test_dataset_with_patch = self._load_viz_dataset(with_patch_config)
         callback_with_patch = _build_test_visualization_callback(
             test_dataset_with_patch, with_patch_config, callbacks_config, seed=0
         )
 
-        b = buffer_px
-        np.testing.assert_allclose(callback_with_patch.active_day_x[b:-b, b:-b, :], callback_no_patch.active_day_x)
-        np.testing.assert_allclose(callback_with_patch.subsample_x[:, b:-b, b:-b, :], callback_no_patch.subsample_x)
+        b = buffer_lon_px
+        np.testing.assert_allclose(callback_with_patch.active_day_x[:, b:-b, :], callback_no_patch.active_day_x)
+        np.testing.assert_allclose(callback_with_patch.subsample_x[:, :, b:-b, :], callback_no_patch.subsample_x)
         np.testing.assert_allclose(callback_with_patch.active_day_y, callback_no_patch.active_day_y)
         np.testing.assert_allclose(callback_with_patch.subsample_y, callback_no_patch.subsample_y)
 
@@ -1687,10 +1983,18 @@ class TestTrainConfigLossClassWeights:
         callbacks_cfg = utils.parse_config_section(yaml_data, CallbacksConfig, "callbacks_config")
 
         assert data_cfg.patch_config == PatchConfig(
-            n_patches=30, patch_lon_width_px=128, buffer_px=16, flip_probability=0.25
+            n_patches=30,
+            patch_lon_width_px=128,
+            buffer_lat_px=0,
+            buffer_lon_px=16,
+            flip_probability=0.25,
+            patches_per_epoch=6,
         )
+        assert data_cfg.patch_config.patches_per_epoch == 6
+        assert data_cfg.patch_config.buffer_lat_px == 0
         assert data_cfg.coordinates == utils.BoundingBox(lat_min=0.25, lat_max=80, lon_min=130, lon_max=369.75)
         assert data_cfg.volume_inputs is True
+        assert data_cfg.batch_size == 24
         assert list(model_cfg.pool_size) == [2, 2, 1]
         assert callbacks_cfg.test_viz_every_n_epochs == 1
         assert train_cfg.loss_name == "neighborhood_brier_score"
@@ -1762,9 +2066,13 @@ class TestPatchConfigValidation:
         with pytest.raises(ValueError, match="patch_lon_width_px"):
             PatchConfig(n_patches=1, patch_lon_width_px=0)
 
-    def test_buffer_px_must_be_non_negative(self):
-        with pytest.raises(ValueError, match="buffer_px"):
-            PatchConfig(n_patches=1, patch_lon_width_px=4, buffer_px=-1)
+    def test_buffer_lat_px_must_be_non_negative(self):
+        with pytest.raises(ValueError, match="buffer_lat_px"):
+            PatchConfig(n_patches=1, patch_lon_width_px=4, buffer_lat_px=-1)
+
+    def test_buffer_lon_px_must_be_non_negative(self):
+        with pytest.raises(ValueError, match="buffer_lon_px"):
+            PatchConfig(n_patches=1, patch_lon_width_px=4, buffer_lon_px=-1)
 
     def test_flip_probability_must_be_in_unit_interval(self):
         with pytest.raises(ValueError, match="flip_probability"):
@@ -1772,8 +2080,10 @@ class TestPatchConfigValidation:
 
     def test_defaults(self):
         cfg = PatchConfig(n_patches=9, patch_lon_width_px=128)
-        assert cfg.buffer_px == 0
+        assert cfg.buffer_lat_px == 0
+        assert cfg.buffer_lon_px == 0
         assert cfg.flip_probability == 0.0
+        assert cfg.patches_per_epoch is None
 
 
 @pytest.mark.skipif(not _TF_AVAILABLE, reason="tensorflow not installed")
@@ -1798,31 +2108,39 @@ class TestComputePatchLonStarts:
 class TestReflectPadLatLonBuffer:
     def test_zero_buffer_returns_input_unchanged(self):
         x = np.arange(24, dtype=np.float32).reshape(2, 3, 4, 1)
-        result = reflect_pad_lat_lon_buffer(x, 0)
+        result = reflect_pad_lat_lon_buffer(x, 0, 0)
         assert result is x
 
     def test_pads_lat_lon_axes_only(self):
         x = np.arange(2 * 3 * 4 * 5, dtype=np.float32).reshape(2, 3, 4, 5)
-        result = reflect_pad_lat_lon_buffer(x, 1)
+        result = reflect_pad_lat_lon_buffer(x, 1, 1)
         assert result.shape == (2, 5, 6, 5)
 
     def test_matches_manual_reflect_pad(self):
         x = np.arange(2 * 4 * 6, dtype=np.float32).reshape(2, 4, 6, 1)
         expected = np.pad(x, [(0, 0), (2, 2), (2, 2), (0, 0)], mode="reflect")
-        result = reflect_pad_lat_lon_buffer(x, 2)
+        result = reflect_pad_lat_lon_buffer(x, 2, 2)
         np.testing.assert_array_equal(result, expected)
 
     def test_core_slice_of_padded_result_matches_original(self):
         x = np.arange(2 * 5 * 5 * 3, dtype=np.float32).reshape(2, 5, 5, 3)
         buf = 2
-        padded = reflect_pad_lat_lon_buffer(x, buf)
+        padded = reflect_pad_lat_lon_buffer(x, buf, buf)
         np.testing.assert_array_equal(padded[:, buf:-buf, buf:-buf, :], x)
 
     def test_handles_extra_trailing_axes(self):
         # (sample, latitude, longitude, level, variable) — the volume_inputs shape.
         x = np.arange(1 * 3 * 3 * 2 * 2, dtype=np.float32).reshape(1, 3, 3, 2, 2)
-        result = reflect_pad_lat_lon_buffer(x, 1)
+        result = reflect_pad_lat_lon_buffer(x, 1, 1)
         assert result.shape == (1, 5, 5, 2, 2)
+
+    def test_lon_only_buffer_leaves_latitude_axis_untouched(self):
+        """buffer_lat_px=0 with buffer_lon_px>0 — the patch_buffer_ablation.yaml case."""
+        x = np.arange(2 * 4 * 6 * 1, dtype=np.float32).reshape(2, 4, 6, 1)
+        expected = np.pad(x, [(0, 0), (0, 0), (3, 3), (0, 0)], mode="reflect")
+        result = reflect_pad_lat_lon_buffer(x, 0, 3)
+        assert result.shape == (2, 4, 12, 1)
+        np.testing.assert_array_equal(result, expected)
 
 
 def _build_small_unet(
@@ -1852,41 +2170,52 @@ class TestPatchBufferEndToEnd:
     """Buffered patches must compose through the real model into the buffer-aware loss."""
 
     def test_buffered_patch_input_scores_against_unbuffered_core_target(self):
+        """Asymmetric buffer: longitude gets the overlap-tile context, latitude gets none.
+
+        Exercises the actual patch_buffer_ablation.yaml shape (buffer_lat_px=0,
+        buffer_lon_px>0): every training patch already spans the domain's full latitude
+        height, so only longitude has an artificial tile cut needing buffer context.
+        """
         core = 16
-        buffer_px = 4
-        buffered = core + 2 * buffer_px  # 24; still divisible by the 2-stage (levels=3) stride of 4
+        buffer_lon_px = 4
+        buffered_lon = core + 2 * buffer_lon_px  # 24; still divisible by the 2-stage (levels=3) stride of 4
         model = _build_small_unet(levels=3, deep_supervision=False)  # input_shape=(None, None, 4)
 
         rng = np.random.default_rng(3)
-        x = rng.standard_normal((2, buffered, buffered, 4)).astype(np.float32)
+        x = rng.standard_normal((2, core, buffered_lon, 4)).astype(np.float32)  # lat unbuffered, lon buffered
         y_true = tf.one_hot(rng.integers(0, 6, size=(2, core, core)), 6).numpy().astype(np.float32)
 
         y_pred = model(x, training=False)
         if isinstance(y_pred, list | tuple):
             y_pred = y_pred[0]
-        assert y_pred.shape == (2, buffered, buffered, 6)
+        assert y_pred.shape == (2, core, buffered_lon, 6)
 
         loss_fn = losses.neighborhood_brier_score(
-            latitudes=np.linspace(25.0, 30.0, core), tolerance_km=25.0, pred_buffer_px=buffer_px
+            latitudes=np.linspace(25.0, 30.0, core),
+            tolerance_km=25.0,
+            pred_buffer_lat_px=0,
+            pred_buffer_lon_px=buffer_lon_px,
         )
         result = loss_fn(y_true, y_pred).numpy()
         assert result.shape == (2,)
         assert np.all(np.isfinite(result))
 
     def test_compiled_model_trains_on_buffered_patch_batch(self):
-        """_compile must thread pred_buffer_px into the HSS metric, not just the loss.
+        """_compile must thread pred_buffer_lat_px/pred_buffer_lon_px into the HSS metric, not just the loss.
 
         Reproduces the crash from a real patch-buffer training run: model.fit failing
         inside compute_metrics because the buffered (wider) y_pred and unbuffered y_true
-        reached heidke_skill_score with mismatched shapes.
+        reached heidke_skill_score with mismatched shapes. Uses the asymmetric
+        buffer_lat_px=0/buffer_lon_px>0 shape that patch_buffer_ablation.yaml actually
+        trains with, so a purely-symmetric implementation wouldn't be caught here.
         """
         core = 16
-        buffer_px = 4
-        buffered = core + 2 * buffer_px
+        buffer_lon_px = 4
+        buffered_lon = core + 2 * buffer_lon_px
         model = _build_small_unet(levels=3, deep_supervision=False)
 
         rng = np.random.default_rng(3)
-        x = rng.standard_normal((2, buffered, buffered, 4)).astype(np.float32)
+        x = rng.standard_normal((2, core, buffered_lon, 4)).astype(np.float32)
         y_true = tf.one_hot(rng.integers(0, 6, size=(2, core, core)), 6).numpy().astype(np.float32)
 
         train_cfg = TrainConfig(
@@ -1900,7 +2229,8 @@ class TestPatchBufferEndToEnd:
             metric_class_weights=None,
             train_cfg=train_cfg,
             latitudes=np.linspace(25.0, 30.0, core),
-            pred_buffer_px=buffer_px,
+            pred_buffer_lat_px=0,
+            pred_buffer_lon_px=buffer_lon_px,
         )
 
         result = model.train_on_batch(x, y_true, return_dict=True)

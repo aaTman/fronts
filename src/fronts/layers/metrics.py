@@ -168,18 +168,38 @@ def fractions_skill_score(
     return fss
 
 
-def _crop_pred_buffer(field: tf.Tensor, buffer_px: int) -> tf.Tensor:
-    """Crops ``buffer_px`` pixels off every side of the latitude/longitude axes."""
-    if buffer_px == 0:
-        return field
-    return field[:, buffer_px:-buffer_px, buffer_px:-buffer_px, :]
+def _crop_pred_buffer(field: tf.Tensor, buffer_lat_px: int, buffer_lon_px: int) -> tf.Tensor:
+    """Crops a per-axis buffer off the latitude and longitude axes of ``field``.
+
+    Latitude and longitude are cropped independently, since patch-buffer training (see
+    fronts.data.datasets.PatchConfig) only ever pads longitude — every patch already spans the
+    full latitude height of the domain, so there is no artificial tile cut to compensate for along
+    that axis (Ronneberger et al. 2015's overlap-tile buffering only matters where a tile is
+    actually cut). A naive ``field[:, buffer:-buffer, ...]`` slice is wrong when ``buffer == 0``,
+    since ``-0 == 0`` makes the slice ``field[:, 0:0, ...]`` — an empty tensor rather than a
+    no-op — so each axis is only sliced when its buffer is strictly positive.
+
+    Args:
+        field: Tensor shaped (batch, latitude, longitude, classes) to crop.
+        buffer_lat_px: Pixels to remove from each side of the latitude (axis 1). 0 is a no-op.
+        buffer_lon_px: Pixels to remove from each side of the longitude (axis 2). 0 is a no-op.
+
+    Returns:
+        ``field`` with the requested per-axis buffer removed from both sides.
+    """
+    if buffer_lat_px > 0:
+        field = field[:, buffer_lat_px:-buffer_lat_px, :, :]
+    if buffer_lon_px > 0:
+        field = field[:, :, buffer_lon_px:-buffer_lon_px, :]
+    return field
 
 
 def heidke_skill_score(
     threshold: float | None = None,
     window_size: tuple[int, ...] | list[int] | None = None,
     class_weights: list[int | float] | None = None,
-    pred_buffer_px: int = 0,
+    pred_buffer_lat_px: int = 0,
+    pred_buffer_lon_px: int = 0,
 ) -> Callable[[tf.Tensor, tf.Tensor], tf.Tensor]:
     """Heidke Skill Score (HSS).
 
@@ -189,11 +209,15 @@ def heidke_skill_score(
         window_size: Pool/kernel size of the max-pooling window for neighborhood statistics. Experimental; may return
             unexpected results.
         class_weights: Weights to apply to each class. Length must equal the number of classes in y_pred and y_true.
-        pred_buffer_px: If > 0, y_pred is expected to carry this many extra pixels of context on
-            every spatial side beyond y_true's shape (e.g. from a patch trained with an input-only
-            buffer — see fronts.data.datasets.PatchConfig). y_pred is cropped by pred_buffer_px on
-            every side (after ``window_size`` pooling, if any) before scoring against y_true. 0
-            (default) requires y_pred and y_true to share the same shape, matching prior behavior.
+        pred_buffer_lat_px: If > 0, y_pred is expected to carry this many extra pixels of context on
+            each side of the latitude axis beyond y_true's shape (e.g. from a patch trained with an
+            input-only buffer — see fronts.data.datasets.PatchConfig). y_pred is cropped by this
+            amount on the latitude axis (after ``window_size`` pooling, if any) before scoring
+            against y_true. 0 (default) requires y_pred and y_true to share the same latitude
+            extent, matching prior behavior.
+        pred_buffer_lon_px: Same as pred_buffer_lat_px, but for the longitude axis. Buffering is
+            per-axis because patch-buffer training only ever pads longitude — every patch already
+            spans the full latitude height of the domain.
     """
 
     @tf.function
@@ -202,8 +226,8 @@ def heidke_skill_score(
 
         Args:
             y_true: One-hot encoded tensor containing labels.
-            y_pred: Tensor containing model predictions. When pred_buffer_px > 0, this is
-                pred_buffer_px pixels wider than y_true on every spatial side.
+            y_pred: Tensor containing model predictions. When pred_buffer_lat_px/pred_buffer_lon_px
+                > 0, this is that many pixels wider than y_true on the corresponding spatial axis.
         """
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
@@ -212,7 +236,7 @@ def heidke_skill_score(
             y_pred = tf.nn.max_pool(y_pred, ksize=window_size, strides=1, padding="VALID")
             y_true = tf.nn.max_pool(y_true, ksize=window_size, strides=1, padding="VALID")
 
-        y_pred = _crop_pred_buffer(y_pred, pred_buffer_px)
+        y_pred = _crop_pred_buffer(y_pred, pred_buffer_lat_px, pred_buffer_lon_px)
 
         if threshold is not None:
             y_pred = tf.where(y_pred >= threshold, 1.0, 0.0)

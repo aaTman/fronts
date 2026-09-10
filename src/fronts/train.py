@@ -298,7 +298,8 @@ def _build_loss(
     nbs_lat_dependent_pool: bool,
     nbs_include_pixel: bool = False,
     nbs_pixel_weight: float = 0.1,
-    nbs_pred_buffer_px: int = 0,
+    nbs_pred_buffer_lat_px: int = 0,
+    nbs_pred_buffer_lon_px: int = 0,
 ):
     """Build the configured training loss.
 
@@ -316,9 +317,12 @@ def _build_loss(
             "neighborhood_brier_score".
         nbs_pixel_weight: Relative weight of the pixelwise term when ``nbs_include_pixel`` is
             True. Only used by "neighborhood_brier_score".
-        nbs_pred_buffer_px: Prediction context margin (pixels) to crop after pooling — see
-            ``losses.neighborhood_brier_score``'s ``pred_buffer_px``. Only used by
-            "neighborhood_brier_score".
+        nbs_pred_buffer_lat_px: Latitude prediction context margin (pixels) to crop after
+            pooling — see ``losses.neighborhood_brier_score``'s ``pred_buffer_lat_px``.
+            Only used by "neighborhood_brier_score".
+        nbs_pred_buffer_lon_px: Longitude prediction context margin (pixels) to crop after
+            pooling — see ``losses.neighborhood_brier_score``'s ``pred_buffer_lon_px``.
+            Only used by "neighborhood_brier_score".
 
     Returns:
         A callable loss function suitable for ``model.compile(loss=...)``.
@@ -337,16 +341,27 @@ def _build_loss(
             lat_dependent_pool=nbs_lat_dependent_pool,
             include_pixel=nbs_include_pixel,
             pixel_weight=nbs_pixel_weight,
-            pred_buffer_px=nbs_pred_buffer_px,
+            pred_buffer_lat_px=nbs_pred_buffer_lat_px,
+            pred_buffer_lon_px=nbs_pred_buffer_lon_px,
         )
     raise ValueError(
         f"Unrecognized loss_name {loss_name!r}; expected 'fractions_skill_score' or 'neighborhood_brier_score'."
     )
 
 
-def _pred_buffer_px_from_data_config(data_cfg: datasets.DatasetConfig) -> int:
-    """Return the loss's prediction context margin: patch_config.buffer_px, or 0 without patch mode."""
-    return data_cfg.patch_config.buffer_px if data_cfg.patch_config is not None else 0
+def _pred_buffer_from_data_config(data_cfg: datasets.DatasetConfig) -> tuple[int, int]:
+    """Return the loss/metric prediction context margins from the data config.
+
+    Args:
+        data_cfg: DatasetConfig, possibly with a patch_config set.
+
+    Returns:
+        (buffer_lat_px, buffer_lon_px) — each taken from patch_config, or (0, 0) when
+        patch_config is None (whole-domain training has no artificial tile cuts to buffer).
+    """
+    if data_cfg.patch_config is None:
+        return 0, 0
+    return data_cfg.patch_config.buffer_lat_px, data_cfg.patch_config.buffer_lon_px
 
 
 def _target_latitudes(dataset: datasets.FrontsPyDataset) -> np.ndarray:
@@ -429,7 +444,8 @@ def _compile(
     train_cfg: "TrainConfig",
     latitudes: np.ndarray,
     gradient_clip_norm: float | None = None,
-    pred_buffer_px: int = 0,
+    pred_buffer_lat_px: int = 0,
+    pred_buffer_lon_px: int = 0,
 ) -> int:
     n_out = len(model.outputs)
     loss_fn = _build_loss(
@@ -442,11 +458,21 @@ def _compile(
         nbs_lat_dependent_pool=train_cfg.nbs_lat_dependent_pool,
         nbs_include_pixel=train_cfg.nbs_include_pixel,
         nbs_pixel_weight=train_cfg.nbs_pixel_weight,
-        nbs_pred_buffer_px=pred_buffer_px,
+        nbs_pred_buffer_lat_px=pred_buffer_lat_px,
+        nbs_pred_buffer_lon_px=pred_buffer_lon_px,
     )
-    hss_fn = metrics.heidke_skill_score(class_weights=metric_class_weights, pred_buffer_px=pred_buffer_px)
+    hss_fn = metrics.heidke_skill_score(
+        class_weights=metric_class_weights,
+        pred_buffer_lat_px=pred_buffer_lat_px,
+        pred_buffer_lon_px=pred_buffer_lon_px,
+    )
     hss_hard_fn = tf.keras.metrics.MeanMetricWrapper(
-        fn=metrics.heidke_skill_score(class_weights=metric_class_weights, threshold=0.5, pred_buffer_px=pred_buffer_px),
+        fn=metrics.heidke_skill_score(
+            class_weights=metric_class_weights,
+            threshold=0.5,
+            pred_buffer_lat_px=pred_buffer_lat_px,
+            pred_buffer_lon_px=pred_buffer_lon_px,
+        ),
         name="hss_hard",
     )
     optimizer = tf.keras.optimizers.Adam(
@@ -726,17 +752,27 @@ def _build_test_visualization_callback(
     per-longitude-patch tiling. ``model.UNet3Plus`` builds with a fully dynamic spatial
     input shape (``Input(shape=(None, None, ...))``), so it accepts a whole-domain input
     at inference regardless of the (smaller) patch shape it saw during training — but a
-    patch-buffer-trained model (``data_config.patch_config.buffer_px`` > 0) was never
-    scored on a core pixel closer than ``buffer_px`` real pixels to a zero-padded tensor
-    edge (every training patch's core got that much real reflected context on every
-    side — see ``datasets.FrontsPyDataset._get_patches_at_indices``). A bare whole-domain
-    pass breaks that invariant right at the domain's own edges, producing systematically
-    wrong predictions there (observed as a false-front stripe along the un-tiled latitude
-    edges). So the whole-domain input is reflect-padded by that same ``buffer_px`` before
-    inference (``datasets.reflect_pad_lat_lon_buffer``), matching what every training
-    patch saw; ``TestVisualizationCallback`` crops the buffer back off the model's raw
-    prediction (via its own ``buffer_px``) before comparing against the unbuffered
-    ``lats``/``lons``/target.
+    patch-buffer-trained model was never scored, along longitude, on a core pixel closer
+    than ``buffer_lon_px`` real pixels to a zero-padded tensor edge (every training patch's
+    core got that much real reflected context on its east/west sides — see
+    ``datasets.FrontsPyDataset._get_patches_at_indices``). That's specifically an artifact
+    of longitude patch-tiling: patches are cut out of the domain along longitude only,
+    so only the longitude edges of a patch's core are artificial tile cuts in need of
+    the overlap-tile context Ronneberger et al. 2015 describes. Every training patch, by
+    contrast, already spans the domain's *full* latitude height, so the model sees the
+    domain's true north/south edges during training exactly as it does here at
+    inference — there is no tile cut to buffer along latitude, and reflect-padding that
+    axis would only fabricate data off edges the model already handles correctly
+    unpadded. (An earlier, symmetric version of this padding — before latitude/longitude
+    were split into independent buffers — produced a false-front stripe along the
+    un-tiled latitude edges; that observation is what motivated buffering in the first
+    place, but it argued for restricting the buffer to the axis that actually has tile
+    cuts, i.e. longitude, not for buffering latitude too.) So the whole-domain input is
+    reflect-padded by ``buffer_lat_px``/``buffer_lon_px`` before inference
+    (``datasets.reflect_pad_lat_lon_buffer``; with the default ``buffer_lat_px=0`` this is
+    longitude-only), matching what every training patch saw; ``TestVisualizationCallback``
+    crops the buffer back off the model's raw prediction (via its own per-axis buffers)
+    before comparing against the unbuffered ``lats``/``lons``/target.
 
     Args:
         test_dataset: The sequestered test split, already loaded via load_data_into_dataloader.
@@ -748,7 +784,7 @@ def _build_test_visualization_callback(
         A configured TestVisualizationCallback.
     """
     assert callbacks_config.test_viz_every_n_epochs is not None
-    buffer_px = data_config.patch_config.buffer_px if data_config.patch_config is not None else 0
+    buffer_lat_px, buffer_lon_px = _pred_buffer_from_data_config(data_config)
 
     active_idx = fronts_callbacks.select_active_test_timestep(test_dataset.target_da)
     active_x, active_y = test_dataset.get_at_indices(np.array([active_idx]))
@@ -759,8 +795,8 @@ def _build_test_visualization_callback(
     )
     subsample_x, subsample_y = test_dataset.get_at_indices(subsample_idxs)
 
-    active_x = datasets.reflect_pad_lat_lon_buffer(active_x, buffer_px)
-    subsample_x = datasets.reflect_pad_lat_lon_buffer(subsample_x, buffer_px)
+    active_x = datasets.reflect_pad_lat_lon_buffer(active_x, buffer_lat_px, buffer_lon_px)
+    subsample_x = datasets.reflect_pad_lat_lon_buffer(subsample_x, buffer_lat_px, buffer_lon_px)
 
     return fronts_callbacks.TestVisualizationCallback(
         active_day_x=active_x[0],
@@ -773,7 +809,8 @@ def _build_test_visualization_callback(
         front_types=list(fronts_callbacks.FRONT_TYPE_CLASS_INDEX),
         predict_batch_size=data_config.batch_size,
         every_n_epochs=callbacks_config.test_viz_every_n_epochs,
-        buffer_px=buffer_px,
+        buffer_lat_px=buffer_lat_px,
+        buffer_lon_px=buffer_lon_px,
     )
 
 
@@ -951,6 +988,7 @@ def train(
                 for i, out in enumerate(unet.outputs)
             ]
             unet = model.SharedTargetModel(unet.inputs, float32_outputs, name=unet.name)
+        pred_buffer_lat_px, pred_buffer_lon_px = _pred_buffer_from_data_config(data_cfg)
         _compile(
             unet,
             train_cfg.learning_rate,
@@ -958,7 +996,8 @@ def train(
             train_cfg=train_cfg,
             latitudes=_target_latitudes(train_dataset),
             gradient_clip_norm=train_cfg.gradient_clip_norm,
-            pred_buffer_px=_pred_buffer_px_from_data_config(data_cfg),
+            pred_buffer_lat_px=pred_buffer_lat_px,
+            pred_buffer_lon_px=pred_buffer_lon_px,
         )
     logger.info("Model built and compiled.")
 

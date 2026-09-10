@@ -13,8 +13,8 @@ from fronts.data import inputs, targets
 logger = logging.getLogger(__name__)
 
 
-def reflect_pad_lat_lon_buffer(x: np.ndarray, buffer_px: int) -> np.ndarray:
-    """Reflect-pads an array's latitude/longitude axes (1, 2) by ``buffer_px`` on every side.
+def reflect_pad_lat_lon_buffer(x: np.ndarray, buffer_lat_px: int, buffer_lon_px: int) -> np.ndarray:
+    """Reflect-pads an array's latitude (axis 1) and longitude (axis 2) axes, independently.
 
     Shared by patch extraction (``FrontsPyDataset._get_patches_at_indices``, buffering each
     patch's core) and whole-domain visualization (``fronts.train._build_test_visualization_callback``,
@@ -24,17 +24,24 @@ def reflect_pad_lat_lon_buffer(x: np.ndarray, buffer_px: int) -> np.ndarray:
     edges (Ronneberger et al. 2015's overlap-tile strategy: "missing input data is
     extrapolated by mirroring") rather than read from the store.
 
+    The two axes are buffered independently (rather than by one shared ``buffer_px``)
+    because only longitude is ever an artificial tile cut here: every patch already spans
+    the domain's full latitude height, so overlap-tile buffering along latitude fabricates
+    context off edges the whole-domain model also sees unpadded, for no benefit — pure
+    wasted compute (see CONTRACT.md / docs/rse/specs/plan-patch-buffer-training.md's
+    root-cause analysis for the 1.10x latitude-buffer redundancy this removes).
+
     Args:
         x: Array shaped (sample, latitude, longitude, ...).
-        buffer_px: Pixels of reflect-padding to add on every side of the latitude and
-            longitude axes. 0 returns ``x`` unchanged.
+        buffer_lat_px: Pixels of reflect-padding to add on every side of the latitude axis.
+        buffer_lon_px: Pixels of reflect-padding to add on every side of the longitude axis.
 
     Returns:
-        The padded array, or ``x`` itself if ``buffer_px`` is 0.
+        The padded array, or ``x`` itself if both buffers are 0.
     """
-    if buffer_px == 0:
+    if buffer_lat_px == 0 and buffer_lon_px == 0:
         return x
-    pad_width = [(0, 0), (buffer_px, buffer_px), (buffer_px, buffer_px)] + [(0, 0)] * (x.ndim - 3)
+    pad_width = [(0, 0), (buffer_lat_px, buffer_lat_px), (buffer_lon_px, buffer_lon_px)] + [(0, 0)] * (x.ndim - 3)
     return np.pad(x, pad_width, mode="reflect")
 
 
@@ -78,43 +85,73 @@ class PatchConfig:
     raises if ``patch_config`` is set without it.
 
     Attributes:
-        n_patches: Number of evenly-spaced longitude patch positions per timestep.
+        n_patches: Number of evenly-spaced longitude patch positions per timestep. This is
+            the size of the *index space* (``sample = time_idx * n_patches + patch_idx``);
+            see ``patches_per_epoch`` for how many of those positions an epoch actually visits.
         patch_lon_width_px: Width of each patch's core (unbuffered, loss-supervised)
             region along longitude, in grid pixels. Every patch's latitude extent is the
             full height of ``DatasetConfig.coordinates`` — no latitude tiling, since
             CONUS's 128-point latitude range already equals the paper's patch height.
-        buffer_px: Extra context pixels appended on every side (north, south, east, west)
-            of each patch's core region, for the *input* only — never the target. 0
-            disables buffering. The core domain generally has no real data past
+        buffer_lon_px: Extra context pixels appended on the east and west sides of each
+            patch's core region, for the *input* only — never the target. 0 disables
+            longitude buffering. The core domain generally has no real data past
             ``DatasetConfig.coordinates`` on disk, so this context is reflected off the
             core domain's own edges (``np.pad(..., mode="reflect")``) rather than read
             from the store — see ``FrontsPyDataset._get_patches_at_indices``.
-            ``patch_lon_width_px + 2 * buffer_px`` (and the core latitude height +
-            2 * buffer_px) must stay divisible by the model's total downsampling stride
-            (product of ``model_config.pool_size`` across ``model_config.levels - 1``
-            pooling stages) or the model fails to build — see the "What We're NOT Doing"
-            note on stride validation in docs/rse/specs/plan-patch-buffer-training.md.
+            ``patch_lon_width_px + 2 * buffer_lon_px`` must stay divisible by the model's
+            total downsampling stride (product of ``model_config.pool_size`` across
+            ``model_config.levels - 1`` pooling stages) or the model fails to build — see
+            the "What We're NOT Doing" note on stride validation in
+            docs/rse/specs/plan-patch-buffer-training.md.
+        buffer_lat_px: Extra context pixels appended on the north and south sides of each
+            patch's core region. Defaults to 0 (no latitude buffering) — unlike longitude,
+            latitude is never an artificial tile cut (every patch already spans the full
+            domain height), so overlap-tile buffering there (Ronneberger et al. 2015) is
+            pure wasted compute: it fabricates context off edges the whole-domain baseline
+            model also sees unpadded. See CONTRACT.md's root-cause table.
         flip_probability: Independent per-axis probability of flipping a training patch
             along latitude and along longitude. 0.25 reproduces the paper's rate (a
             1 - (1 - p)^2 = 43.75% chance of at least one flip at p=0.25). Applied only to
             the train split.
+        patches_per_epoch: Number of the ``n_patches`` positions visited per timestep per
+            epoch. ``None`` visits all of them (today's behavior). A smaller value trades
+            core-coverage redundancy for epoch speed: with ``n_patches=30`` and
+            ``patches_per_epoch=6``, an epoch covers ``6 * patch_lon_width_px / n_lon_core``
+            of the domain — roughly one pass, directly comparable in cost to the
+            whole-domain baseline's one-pass epoch — instead of the unrestricted 4x
+            redundant coverage 30 overlapping 128px patches give over a 960px domain. The
+            visited subset is re-drawn every epoch under shuffling (``FrontsPyDataset``'s
+            ``on_epoch_end``) so training still sees every position over many epochs, and
+            is a fixed, evenly-spaced subset without shuffling (for a stable val_loss).
     """
 
     n_patches: int
     patch_lon_width_px: int
-    buffer_px: int = 0
+    buffer_lon_px: int = 0
+    buffer_lat_px: int = 0
     flip_probability: float = 0.0
+    patches_per_epoch: int | None = None
 
     def __post_init__(self) -> None:
-        """Validate patch geometry and augmentation parameters."""
+        """Validate patch geometry and augmentation parameters.
+
+        Raises:
+            ValueError: If any field is out of its valid range (see field docs above).
+        """
         if self.n_patches < 1:
             raise ValueError(f"n_patches must be >= 1, got {self.n_patches}")
         if self.patch_lon_width_px < 1:
             raise ValueError(f"patch_lon_width_px must be >= 1, got {self.patch_lon_width_px}")
-        if self.buffer_px < 0:
-            raise ValueError(f"buffer_px must be >= 0, got {self.buffer_px}")
+        if self.buffer_lon_px < 0:
+            raise ValueError(f"buffer_lon_px must be >= 0, got {self.buffer_lon_px}")
+        if self.buffer_lat_px < 0:
+            raise ValueError(f"buffer_lat_px must be >= 0, got {self.buffer_lat_px}")
         if not 0.0 <= self.flip_probability <= 1.0:
             raise ValueError(f"flip_probability must be in [0, 1], got {self.flip_probability}")
+        if self.patches_per_epoch is not None and not 1 <= self.patches_per_epoch <= self.n_patches:
+            raise ValueError(
+                f"patches_per_epoch must be None or in [1, n_patches={self.n_patches}], got {self.patches_per_epoch}"
+            )
 
 
 @dataclasses.dataclass
@@ -198,16 +235,29 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
     across any deep-supervision outputs, not the dataset.
 
     Shuffling is block-aligned at the *timestep* level, not the flat sample-index level:
-    blocks of ``batch_size // gcd(batch_size, n_patches)`` contiguous timesteps (all
-    patches of each timestep included, in time order) are kept together, and only the
-    order in which blocks are visited is randomized per epoch. That block size is the
-    smallest one whose patches divide evenly into whole batches, so every batch's
-    ``.isel(time=...)`` read lands on a single contiguous run of timesteps instead of
-    up to ``batch_size`` scattered ones. In non-patch mode (``n_patches == 1``) this
-    reduces to one block per batch — a straight contiguous ``batch_size``-timestep read.
-    Both icechunk stores backing this dataset chunk at 1 timestep, so a fully random
+    blocks of ``batch_size // gcd(batch_size, patches_per_epoch)`` contiguous timesteps (the
+    visited patches of each timestep included, in time order) are kept together, and only
+    the order in which blocks are visited is randomized per epoch. That block size is the
+    smallest one whose per-timestep sample count divides evenly into whole batches, so
+    every batch's ``.isel(time=...)`` read lands on a single contiguous run of timesteps
+    instead of up to ``batch_size`` scattered ones. In non-patch mode (``n_patches == 1``)
+    this reduces to one block per batch — a straight contiguous ``batch_size``-timestep
+    read. Both icechunk stores backing this dataset chunk at 1 timestep, so a fully random
     per-sample shuffle measured 10-30x slower than a sequential read of the same size
     (see ``scripts/diagnose_read_throughput.py``).
+
+    In patch mode, an epoch visits only ``patch_config.patches_per_epoch`` of the
+    ``patch_config.n_patches`` longitude positions per timestep (all of them if
+    ``patches_per_epoch`` is ``None``), re-drawn every epoch under shuffling. This exists
+    for epoch-cost parity with whole-domain training: an unrestricted patch epoch computes
+    up to ~4x the core-coverage of a whole-domain baseline epoch (e.g. 30 overlapping
+    128px patches tiling a 960px domain), which is pure redundant compute the model
+    doesn't need to see every epoch. Visiting a smaller, evenly-spaced-or-shuffled subset
+    per epoch instead brings per-epoch cost back in line with the baseline while still
+    covering every position over the course of training (see CONTRACT.md's root-cause
+    table and docs/rse/specs/plan-patch-buffer-training.md). The global sample-index space
+    (``sample = time_idx * n_patches + patch_idx``) is unaffected by this — only how many
+    of those indices a single epoch's ``_order`` includes.
 
     Attributes:
         input_ds: This split's input Dataset, shape (time, latitude, longitude) per variable.
@@ -248,6 +298,11 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         self.drop_remainder = drop_remainder
         self.augment = augment
         self._n_patches = data_config.patch_config.n_patches if data_config.patch_config is not None else 1
+        self._patches_per_epoch = (
+            data_config.patch_config.patches_per_epoch or data_config.patch_config.n_patches
+            if data_config.patch_config is not None
+            else 1
+        )
         if data_config.patch_config is not None:
             self._patch_lon_starts = compute_patch_lon_starts(
                 n_lon_core=target_da.sizes["longitude"],
@@ -255,11 +310,17 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
                 n_patches=data_config.patch_config.n_patches,
             )
         self._rng = np.random.default_rng(seed)
-        self._order = self._build_order() if shuffle else np.arange(self._total)
+        # Always build via _build_order — even without shuffling — since patches_per_epoch
+        # < n_patches means the visited index set is a proper (deterministic, evenly-spaced)
+        # subset of the full index space, not just its lowest-numbered prefix, so a bare
+        # np.arange(_total) would visit the wrong samples. _build_order reduces to
+        # np.arange(_total) exactly when there's no subsetting to do (patches_per_epoch is
+        # None or equals n_patches) and shuffle is False — see its docstring.
+        self._order = self._build_order()
 
     @property
     def _total(self) -> int:
-        return self.input_ds.sizes["time"] * self._n_patches
+        return self.input_ds.sizes["time"] * self._patches_per_epoch
 
     @property
     def n_samples(self) -> int:
@@ -282,38 +343,86 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         return math.ceil(self._total / self.batch_size)
 
     def _build_order(self) -> np.ndarray:
-        """Builds a shuffled global sample-index order, block-aligned by timestep.
+        """Builds this epoch's global sample-index order, block-aligned by timestep.
 
-        Groups every patch of each timestep together (in time order) into blocks of
-        ``batch_size // gcd(batch_size, n_patches)`` contiguous timesteps, then shuffles
-        the order in which whole blocks are visited. That block size is the smallest one
-        whose sample count (``block_timesteps * n_patches``) is a multiple of
-        ``batch_size``, so batch boundaries always land on block boundaries — every batch
-        drawn from the resulting order is one contiguous, in-order run of timesteps,
-        never a scattered or straddled one. If the total timestep count isn't an exact
-        multiple of the block size, the leftover timesteps form a final ragged block that
-        is always placed last (never shuffled into the middle), matching
-        ``drop_remainder``'s existing "final batch may be undersized" behavior instead of
-        introducing a new mid-epoch discontinuity. See the class docstring for why
-        contiguity matters for read throughput.
+        Groups the *visited* patches of each timestep together (in time order) into
+        blocks of ``batch_size // gcd(batch_size, patches_per_epoch)`` contiguous
+        timesteps, then — if shuffling — shuffles the order in which whole blocks are
+        visited (blocks stay internally in time order either way). That block size is the
+        smallest one whose per-timestep sample count (``block_timesteps *
+        patches_per_epoch``) is a multiple of ``batch_size``, so batch boundaries always
+        land on block boundaries — every batch drawn from the resulting order is one
+        contiguous, in-order run of timesteps, never a scattered or straddled one. Using
+        ``patches_per_epoch`` rather than ``n_patches`` here is what makes
+        ``batch_size % patches_per_epoch == 0`` configs (e.g. the patch-buffer-ablation
+        target of ``batch_size=24, patches_per_epoch=6``) read every visited timestep
+        exactly once per epoch, with zero cross-batch re-reads — see
+        ``test_read_amplification_invariant_holds_when_batch_size_divides_patches_per_epoch``.
+        If the total timestep count isn't an exact multiple of the block size, the leftover
+        timesteps form a final ragged block that is always placed last (never shuffled
+        into the middle), matching ``drop_remainder``'s existing "final batch may be
+        undersized" behavior instead of introducing a new mid-epoch discontinuity. See the
+        class docstring for why contiguity matters for read throughput.
+
+        Within each timestep, which ``patches_per_epoch`` of the ``n_patches`` positions
+        are visited depends on ``self.shuffle``: a fresh, independent
+        ``self._rng.choice(n_patches, size=patches_per_epoch, replace=False)`` (sorted
+        ascending) per timestep when shuffling — re-drawn on every call, i.e. every epoch
+        — or the fixed, evenly-spaced ``np.linspace(0, n_patches, patches_per_epoch,
+        endpoint=False)`` subset, identical for every timestep and every epoch, when not
+        (so validation's ``val_loss`` stays stable across epochs for LR-plateau /
+        early-stopping). When ``patches_per_epoch == n_patches`` (no subsetting
+        configured), both branches reduce to visiting every position in ascending order —
+        for the shuffled branch, sorting a full without-replacement draw of ``n_patches``
+        options always yields ``arange(n_patches)`` regardless of the draw, so this method
+        skips drawing entirely in that case as a harmless optimization.
         """
         n_time = self.input_ds.sizes["time"]
-        block_timesteps = self.batch_size // math.gcd(self.batch_size, self._n_patches)
+        block_timesteps = self.batch_size // math.gcd(self.batch_size, self._patches_per_epoch)
         n_full_blocks = n_time // block_timesteps
         full_block_starts = np.arange(n_full_blocks) * block_timesteps
-        shuffled_starts = full_block_starts[self._rng.permutation(n_full_blocks)]
+        block_starts = full_block_starts[self._rng.permutation(n_full_blocks)] if self.shuffle else full_block_starts
         order = np.concatenate(
             [
-                np.arange(start * self._n_patches, (start + block_timesteps) * self._n_patches)
-                for start in shuffled_starts
+                self._patch_sample_indices_for_timesteps(np.arange(start, start + block_timesteps))
+                for start in block_starts
             ]
             or [np.array([], dtype=int)]
         )
         remainder_start = n_full_blocks * block_timesteps
         if remainder_start < n_time:
-            remainder = np.arange(remainder_start * self._n_patches, n_time * self._n_patches)
+            remainder = self._patch_sample_indices_for_timesteps(np.arange(remainder_start, n_time))
             order = np.concatenate([order, remainder])
         return order
+
+    def _patch_sample_indices_for_timesteps(self, time_idxs: np.ndarray) -> np.ndarray:
+        """Global sample indices for this epoch's visited patch subset of each timestep.
+
+        Args:
+            time_idxs: Raw timestep indices, in the order their samples should appear.
+
+        Returns:
+            Global sample indices (``time_idx * n_patches + patch_idx``), concatenated
+            per timestep in ``time_idxs`` order, each timestep contributing exactly
+            ``self._patches_per_epoch`` ascending patch indices.
+        """
+        if len(time_idxs) == 0:
+            return np.array([], dtype=int)
+        if self._patches_per_epoch == self._n_patches:
+            # No subsetting: every position, every timestep, in ascending order — see the
+            # optimization note in _build_order's docstring.
+            positions_per_timestep = [np.arange(self._n_patches)] * len(time_idxs)
+        elif self.shuffle:
+            positions_per_timestep = [
+                np.sort(self._rng.choice(self._n_patches, size=self._patches_per_epoch, replace=False))
+                for _ in time_idxs
+            ]
+        else:
+            positions = np.linspace(0, self._n_patches, self._patches_per_epoch, endpoint=False).astype(int)
+            positions_per_timestep = [positions] * len(time_idxs)
+        return np.concatenate(
+            [t * self._n_patches + positions for t, positions in zip(time_idxs, positions_per_timestep, strict=True)]
+        )
 
     def on_epoch_end(self) -> None:
         """Reshuffles the batch visitation order for the next epoch, if shuffling is enabled."""
@@ -381,15 +490,22 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         y_full = y_da.values
 
         width = pc.patch_lon_width_px
-        buf = pc.buffer_px
+        buffer_lat_px = pc.buffer_lat_px
+        buffer_lon_px = pc.buffer_lon_px
         starts = self._patch_lon_starts
         # Padding is applied here, per already-materialized batch, instead of at
         # whole-dataset load time so it stays cheap regardless of split size. See
         # reflect_pad_lat_lon_buffer for why reflection (rather than reading real store
-        # margin) is used.
-        x_full = reflect_pad_lat_lon_buffer(x_full, buf)
+        # margin) is used, and for why latitude and longitude are buffered independently:
+        # with buffer_lat_px=0 (the common case — latitude is never an artificial tile
+        # cut), this pads only the longitude axis, keeping x_full at the core height
+        # instead of inflating it on both axes as a single shared buffer would.
+        x_full = reflect_pad_lat_lon_buffer(x_full, buffer_lat_px, buffer_lon_px)
         x = np.stack(
-            [x_full[inverse[i], :, starts[p] : starts[p] + width + 2 * buf, ...] for i, p in enumerate(patch_idxs)],
+            [
+                x_full[inverse[i], :, starts[p] : starts[p] + width + 2 * buffer_lon_px, ...]
+                for i, p in enumerate(patch_idxs)
+            ],
             axis=0,
         )
         y = np.stack(
@@ -406,19 +522,23 @@ class FrontsPyDataset(tf.keras.utils.PyDataset):
         """Independently flips each sample along latitude and/or longitude.
 
         Applies with probability ``flip_probability`` per axis — Justin et al. (2025)'s
-        augmentation.
+        augmentation. Vectorized over the batch (boolean-mask fancy indexing) rather than
+        a per-sample Python loop, and returns ``x``/``y`` in place rather than copying them
+        again at the end: ``x`` and ``y`` here are always freshly built by ``np.stack`` in
+        ``_get_patches_at_indices``, never a view into a cached array, so a trailing
+        ``.copy()`` was a redundant ~350 MB memcpy per batch at typical patch-buffer batch
+        sizes, not a safety net.
         """
         n = x.shape[0]
         flip_lat = self._rng.random(n) < flip_probability
         flip_lon = self._rng.random(n) < flip_probability
-        for i in range(n):
-            if flip_lat[i]:
-                x[i] = x[i, ::-1, ...]
-                y[i] = y[i, ::-1, ...]
-            if flip_lon[i]:
-                x[i] = x[i, :, ::-1, ...]
-                y[i] = y[i, :, ::-1, ...]
-        return x.copy(), y.copy()
+        if flip_lat.any():
+            x[flip_lat] = x[flip_lat, ::-1]
+            y[flip_lat] = y[flip_lat, ::-1]
+        if flip_lon.any():
+            x[flip_lon] = x[flip_lon, :, ::-1]
+            y[flip_lon] = y[flip_lon, :, ::-1]
+        return x, y
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Returns the (input, target) batch at ``idx``, as a single contiguous read."""

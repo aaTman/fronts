@@ -385,8 +385,8 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
 
     Attributes:
         active_day_x: Single-timestep model input, shape (latitude, longitude, channel).
-            Buffered by ``buffer_px`` on every spatial side when ``buffer_px`` > 0 — see
-            ``buffer_px``.
+            Buffered by ``buffer_lat_px``/``buffer_lon_px`` on the corresponding spatial
+            side when > 0 — see ``buffer_lat_px``/``buffer_lon_px``.
         active_day_y: Single-timestep one-hot truth, shape (latitude, longitude, class).
             Always at the unbuffered core size (matches ``lats``/``lons``).
         active_day_label: Title label for the prediction figure (e.g. the timestamp).
@@ -399,16 +399,26 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
         front_types: Front type labels to evaluate, in class order.
         predict_batch_size: Batch size used to chunk ``subsample_x`` inference.
         every_n_epochs: Visualization cadence in epochs.
-        buffer_px: Pixels of input-only context buffer to crop off every spatial side of the
-            model's raw prediction before use, matching a patch-buffer-trained model's
-            ``PatchConfig.buffer_px`` (see ``fronts.data.datasets.PatchConfig``). 0 (default)
-            means ``active_day_x``/``subsample_x`` are already core-sized and predictions need
-            no cropping. Set whenever ``active_day_x``/``subsample_x`` were reflect-padded by
+        buffer_lat_px: Pixels of input-only context buffer to crop off the latitude axis of
+            the model's raw prediction before use, matching a patch-buffer-trained model's
+            ``PatchConfig.buffer_lat_px`` (see ``fronts.data.datasets.PatchConfig``). Defaults
+            to 0 and, in practice, should almost always stay 0: every training patch already
+            spans the full latitude height of the domain, so there is no artificial tile cut
+            along latitude for an overlap-tile buffer (Ronneberger et al. 2015) to compensate
+            for — padding latitude would only fabricate data off the domain's own north/south
+            edges, exactly the edges the baseline (non-patch) model also sees unpadded.
+        buffer_lon_px: Pixels of input-only context buffer to crop off the longitude axis of
+            the model's raw prediction before use, matching a patch-buffer-trained model's
+            ``PatchConfig.buffer_lon_px``. Longitude, unlike latitude, is genuinely tiled into
+            patches narrower than the domain, so it does carry an artificial cut needing this
+            overlap-tile buffer. 0 (default) means ``active_day_x``/``subsample_x`` are already
+            core-sized along longitude and predictions need no cropping there. Set whenever
+            ``active_day_x``/``subsample_x`` were reflect-padded by
             ``fronts.data.datasets.reflect_pad_lat_lon_buffer`` before being stored here — see
             ``fronts.train._build_test_visualization_callback``. Without this, a
             patch-buffer-trained model scored directly at the true (unbuffered) domain edge
             produces systematically wrong predictions there: every core pixel it saw during
-            training had >= buffer_px pixels of real spatial context before the nearest
+            training had >= buffer_lon_px pixels of real spatial context before the nearest
             zero-padded tensor edge, an invariant a bare whole-domain pass at inference breaks
             right at the domain's own edges.
     """
@@ -423,7 +433,8 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
     front_types: list[str]
     predict_batch_size: int
     every_n_epochs: int = 10
-    buffer_px: int = 0
+    buffer_lat_px: int = 0
+    buffer_lon_px: int = 0
 
     def __post_init__(self) -> None:
         """Initializes the underlying Callback base after dataclass field assignment."""
@@ -432,9 +443,12 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
     def _predict(self, x: np.ndarray) -> np.ndarray:
         """Run the model's finest-resolution (first) output, chunked by ``predict_batch_size``.
 
-        Crops ``buffer_px`` off every spatial side of the result before returning, so the
-        output always matches ``lats``/``lons``'s unbuffered core size regardless of whether
-        ``x`` itself carries a buffer (see ``buffer_px``).
+        Crops ``buffer_lat_px``/``buffer_lon_px`` off the corresponding spatial side of the
+        result before returning, so the output always matches ``lats``/``lons``'s unbuffered
+        core size regardless of whether ``x`` itself carries a buffer (see ``buffer_lat_px``/
+        ``buffer_lon_px``). In practice only longitude is ever buffered (see
+        ``buffer_lat_px``'s docstring), but both axes are cropped independently here so the
+        callback does not assume that.
         """
         # model.predict() over the full array batches its forward passes but still accumulates
         # every batch's output into one GPU-resident tensor before returning; at full spatial
@@ -455,9 +469,10 @@ class TestVisualizationCallback(tf.keras.callbacks.Callback):
                 pred = pred[0]
             outputs.append(np.asarray(pred))
         pred = np.concatenate(outputs, axis=0)
-        if self.buffer_px > 0:
-            b = self.buffer_px
-            pred = pred[:, b : pred.shape[1] - b, b : pred.shape[2] - b, :]
+        # `pred[:, b:-b, ...]` breaks when b == 0 (it slices to an empty axis rather than a
+        # no-op), so crop with the explicit-upper-bound form, which is a genuine no-op at 0.
+        b_lat, b_lon = self.buffer_lat_px, self.buffer_lon_px
+        pred = pred[:, b_lat : pred.shape[1] - b_lat, b_lon : pred.shape[2] - b_lon, :]
         return pred
 
     def on_epoch_end(self, epoch: int, logs: dict | None = None) -> None:

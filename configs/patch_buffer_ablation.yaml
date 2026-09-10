@@ -1,4 +1,4 @@
-run_name: ablation_patches_batch_size_32_scratch
+run_name: ablation_patches_batch_size_24_scratch
 
 # Reproduces the paper's (Justin et al. 2025) original patch-based training regime: nine
 # 128x128x5x10 (lon x lat x level x variable) patches, evenly spaced along longitude,
@@ -6,7 +6,7 @@ run_name: ablation_patches_batch_size_32_scratch
 # around every patch (Ronneberger et al. 2015's overlap-tile strategy: the buffer is fed
 # to the model as input context but cropped from the *pooled* prediction, after the
 # loss's own neighborhood pooling runs, before scoring against the unbuffered target --
-# see fronts/layers/losses.py's pred_buffer_px) and the paper's per-axis 25% horizontal
+# see fronts/layers/losses.py's pred_buffer_lon_px) and the paper's per-axis 25% horizontal
 # flip augmentation (0.25 chance each for latitude and longitude, independently, on
 # train patches only -> 43.75% of patches get at least one flip). Ablates the
 # full-domain-single-pass training choice documented in fronts/model_1702/adapter.py
@@ -16,7 +16,9 @@ run_name: ablation_patches_batch_size_32_scratch
 train_config:
   epochs: 5000
   seed: 42
-  learning_rate: 0.0005
+  learning_rate: 0.0001  # matches sooner_train_3d.yaml: 5e-4 (tuned for the 1.8M-param 2D model) blew up
+                         # this same 8.7M-param 3D model mid-epoch-2 (W&B run 898culiq); 1e-4 also matches
+                         # AIES model_1702
   shuffle: true
   loss_class_weights: null  # null supervises all classes incl. background, matching the AIES FrontFinder model
   loss_name: neighborhood_brier_score
@@ -31,12 +33,12 @@ data_config:
     store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
     branch_name: "main"
     virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
-  batch_size: 32  # a multiple of this job's 4-GPU MirroredStrategy split (8/replica) -- batch_size=60
-                  # (chosen to also be a multiple of n_patches below, avoiding split-timestep reads)
-                  # OOM'd at 15 patches/replica; FrontsPyDataset's per-batch timestep dedup (see
-                  # _get_patches_at_indices) already removes the dominant (n_patches-fold) read
-                  # redundancy regardless of batch_size, so this residual cross-batch overlap is an
-                  # accepted, much smaller tradeoff for staying within GPU memory
+  batch_size: 24  # both a multiple of this job's 4-GPU MirroredStrategy split (6/replica) and of
+                  # patch_config.patches_per_epoch below (4 whole timesteps per batch). That second
+                  # property is what drives cross-batch read redundancy to exactly 1.0x: every batch's
+                  # `.isel(time=...)` covers a whole number of timesteps, so no timestep is ever
+                  # materialized by two different batches. The previous batch_size=32 against 30
+                  # patches/timestep left gcd(32, 30) = 2, re-reading each timestep ~1.875x per epoch.
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
@@ -59,13 +61,28 @@ data_config:
   pressure_levels: [1000, 925, 850, 700, 500, 300]
   norm_stats_cache_dir: "/ourdisk/hpc/ai2es/tman/data/fronts/norm_stats_cache"
   normalization_method: minmax
-  num_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
+  max_pydataset_workers: 16 # Number of threads used by tf.keras.utils.PyDataset to load batches in parallel
   patch_config:
     # n_patches scaled from the paper's original 9 (over a 288px CONUS core domain) to
     # preserve the same patch density over the full 960px-wide domain: 9 * (960/288) = 30.
     n_patches: 30
+    # Patch positions *visited per timestep per epoch*, drawn without replacement from the 30
+    # above and re-drawn every epoch. Training on all 30 every epoch trains on every pixel of
+    # the domain 4x per epoch (30 * 128 = 3840px of core over a 960px domain), which is what
+    # made a patch epoch cost 5.5x a whole-domain epoch and run ~5x slower. At 6, an epoch
+    # covers 6 * 128 / 960 = 0.8 of the domain -- roughly one pass, directly comparable to
+    # schooner_train_3d.yaml's whole-domain epoch, so callbacks_config.patience keeps its
+    # meaning. All 30 positions are still visited, just spread across epochs rather than
+    # crammed into each one. Null (or omitting this) restores the all-30-per-epoch behavior.
+    patches_per_epoch: 6
     patch_lon_width_px: 128  # patch core width; latitude uses the full 320px coordinates height (no lat tiling)
-    buffer_px: 16  # 128 + 2*16 = 160 = 20 * 8, divisible by the model's total downsampling stride below (8)
+    buffer_lon_px: 16  # 128 + 2*16 = 160 = 20 * 8, divisible by the model's total downsampling stride below (8)
+    # No latitude buffer: every patch already spans the *full* 320px latitude height of
+    # `coordinates`, so unlike longitude there is no artificial tile cut along latitude for an
+    # overlap-tile buffer to bridge. Reflect-padding there fabricated context off the domain's
+    # own north/south edges -- the very edges the whole-domain baseline also sees unpadded --
+    # for a flat 1.1x (352/320) cost on every forward pass that the loss then cropped away.
+    buffer_lat_px: 0
     flip_probability: 0.25  # independent per-axis flip probability on train patches only
 
 model_config:
@@ -88,6 +105,9 @@ callbacks_config:
   patience: 3
   learning_rate_decay_factor: 0.2
   learning_rate_minimum: 1e-6
+  early_stopping_patience: 12  # matches sooner_train_3d.yaml: end the run after 12 epochs with no val_loss
+                               # improvement (allows ~4 LR decays at patience 3 first); without this,
+                               # LR-decay mode has no stop condition at all
   model_checkpoint_path: "/ourdisk/hpc/ai2es/tman/models/${run_name}/"
   test_viz_every_n_epochs: 1  # log a test-set prediction map + performance diagrams to W&B every N epochs; null disables
   test_viz_sample_size: 200  # number of (seeded, random) test timesteps used for the periodic performance diagram
