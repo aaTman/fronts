@@ -310,6 +310,8 @@ def _build_loss(
             include_pixel=nbs_include_pixel,
             pixel_weight=nbs_pixel_weight,
         )
+    if loss_name == "multiclass_wbce":
+        return losses.multiclass_weighted_binary_crossentropy(class_weights=loss_class_weights)
     raise ValueError(
         f"Unrecognized loss_name {loss_name!r}; expected 'fractions_skill_score' or 'neighborhood_brier_score'."
     )
