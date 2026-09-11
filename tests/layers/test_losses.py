@@ -387,6 +387,66 @@ class TestFSSLossClassWeights:
         )
 
 
+def _wbce_inputs(pixel_weight: float, target: float, prediction: float) -> tuple[np.ndarray, np.ndarray]:
+    targets = np.full((N_BATCH, N_H, N_W, N_CLASSES), target, dtype=np.float32)
+    pixel_weights = np.full((N_BATCH, N_H, N_W, 1), pixel_weight, dtype=np.float32)
+    y_true = np.concatenate([pixel_weights, targets], axis=-1)
+    y_pred = np.full((N_BATCH, N_H, N_W, N_CLASSES), prediction, dtype=np.float32)
+    return y_true, y_pred
+
+
+class TestMulticlassWbceLoss:
+    def test_graph_mode_with_dynamic_class_count(self):
+        """Regression: the class count is a symbolic tensor in graph mode and cannot repeat a Python list."""
+        y_true, y_pred = _wbce_inputs(pixel_weight=1.0, target=1.0, prediction=0.5)
+        loss_fn = losses.multiclass_wbce_loss()
+        signature = [tf.TensorSpec((None, None, None, None), tf.float32)] * 2
+        traced = tf.function(loss_fn, input_signature=signature)
+        result = float(traced(tf.constant(y_true), tf.constant(y_pred)).numpy())
+        assert result == pytest.approx(-np.log(0.5 + tf.keras.backend.epsilon()), rel=1e-5)
+
+    def test_returns_scalar(self):
+        loss = losses.multiclass_wbce_loss()(*_wbce_inputs(pixel_weight=1.0, target=1.0, prediction=0.5))
+        assert loss.shape == ()
+
+    def test_confident_correct_prediction_is_near_zero(self):
+        loss = losses.multiclass_wbce_loss()(*_wbce_inputs(pixel_weight=1.0, target=1.0, prediction=1.0))
+        assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-5)
+
+    def test_pixel_weight_scales_loss_linearly(self):
+        loss_fn = losses.multiclass_wbce_loss()
+        unit = float(loss_fn(*_wbce_inputs(pixel_weight=1.0, target=1.0, prediction=0.3)).numpy())
+        tripled = float(loss_fn(*_wbce_inputs(pixel_weight=3.0, target=1.0, prediction=0.3)).numpy())
+        assert tripled == pytest.approx(3.0 * unit, rel=1e-5)
+
+    def test_zero_pixel_weight_zeroes_loss(self):
+        loss = losses.multiclass_wbce_loss()(*_wbce_inputs(pixel_weight=0.0, target=1.0, prediction=0.3))
+        assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-7)
+
+    def test_pixel_weight_applies_to_every_class(self):
+        y_true, y_pred = _wbce_inputs(pixel_weight=1.0, target=1.0, prediction=0.3)
+        y_true[:, :, : N_W // 2, 0] = 0.0
+        loss_fn = losses.multiclass_wbce_loss()
+        half_masked = float(loss_fn(y_true, y_pred).numpy())
+        unmasked = float(loss_fn(*_wbce_inputs(pixel_weight=1.0, target=1.0, prediction=0.3)).numpy())
+        assert half_masked == pytest.approx(0.5 * unmasked, rel=1e-5)
+
+    def test_uniform_class_weights_match_unweighted(self):
+        inputs = _wbce_inputs(pixel_weight=1.0, target=1.0, prediction=0.3)
+        unweighted = float(losses.multiclass_wbce_loss()(*inputs).numpy())
+        uniform = float(losses.multiclass_wbce_loss(class_weights=[5.0] * N_CLASSES)(*inputs).numpy())
+        assert uniform == pytest.approx(unweighted, rel=1e-5)
+
+    def test_class_weights_emphasize_weighted_class_error(self):
+        y_true, y_pred = _wbce_inputs(pixel_weight=1.0, target=1.0, prediction=1.0)
+        y_pred[..., 1] = 0.3
+        emphasize_error = [1.0, 5.0, 1.0, 1.0, 1.0, 1.0]
+        emphasize_correct = [5.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        loss_error = float(losses.multiclass_wbce_loss(class_weights=emphasize_error)(y_true, y_pred).numpy())
+        loss_correct = float(losses.multiclass_wbce_loss(class_weights=emphasize_correct)(y_true, y_pred).numpy())
+        assert loss_error > loss_correct
+
+
 class TestFSSLossBackgroundSupervision:
     def test_unweighted_loss_penalises_background_errors(self):
         """With class_weights=None the background channel is supervised, anchoring softmax mass.

@@ -140,12 +140,7 @@ def multiclass_wbce_loss(
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
 
-        n_classes = tf.shape(y_pred)[-1]
-
-        pixel_weights = tf.stack(
-            [y_true[..., 0]] * n_classes,
-            axis=-1,
-        )
+        pixel_weights = y_true[..., :1]
 
         targets = y_true[..., 1:]
 
