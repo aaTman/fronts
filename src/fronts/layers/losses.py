@@ -107,6 +107,67 @@ def critical_success_index(
     return csi_loss
 
 
+def multiclass_wbce_loss(
+    class_weights: list[int | float] | None = None,
+):
+    """Create a weighted binary cross-entropy loss for multiclass segmentation.
+
+    The first channel of ``y_true`` contains a pixel-wise weight map, while
+    the remaining channels contain one-hot encoded class labels. The
+    pixel-wise weights are applied to the binary cross-entropy loss for
+    every class.
+
+    Optionally, a separate weight can be applied to each class to account
+    for class imbalance. When ``class_weights`` is ``None``, the loss is
+    equivalent to the original SPix-WCE ``multiclass_wbce_loss``
+    implementation.
+
+    Args:
+        class_weights: Optional sequence of weights, one per class. The
+            length must match the number of classes in ``y_pred``. If
+            provided, the class weights are normalized so that they affect
+            the relative contribution of each class without changing the
+            overall scale of the loss.
+
+    Returns:
+        A callable TensorFlow loss function accepting ``y_true`` and
+        ``y_pred`` and returning a scalar loss.
+    """
+    class_weights = tf.cast(class_weights, tf.float32) if class_weights is not None else None
+
+    @tf.function
+    def loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+
+        n_classes = tf.shape(y_pred)[-1]
+
+        pixel_weights = tf.stack(
+            [y_true[..., 0]] * n_classes,
+            axis=-1,
+        )
+
+        targets = y_true[..., 1:]
+
+        bce = pixel_weights * -(
+            targets * tf.math.log(y_pred + tf.keras.backend.epsilon())
+            + (1 - targets) * tf.math.log((1 - y_pred) + tf.keras.backend.epsilon())
+        )
+
+        # Average over spatial dimensions.
+        bce = tf.reduce_mean(bce, axis=[1, 2])
+
+        if class_weights is not None:
+            # Normalize so that the average class weight is 1.
+            class_weights_normalized = class_weights / tf.reduce_mean(class_weights)
+
+            bce = bce * class_weights_normalized
+
+        return tf.reduce_mean(bce)
+
+    return loss
+
+
 def fractions_skill_score(
     mask_size: int | tuple[int, ...] | list[int] = (3, 3),
     alpha: int | float = 1.0,

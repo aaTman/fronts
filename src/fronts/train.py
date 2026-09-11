@@ -117,7 +117,9 @@ class TrainConfig:
     learning_rate: float = 1e-4
     shuffle: bool = False
     gradient_clip_norm: float | None = None
-    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score"] = "neighborhood_brier_score"
+    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score", "multiclass_wbce"] = (
+        "neighborhood_brier_score"
+    )
     fss_mask_size: tuple[int, ...] = (3, 3)
     nbs_tolerance_km: float = 25.0
     nbs_periodic_lon: bool = False
