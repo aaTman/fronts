@@ -1,4 +1,4 @@
-run_name: per_front_metrics_3d
+run_name: per_front_metrics_3d_forming_dissipating_and_troughs
 
 # 3D instantiation of sooner_train.yaml: same data, splits, loss, and ablation-selected
 # variable/level set, but batches keep the vertical structure as its own axis
