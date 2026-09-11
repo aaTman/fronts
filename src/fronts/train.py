@@ -265,7 +265,7 @@ def _show_input_sample(label: str, inputs: np.ndarray | xr.DataArray, n_show: in
 
 
 def _build_loss(
-    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score"],
+    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score", "multiclass_wbce"],
     loss_class_weights: list[float] | None,
     latitudes: np.ndarray,
     fss_mask_size: tuple[int, ...],
@@ -316,7 +316,7 @@ def _build_loss(
 
 
 def _per_front_type_loss_metrics(
-    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score"],
+    loss_name: Literal["fractions_skill_score", "neighborhood_brier_score", "multiclass_wbce"],
     loss_class_weights: list[float] | None,
     latitudes: np.ndarray,
     fss_mask_size: tuple[int, ...],
