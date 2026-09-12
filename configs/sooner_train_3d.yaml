@@ -25,7 +25,7 @@ data_config:
     store_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/icechunk"
     branch_name: "main"
     virtual_chunk_local_path: "/ourdisk/hpc/ai2es/tman/restructured_front_data/netcdf/"
-  batch_size: 4  # 3D activations carry the 6-level axis at full resolution through every layer on the 320x960 domain
+  batch_size: 8  # 3D activations carry the 6-level axis at full resolution through every layer on the 320x960 domain
   test_years: [2019]
   val_years: [2018]
   max_queue_size: 16
