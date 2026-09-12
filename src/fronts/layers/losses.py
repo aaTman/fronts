@@ -110,17 +110,13 @@ def critical_success_index(
 def multiclass_wbce_loss(
     class_weights: list[int | float] | None = None,
 ):
-    """Create a weighted binary cross-entropy loss for multiclass segmentation.
+    """Create a class-weighted binary cross-entropy loss for multiclass segmentation.
 
-    The first channel of ``y_true`` contains a pixel-wise weight map, while
-    the remaining channels contain one-hot encoded class labels. The
-    pixel-wise weights are applied to the binary cross-entropy loss for
-    every class.
-
-    Optionally, a separate weight can be applied to each class to account
-    for class imbalance. When ``class_weights`` is ``None``, the loss is
-    equivalent to the original SPix-WCE ``multiclass_wbce_loss``
-    implementation.
+    ``y_true`` holds one-hot encoded class labels with the same channel
+    layout as ``y_pred``: channel 0 is the background class and channels 1
+    onward are the front classes. Binary cross-entropy is computed per
+    class, averaged over the spatial dimensions, and weighted per class to
+    account for class imbalance.
 
     Args:
         class_weights: Optional sequence of weights, one per class. The
@@ -140,13 +136,9 @@ def multiclass_wbce_loss(
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
 
-        pixel_weights = y_true[..., :1]
-
-        targets = y_true[..., 1:]
-
-        bce = pixel_weights * -(
-            targets * tf.math.log(y_pred + tf.keras.backend.epsilon())
-            + (1 - targets) * tf.math.log((1 - y_pred) + tf.keras.backend.epsilon())
+        bce = -(
+            y_true * tf.math.log(y_pred + tf.keras.backend.epsilon())
+            + (1 - y_true) * tf.math.log((1 - y_pred) + tf.keras.backend.epsilon())
         )
 
         # Average over spatial dimensions.
