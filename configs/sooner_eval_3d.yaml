@@ -1,4 +1,4 @@
-run_name: per_front_metrics_3d
+run_name: spix_wce_loss_experiment
 
 # Evaluation counterpart to sooner_train_3d.yaml, and the 3D instantiation of sooner_eval.yaml.
 # data_config repeats sooner_train_3d.yaml verbatim — including volume_inputs and the smaller
