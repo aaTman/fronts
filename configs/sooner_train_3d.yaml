@@ -1,4 +1,4 @@
-run_name: spix_wce_loss_experiment
+run_name: spix_wce_loss_modified_dilation
 
 # 3D instantiation of sooner_train.yaml: same data, splits, loss, and ablation-selected
 # variable/level set, but batches keep the vertical structure as its own axis

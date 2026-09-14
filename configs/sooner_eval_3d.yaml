@@ -1,4 +1,4 @@
-run_name: spix_wce_loss_experiment
+run_name: spix_wce_loss_modified_dilation
 
 # Evaluation counterpart to sooner_train_3d.yaml, and the 3D instantiation of sooner_eval.yaml.
 # data_config repeats sooner_train_3d.yaml verbatim — including volume_inputs and the smaller
