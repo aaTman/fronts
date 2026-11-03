@@ -3,6 +3,14 @@
 All notable changes to FrontFinder are listed here. The format follows [Keep a Changelog](https://keepachangelog.com),
 and versions follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **`land_mask` static variable.** A boolean land/ocean mask (1 = land, 0 = ocean, float32) derived by thresholding
+  ERA5 `land_sea_mask` at 0.5. List it in `generate_config.variables` to write it to the store, and in
+  `data_config.variables` to train on it. Remember to bump `model_config.n_channels`.
+
 ## [2.0.0] - 2026-10-30
 
 Version 2 is a rewrite. The code is now an installable, typed, tested Python package (`fronts`) driven by YAML configs.

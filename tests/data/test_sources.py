@@ -211,3 +211,30 @@ class TestOpenStaticEra5Variable:
         result = sources.open_static_era5_variable("geopotential_at_surface")
         expected = xr.open_zarr(static_source_zarr, chunks=None)["geopotential_at_surface"].isel(time=0)
         np.testing.assert_array_equal(result.values, expected.values)
+
+
+class TestLandMask:
+    @pytest.fixture
+    def land_sea_zarr(self, make_static_source_zarr) -> pathlib.Path:
+        time = pd.date_range("2019-01-01", periods=3, freq="6h")
+        return make_static_source_zarr("land_sea_mask", _LAT, _LON, time=time, seed=7)
+
+    def test_land_mask_registered(self):
+        assert "land_mask" in sources.STATIC_VARIABLE_SOURCES
+        assert "land_mask" in sources.STATIC_DERIVATIONS
+
+    def test_land_mask_is_binary_threshold_of_land_sea_mask(self, land_sea_zarr, monkeypatch):
+        monkeypatch.setitem(sources.STATIC_VARIABLE_SOURCES, "land_sea_mask", str(land_sea_zarr))
+        monkeypatch.setitem(sources.STATIC_VARIABLE_SOURCES, "land_mask", str(land_sea_zarr))
+        result = sources.open_static_era5_variable("land_mask")
+        fraction = xr.open_zarr(land_sea_zarr, chunks=None)["land_sea_mask"].isel(time=0)
+        assert result.dtype == np.float32
+        assert result.dims == ("latitude", "longitude")
+        assert set(np.unique(result.values)) <= {0.0, 1.0}
+        np.testing.assert_array_equal(result.values, (fraction.values >= sources.LAND_MASK_THRESHOLD).astype("float32"))
+
+    def test_land_mask_requested_alongside_source_field(self, land_sea_zarr, monkeypatch):
+        monkeypatch.setitem(sources.STATIC_VARIABLE_SOURCES, "land_sea_mask", str(land_sea_zarr))
+        monkeypatch.setitem(sources.STATIC_VARIABLE_SOURCES, "land_mask", str(land_sea_zarr))
+        result = sources.open_static_era5_variables(["land_sea_mask", "land_mask"])
+        assert list(result.data_vars) == ["land_sea_mask", "land_mask"]

@@ -1,6 +1,7 @@
 """Openers for remote ERA5 sources, normalizing names to Google ARCO conventions."""
 
 import logging
+from collections.abc import Callable
 
 import arraylake
 import xarray as xr
@@ -45,6 +46,16 @@ ARCO_ERA5_PUBLIC_URI = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chu
 STATIC_VARIABLE_SOURCES: dict[str, str] = {
     "geopotential_at_surface": ARCO_ERA5_PUBLIC_URI,
     "land_sea_mask": ARCO_ERA5_PUBLIC_URI,
+    "land_mask": ARCO_ERA5_PUBLIC_URI,
+}
+
+# Static variables computed from another field at the same source rather than read directly:
+# name -> (source field, function mapping the source field to the new variable).
+# ``land_mask`` is the boolean land/ocean mask (1 = land, 0 = ocean): the continuous ERA5
+# land-sea fraction thresholded at 0.5, stored as float32 so it stacks with other inputs.
+LAND_MASK_THRESHOLD = 0.5
+STATIC_DERIVATIONS: dict[str, tuple[str, Callable[[xr.DataArray], xr.DataArray]]] = {
+    "land_mask": ("land_sea_mask", lambda da: (da >= LAND_MASK_THRESHOLD).astype("float32")),
 }
 
 
@@ -145,7 +156,10 @@ def open_static_era5_variables(variables: list[str]) -> xr.Dataset:
 
     by_uri: dict[str, list[str]] = {}
     for var in variables:
-        by_uri.setdefault(STATIC_VARIABLE_SOURCES[var], []).append(var)
+        field = STATIC_DERIVATIONS[var][0] if var in STATIC_DERIVATIONS else var
+        fields = by_uri.setdefault(STATIC_VARIABLE_SOURCES[var], [])
+        if field not in fields:
+            fields.append(field)
 
     pieces = []
     for uri, uri_variables in by_uri.items():
@@ -155,7 +169,12 @@ def open_static_era5_variables(variables: list[str]) -> xr.Dataset:
         ds = xr.open_zarr(uri, **open_kwargs)
         selected = ds[uri_variables].sel(time=_STATIC_REFERENCE_TIME, method="nearest")
         pieces.append(selected.reset_coords("time", drop=True))
-    return pieces[0] if len(pieces) == 1 else xr.merge(pieces, join="inner", compat="override")
+    merged = pieces[0] if len(pieces) == 1 else xr.merge(pieces, join="inner", compat="override")
+    for var in variables:
+        if var in STATIC_DERIVATIONS:
+            source_field, fn = STATIC_DERIVATIONS[var]
+            merged[var] = fn(merged[source_field])
+    return merged[list(dict.fromkeys(variables))]
 
 
 def open_static_era5_variable(variable: str) -> xr.DataArray:
