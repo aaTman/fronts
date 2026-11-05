@@ -96,6 +96,7 @@ callbacks_config:
   test_viz_sample_size: 200
 
 wandb_config:
+  entity: "extreme-earth"
   project_name: "fronts"
   run_name: "${run_name}"
   log_freq: 10

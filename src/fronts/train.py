@@ -55,6 +55,9 @@ class WandBConfig:
     log_freq: str | int
     project_name: str = "fronts"
     run_name: str | None = None
+    # W&B team/org that owns the project. None falls back to the logged-in user's default entity
+    # (their personal profile), so set this to log into a shared team.
+    entity: str | None = None
 
 
 @dataclasses.dataclass
@@ -891,6 +894,7 @@ def _run(
     early_stopping_patience: int | None = None,
     model_checkpoint_path: str | None = None,
     wandb_project: str | None = None,
+    wandb_entity: str | None = None,
     run_name: str | None = None,
     wandb_log_freq: str | int = "epoch",
     steps_per_epoch: int | None = None,
@@ -902,6 +906,7 @@ def _run(
 ) -> tuple[tf.keras.callbacks.History, float]:
     if wandb_project:
         wandb.init(
+            entity=wandb_entity,
             project=wandb_project,
             name=run_name,
             reinit=True,
@@ -1318,6 +1323,7 @@ def train(
         metrics_csv_path=callbacks_cfg.metrics_csv_path,
         compact_progress_every_n_batches=callbacks_cfg.compact_progress_every_n_batches,
         wandb_project=wandb_project,
+        wandb_entity=wandb_cfg.entity if wandb_cfg is not None else None,
         run_name=run_name,
         wandb_log_freq=wandb_cfg.log_freq if wandb_cfg is not None else "epoch",
         run_config=run_config,
