@@ -143,6 +143,9 @@ Justin et al. 2025 paper drew its maps on (100 km). `fronts.neighborhood_calibra
 3. Set `calibration_path` (and `calibration_km`, which defaults to 100) in `predict_config` to draw case-study maps on
    that scale.
 
+On sooner, `sbatch scripts/sooner_eval_2018_calibration.sbatch` runs steps 1 and 2 for v2.0.0 (with
+`configs/sooner_eval_2018.yaml`) and draws the 2018 performance diagrams.
+
 The mapping keeps the order of the values, so it changes the numbers on a map but not CSI, POD, or HSS.
 
 ### Comparing with the Justin et al. 2025 model
