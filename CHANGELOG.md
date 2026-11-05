@@ -3,6 +3,17 @@
 All notable changes to FrontFinder are listed here. The format follows [Keep a Changelog](https://keepachangelog.com),
 and versions follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **Neighborhood calibration.** `fronts.neighborhood_calibration` fits isotonic regression to the 50-250 km
+  reliability curves from `fronts.evaluate`. It maps raw probabilities to the chance of a front within that radius,
+  the scale the AIES paper's maps used. It ports the legacy `calibrate_model.py`, with two changes: bins are weighted
+  by pixel count, and pixels forecast below 0.01 get their own bin. The case-study plot uses it when
+  `predict_config.calibration_path` is set.
+- Eval stats now include `nbhd_truth_{ft}`: the weighted count of pixels within each radius of a front.
+
 ## [2.0.0] - 2026-10-30
 
 Version 2 is a rewrite. The code is now an installable, typed, tested Python package (`fronts`) driven by YAML configs.
