@@ -90,7 +90,8 @@ through TensorFlow's `MirroredStrategy`.
 `configs/sooner_train_3d.yaml` trains the 3D model. Set `data_config.volume_inputs: true` to feed volumes instead of
 stacked channels.
 
-To fit a temperature-scaling calibration to a trained model on the validation set:
+To fit a temperature-scaling calibration to a trained model on the validation set (this keeps the per-pixel
+scale; for maps on the AIES paper's scale, see [Neighborhood calibration](#neighborhood-calibration)):
 
 ```
 pixi run -e schooner python -m fronts.calibrate --config_path configs/sooner_train.yaml
@@ -121,6 +122,28 @@ Run each one inside an environment, for example `pixi run -e schooner python -m 
 is a shortcut for the first row: `pixi run -e schooner eval --mask land`.
 
 The `scripts/` folder holds the SLURM batch files used on sooner, such as `scripts/sooner_eval_regions.sbatch`.
+
+### Neighborhood calibration
+
+Raw probabilities answer "is this pixel inside the analyst's dilated label band?" Hand-drawn fronts land a cell or
+two from where the fields put them, and the spot changes from case to case, so raw values top out near 0.8.
+Neighborhood calibration answers a looser question: "is a front of this type within N km?" That is the scale the
+Justin et al. 2025 paper drew its maps on (100 km). `fronts.neighborhood_calibration` ports the legacy
+`calibrate_model.py`: it fits isotonic regression to each 50-250 km reliability curve.
+
+1. Run `fronts.evaluate` with this version on a year the model didn't train on, such as the 2018 validation year. It
+   writes the per-radius truth counts (`nbhd_truth_{ft}`) the fit needs.
+2. Fit the table:
+
+   ```
+   python -m fronts.neighborhood_calibration --stats_path /path/to/stats/stats_aggregate.nc \
+       --output_path /path/to/neighborhood_calibration.nc
+   ```
+
+3. Set `calibration_path` (and `calibration_km`, which defaults to 100) in `predict_config` to draw case-study maps on
+   that scale.
+
+The mapping keeps the order of the values, so it changes the numbers on a map but not CSI, POD, or HSS.
 
 ### Comparing with the Justin et al. 2025 model
 
